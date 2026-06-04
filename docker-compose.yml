@@ -1,0 +1,31 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: wewe-rss-db
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_PASSWORD:-wewe2026}
+      - MYSQL_DATABASE=wewe_rss
+      - MYSQL_USER=wewe
+      - MYSQL_PASSWORD=${DB_PASSWORD:-wewe2026}
+    volumes:
+      - db_data:/var/lib/mysql
+    restart: unless-stopped
+
+  wewe-rss:
+    image: cooderl/wewe-rss:latest
+    container_name: wewe-rss
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - AUTH_CODE=${AUTH_CODE:-wxkb2026}
+      - DATABASE_URL=mysql://wewe:${DB_PASSWORD:-wewe2026}@db:3306/wewe_rss
+      - CRON_EXPRESSION=${CRON_EXPRESSION:-0 */2 * * *}
+      - DATA_DIR=/app/data
+    depends_on:
+      - db
+    restart: unless-stopped
+
+volumes:
+  db_data:

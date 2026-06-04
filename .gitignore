@@ -1,0 +1,25 @@
+# 环境变量（含密钥）
+.env
+
+# 运行时数据
+processed.json
+last_response.txt
+
+# 日志
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

@@ -1,0 +1,33 @@
+[project]
+name = "wx-obsidian"
+version = "0.1.0"
+description = "公众号文章 → Obsidian 知识库自动化处理器"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pytest>=8.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
+ignore = ["E501"]  # f-string prompt 模板无法拆行
+
+[tool.ruff.lint.isort]
+known-first-party = ["validate_markdown"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
