@@ -178,6 +178,33 @@ def fetch_article_content_from_url(url: str) -> str:
         return ""
 
 
+def fetch_article_content_and_images(url: str) -> tuple[str, list[dict[str, str]]]:
+    """从微信文章 URL 抓取正文内容和带上下文的图片列表。"""
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.encoding = "utf-8"
+
+        html = resp.text
+        match = re.search(r'id="js_content"[^>]*>(.*?)</div>\s*<script', html, re.DOTALL)
+        body_html = match.group(1) if match else html
+
+        images = _extract_images_with_context(body_html)
+
+        parser = HTMLTextExtractor()
+        parser.feed(body_html)
+        return parser.get_text()[:MAX_ARTICLE_LENGTH], images
+    except requests.RequestException as e:
+        print(f"  抓取正文失败: {e}")
+        return "", []
+
+
 def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
     """从 WeWe RSS JSON Feed 获取文章列表。"""
     base_url = config["wewe_rss"]["base_url"]
@@ -225,7 +252,6 @@ def _build_prompt(
     config: dict[str, Any],
     existing_articles: list[str],
     existing_concepts: list[str],
-    images: list[str] | None = None,
 ) -> str:
     """构建发送给 DeepSeek 的 prompt。"""
     body_style = load_skill("article-body")
@@ -235,18 +261,6 @@ def _build_prompt(
     articles_str = "、".join(existing_articles[:100]) if existing_articles else "（暂无）"
     concepts_str = "、".join(existing_concepts[:100]) if existing_concepts else "（暂无）"
 
-    images_section = ""
-    if images:
-        images_list = "\n".join(f"- {url}" for url in images[:10])
-        images_section = f"""
-## 原文图片（必须在笔记中引用）
-
-以下是原文中的图片 URL。**你必须在 body_sections 的 content 中用 `![描述](URL)` 引用至少 2-3 张图片**（架构图、流程图、关键示意图优先）：
-{images_list}
-
-规则：直接使用上方 URL，不要编造或修改。图片放在描述相关架构或流程的文字之后。
-"""
-
     template = _load_prompt_template()
     return template.substitute(
         title=title,
@@ -255,7 +269,7 @@ def _build_prompt(
         body_style=body_style,
         classification_style=classification_style,
         metadata_style=metadata_style,
-        images_section=images_section,
+        images_section="",
         articles_str=articles_str,
         concepts_str=concepts_str,
     )
@@ -333,7 +347,6 @@ def summarize_article(
     account_name: str,
     existing_articles: list[str] | None = None,
     existing_concepts: list[str] | None = None,
-    images: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """调用 DeepSeek API 总结文章，返回结构化 JSON。"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -350,7 +363,6 @@ def summarize_article(
         config,
         existing_articles or [],
         existing_concepts or [],
-        images=images,
     )
 
     resp = requests.post(
@@ -649,26 +661,141 @@ def _extract_article_info(article: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _extract_images(content: str) -> list[str]:
-    """从 HTML 内容中提取图片 URL 列表（优先 data-src，回退 src）。"""
-    urls: list[str] = []
-    for match in re.finditer(r"<img\s[^>]+>", content):
-        tag = match.group(0)
-        # 优先取 data-src（微信懒加载），没有则取 src
-        url_match = re.search(r'data-src=["\']([^"\']+)["\']', tag)
+def _extract_images_with_context(html: str, max_images: int = 8) -> list[dict[str, str]]:
+    """从 HTML 中提取图片 URL 及其前后文字上下文。
+
+    返回列表，每项包含 url、before（图片前的文字）、after（图片后的文字）。
+    """
+    # 将 HTML 按 <img> 标签切片，得到交替的 [文本, 图片, 文本, 图片, ...]
+    parts = re.split(r"(<img\s[^>]+>)", html)
+    results: list[dict[str, str]] = []
+
+    for i, part in enumerate(parts):
+        if not re.match(r"<img\s", part):
+            continue
+        # 提取 URL
+        url_match = re.search(r'data-src=["\']([^"\']+)["\']', part)
         if not url_match:
-            url_match = re.search(r'src=["\']([^"\']+)["\']', tag)
-        if url_match:
-            url = url_match.group(1).replace("&amp;", "&")
-            if url.startswith("http"):
-                urls.append(url)
-    return urls
+            url_match = re.search(r'src=["\']([^"\']+)["\']', part)
+        if not url_match:
+            continue
+        url = url_match.group(1).replace("&amp;", "&")
+        if not url.startswith("http"):
+            continue
+        # 只保留微信 CDN 的图片，跳过第三方广告/追踪图
+        if "mmbiz" not in url:
+            continue
+        # 跳过空白占位图
+        if "pic_blank" in url:
+            continue
+
+        # 提取前后各 200 字的纯文本上下文
+        before_text = re.sub(r"<[^>]+>", " ", parts[i - 1] if i > 0 else "")
+        after_text = re.sub(r"<[^>]+>", " ", parts[i + 1] if i + 1 < len(parts) else "")
+        before_text = re.sub(r"\s+", " ", before_text).strip()[-200:]
+        after_text = re.sub(r"\s+", " ", after_text).strip()[:200]
+
+        results.append({"url": url, "before": before_text, "after": after_text})
+        if len(results) >= max_images:
+            break
+
+    return results
 
 
-def _extract_content(article: dict[str, Any]) -> tuple[str, list[str]]:
-    """提取并清理文章正文内容，返回 (纯文本, 图片URL列表)。"""
+def _insert_images_into_markdown(md: str, images: list[dict[str, str]]) -> str:
+    """将图片自动匹配到 markdown 的对应章节中。
+
+    匹配策略：对每张图片，用其前后文字与各章节内容做关键词重叠度评分，
+    插入得分最高的章节的第一个段落之后。
+    """
+    if not images:
+        return md
+
+    # 按 ## 标题拆分 markdown 为 section
+    section_pattern = re.compile(r"(?=^## )", re.MULTILINE)
+    raw_sections = section_pattern.split(md)
+
+    # 为每个 section 提取匹配用的关键词（>=2 字符的中文词或英文词）
+    def _extract_keywords(text: str) -> set[str]:
+        # 中文：连续 2-6 个中文字符
+        cn = set(re.findall(r"[一-鿿]{2,6}", text))
+        # 英文：3+ 字符的英文单词
+        en = set(w.lower() for w in re.findall(r"[a-zA-Z]{3,}", text))
+        return cn | en
+
+    section_keywords: list[set[str]] = []
+    for sec in raw_sections:
+        section_keywords.append(_extract_keywords(sec))
+
+    # 识别正文章节（## 一、 ## 二、 ...），只在这些章节中插入图片
+    body_section_indices: list[int] = []
+    for idx, sec in enumerate(raw_sections):
+        heading = sec.split("\n")[0].strip()
+        if re.match(r"^## [一二三四五六七八九十]", heading):
+            body_section_indices.append(idx)
+
+    if not body_section_indices:
+        return md
+
+    # 每张图片最多插一次，每个 section 最多插两张
+    section_image_count = [0] * len(raw_sections)
+    used_images: set[int] = set()
+
+    for img_idx, img in enumerate(images):
+        if img_idx in used_images:
+            continue
+        img_text = img["before"] + " " + img["after"]
+        img_kw = _extract_keywords(img_text)
+        if not img_kw:
+            continue
+
+        best_score = 0
+        best_sec = -1
+        for sec_idx in body_section_indices:
+            if section_image_count[sec_idx] >= 2:
+                continue
+            overlap = len(img_kw & section_keywords[sec_idx])
+            if overlap > best_score:
+                best_score = overlap
+                best_sec = sec_idx
+
+        if best_sec < 1 or best_score < 2:
+            continue
+
+        # 在该 section 的第一个段落之后插入图片
+        sec = raw_sections[best_sec]
+        lines = sec.split("\n")
+        insert_pos = 0
+        for j, line in enumerate(lines):
+            if j < 2:
+                continue  # 跳过标题行
+            if line.strip() and not line.startswith("#"):
+                insert_pos = j + 1
+                break
+
+        # 从 before 文本中提取有意义的描述（取最后 50 字，截取到最近的句号/逗号）
+        desc = img["before"][-50:].strip()
+        # 去掉开头不完整的片段
+        for sep in ("。", "，", "；", ".", ",", " "):
+            idx = desc.find(sep)
+            if 0 < idx < len(desc) - 5:
+                desc = desc[idx + 1 :].strip()
+                break
+        if len(desc) > 40:
+            desc = desc[:40]
+        img_md = f"\n![{desc}]({img['url']})"
+        lines.insert(insert_pos, img_md)
+        raw_sections[best_sec] = "\n".join(lines)
+        section_image_count[best_sec] += 1
+        used_images.add(img_idx)
+
+    return "".join(raw_sections)
+
+
+def _extract_content(article: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    """提取并清理文章正文内容，返回 (纯文本, 带上下文的图片列表)。"""
     raw_content = article.get("content", "")
-    images = _extract_images(raw_content)
+    images = _extract_images_with_context(raw_content)
     content = re.sub(r"<[^>]+>", " ", raw_content)
     content = re.sub(r"\s+", " ", content).strip()
 
@@ -676,7 +803,7 @@ def _extract_content(article: dict[str, Any]) -> tuple[str, list[str]]:
         url = article.get("url", "")
         if url:
             print("  Feed 无内容，从 URL 抓取...")
-            content = fetch_article_content_from_url(url)
+            content, images = fetch_article_content_and_images(url)
 
     return content, images
 
@@ -715,7 +842,6 @@ def _process_single_article(
             info["account_name"],
             existing_articles,
             existing_concepts,
-            images=images,
         )
     except (requests.RequestException, ValueError) as e:
         print(f"  DeepSeek API 调用失败: {e}")
@@ -748,6 +874,11 @@ def _process_single_article(
         info["url"],
         summary_data,
     )
+
+    # 清除 LLM 可能生成的假图片链接（非微信 CDN 的 URL）
+    md_content = re.sub(r"!\[[^\]]*\]\((?!https?://mmbiz)[^)]+\)", "", md_content)
+
+    md_content = _insert_images_into_markdown(md_content, images)
 
     safe_title = re.sub(r'[<>:"/\\|?*]', "_", info["title"])[:100]
     category_dir = articles_dir / category

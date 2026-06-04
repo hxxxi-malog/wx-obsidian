@@ -19,7 +19,8 @@ $classification_style
 ## 笔记元数据规范
 
 $metadata_style
-$images_section---
+
+---
 
 ## 知识库中已有的内容（用于相关主题关联）
 
@@ -50,7 +51,7 @@ $images_section---
   "body_sections": [
     {
       "heading": "一、核心概念与背景",
-      "content": "该章节的结构化内容，使用markdown格式，包含表格、重点标记、列表等。至少200字。可在合适位置插入 ![描述](图片URL) 引用原文图片。"
+      "content": "该章节的结构化内容，使用markdown格式，包含表格、重点标记、列表等。至少200字。"
     },
     {
       "heading": "二、核心机制拆解",
@@ -68,4 +69,3 @@ $images_section---
 - 每个 section 的 content 使用 markdown 格式，善用表格、加粗、列表
 - 总共 4-6 个 section，覆盖文章核心内容
 - 每个 section 至少 200 字，主体拆解章节至少 300 字
-- 在 section 的 content 中，**必须**用 ![描述](URL) 插入 2-3 张原文图片（架构图、流程图优先），**必须使用上方提供的图片 URL，不要编造 URL**
