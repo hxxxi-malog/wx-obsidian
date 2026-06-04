@@ -21,6 +21,7 @@ from typing import Any
 
 import requests
 import yaml
+from string import Template
 
 from validate_markdown import validate_and_fix
 
@@ -30,6 +31,7 @@ from validate_markdown import validate_and_fix
 
 SCRIPT_DIR = Path(__file__).parent
 SKILLS_DIR = SCRIPT_DIR / "skills"
+PROMPTS_DIR = SCRIPT_DIR / "prompts"
 PROCESSED_FILE = SCRIPT_DIR / "processed.json"
 MAX_ARTICLE_LENGTH = 15000
 MAX_PROMPT_CONTENT = 10000
@@ -209,6 +211,13 @@ def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+@functools.cache
+def _load_prompt_template() -> Template:
+    """加载 prompt 模板文件。"""
+    template_file = PROMPTS_DIR / "summarize_article.txt"
+    return Template(template_file.read_text(encoding="utf-8"))
+
+
 def _build_prompt(
     title: str,
     account_name: str,
@@ -216,6 +225,7 @@ def _build_prompt(
     config: dict[str, Any],
     existing_articles: list[str],
     existing_concepts: list[str],
+    images: list[str] | None = None,
 ) -> str:
     """构建发送给 DeepSeek 的 prompt。"""
     body_style = load_skill("article-body")
@@ -225,77 +235,30 @@ def _build_prompt(
     articles_str = "、".join(existing_articles[:100]) if existing_articles else "（暂无）"
     concepts_str = "、".join(existing_concepts[:100]) if existing_concepts else "（暂无）"
 
-    return f"""你是一位深度技术分析文章的写手。请分析以下微信公众号文章，按照指定风格生成结构化笔记。
+    images_section = ""
+    if images:
+        images_list = "\n".join(f"- {url}" for url in images[:10])
+        images_section = f"""
+## 原文图片（必须在笔记中引用）
 
-文章标题：{title}
-来源公众号：{account_name}
+以下是原文中的图片 URL。**你必须在 body_sections 的 content 中用 `![描述](URL)` 引用至少 2-3 张图片**（架构图、流程图、关键示意图优先）：
+{images_list}
 
-文章内容：
-{content[:MAX_PROMPT_CONTENT]}
+规则：直接使用上方 URL，不要编造或修改。图片放在描述相关架构或流程的文字之后。
+"""
 
----
-
-## 写作风格要求（文章主体内容）
-
-{body_style}
-
-## 文章分类规范
-
-{classification_style}
-
-## 笔记元数据规范
-
-{metadata_style}
-
----
-
-## 知识库中已有的内容（用于相关主题关联）
-
-已有文章：{articles_str}
-
-已有概念：{concepts_str}
-
-**重要**：`related_topics` 字段必须从上述已有内容中选取与当前文章相关的，不要凭空创建。无匹配时返回空数组。
-
----
-
-请严格按照以上风格和规范，输出以下 JSON（不要输出其他内容）：
-{{
-  "category": "按照分类规范选择或创建",
-  "sub_topic": "按照分类规范提取，无明显子主题时留空字符串",
-  "summary": "150-200字的结构化摘要，包含：分析对象、核心论点、拆解内容、最终价值",
-  "key_points": [
-    "**关键词**：核心观点1（用判断句式，加粗关键词）",
-    "**关键词**：核心观点2",
-    "**关键词**：核心观点3"
-  ],
-  "concepts": [
-    {{"name": "概念名称", "description": "用'X是Y'句式的一句话定义"}},
-    {{"name": "概念名称2", "description": "一句话定义"}}
-  ],
-  "tags": ["标签1", "标签2", "标签3"],
-  "related_topics": ["从已有文章或概念中选取，无匹配则空数组"],
-  "body_sections": [
-    {{
-      "heading": "一、核心概念与背景",
-      "content": "该章节的结构化内容，使用markdown格式，包含表格、重点标记、列表等。至少200字。"
-    }},
-    {{
-      "heading": "二、核心机制拆解",
-      "content": "该章节的结构化内容..."
-    }},
-    {{
-      "heading": "三、核心认知与洞察",
-      "content": "提炼3-7条核心原则"
-    }}
-  ]
-}}
-
-注意：
-- body_sections 是文章主体的结构化拆解，不是简单罗列，而是深度分析
-- 每个 section 的 content 使用 markdown 格式，善用表格、加粗、列表
-- 总共 4-6 个 section，覆盖文章核心内容
-- 每个 section 至少 200 字，主体拆解章节至少 300 字"""
+    template = _load_prompt_template()
+    return template.substitute(
+        title=title,
+        account_name=account_name,
+        content=content[:MAX_PROMPT_CONTENT],
+        body_style=body_style,
+        classification_style=classification_style,
+        metadata_style=metadata_style,
+        images_section=images_section,
+        articles_str=articles_str,
+        concepts_str=concepts_str,
+    )
 
 
 def _parse_api_response(text: str) -> dict[str, Any] | None:
@@ -370,6 +333,7 @@ def summarize_article(
     account_name: str,
     existing_articles: list[str] | None = None,
     existing_concepts: list[str] | None = None,
+    images: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """调用 DeepSeek API 总结文章，返回结构化 JSON。"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -386,6 +350,7 @@ def summarize_article(
         config,
         existing_articles or [],
         existing_concepts or [],
+        images=images,
     )
 
     resp = requests.post(
@@ -684,10 +649,27 @@ def _extract_article_info(article: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _extract_content(article: dict[str, Any]) -> str:
-    """提取并清理文章正文内容。"""
-    content = article.get("content", "")
-    content = re.sub(r"<[^>]+>", " ", content)
+def _extract_images(content: str) -> list[str]:
+    """从 HTML 内容中提取图片 URL 列表（优先 data-src，回退 src）。"""
+    urls: list[str] = []
+    for match in re.finditer(r"<img\s[^>]+>", content):
+        tag = match.group(0)
+        # 优先取 data-src（微信懒加载），没有则取 src
+        url_match = re.search(r'data-src=["\']([^"\']+)["\']', tag)
+        if not url_match:
+            url_match = re.search(r'src=["\']([^"\']+)["\']', tag)
+        if url_match:
+            url = url_match.group(1).replace("&amp;", "&")
+            if url.startswith("http"):
+                urls.append(url)
+    return urls
+
+
+def _extract_content(article: dict[str, Any]) -> tuple[str, list[str]]:
+    """提取并清理文章正文内容，返回 (纯文本, 图片URL列表)。"""
+    raw_content = article.get("content", "")
+    images = _extract_images(raw_content)
+    content = re.sub(r"<[^>]+>", " ", raw_content)
     content = re.sub(r"\s+", " ", content).strip()
 
     if len(content) < 50:
@@ -696,7 +678,7 @@ def _extract_content(article: dict[str, Any]) -> str:
             print("  Feed 无内容，从 URL 抓取...")
             content = fetch_article_content_from_url(url)
 
-    return content
+    return content, images
 
 
 def _process_single_article(
@@ -714,7 +696,7 @@ def _process_single_article(
 
     print(f"\n处理: [{info['account_name']}] {info['title']}")
 
-    content = _extract_content(article)
+    content, images = _extract_content(article)
     if len(content) < 50:
         print("  跳过：内容过短或为空")
         processed[article_id] = {
@@ -733,6 +715,7 @@ def _process_single_article(
             info["account_name"],
             existing_articles,
             existing_concepts,
+            images=images,
         )
     except (requests.RequestException, ValueError) as e:
         print(f"  DeepSeek API 调用失败: {e}")

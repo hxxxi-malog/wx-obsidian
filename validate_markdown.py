@@ -43,6 +43,9 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
     link_issues = _check_wikilinks(lines)
     issues.extend(link_issues)
 
+    lines, compress_issues = _fix_compressed_tables(lines)
+    issues.extend(compress_issues)
+
     lines, table_issues = _check_tables(lines)
     issues.extend(table_issues)
 
@@ -149,9 +152,56 @@ def _check_wikilinks(lines: list[str]) -> list[str]:
     return issues
 
 
+def _fix_compressed_tables(lines: list[str]) -> tuple[list[str], list[str]]:
+    """修复被压缩到单行的表格（LLM JSON 响应中换行符被转义）。
+
+    检测模式：一行中包含 '| --- |' 分隔符，说明多行表格被挤到了一行。
+    """
+    issues: list[str] = []
+    result: list[str] = []
+
+    for i, line in enumerate(lines):
+        # 检测压缩表格：一行中有分隔符 '| --- |'
+        sep_match = re.search(r"(\|[\s]*---[\s]*(?:\|[\s]*---[\s]*)*\|)", line)
+        if not sep_match:
+            result.append(line)
+            continue
+
+        sep = sep_match.group(1)
+        before = line[: sep_match.start()].strip()
+        after = line[sep_match.end() :].strip()
+
+        # 确保 header 行以 | 结尾
+        if before and not before.endswith("|"):
+            before += " |"
+
+        # 按行边界分割 data rows：| 后跟空格再跟非 - 内容
+        data_rows = [r.strip() for r in re.split(r"(?<=\|)\s+(?=\|[^-])", after) if r.strip()]
+
+        if before:
+            result.append(before)
+        result.append(sep)
+        result.extend(data_rows)
+        issues.append(f"第 {i + 1} 行: 压缩表格已拆分为 {2 + len(data_rows)} 行")
+
+    return result, issues
+
+
 def _check_tables(lines: list[str]) -> tuple[list[str], list[str]]:
     """检查并修复表格格式问题。"""
     issues: list[str] = []
+
+    # 修复表格前缺少空行的问题（Obsidian 要求表格前有空行才能正确渲染）
+    insertions: list[int] = []
+    for i, line in enumerate(lines):
+        if not line.strip().startswith("|"):
+            continue
+        # 当前行是表格行，检查前一行是否非空且非表格行
+        if i > 0 and lines[i - 1].strip() and not lines[i - 1].strip().startswith("|"):
+            insertions.append(i)
+    for offset, idx in enumerate(insertions):
+        lines.insert(idx + offset, "")
+        issues.append(f"第 {idx + 1} 行: 表格前缺少空行，已自动插入")
 
     for i, line in enumerate(lines):
         if "|" not in line or not line.strip().startswith("|"):
