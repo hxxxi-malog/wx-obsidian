@@ -24,7 +24,7 @@ select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 ignore = ["E501"]  # f-string prompt 模板无法拆行
 
 [tool.ruff.lint.isort]
-known-first-party = ["validate_markdown"]
+known-first-party = ["validate_markdown", "wx_obsidian"]
 
 [tool.mypy]
 python_version = "3.9"

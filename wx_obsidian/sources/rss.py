@@ -9,7 +9,6 @@ from typing import Any
 import requests
 
 from wx_obsidian.config import MAX_ARTICLE_LENGTH
-from wx_obsidian.processing.images import extract_images_with_context
 
 # 预编译正则
 RE_BODY_HTML = re.compile(r'id="js_content"[^>]*>(.*?)</div>\s*<script', re.DOTALL)
@@ -75,31 +74,22 @@ def _fetch_html(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def fetch_article_content(url: str) -> str:
-    """从微信文章 URL 抓取正文纯文本。"""
-    try:
-        body_html = _fetch_html(url)
-        parser = HTMLTextExtractor()
-        parser.feed(body_html)
-        return parser.get_text()[:MAX_ARTICLE_LENGTH]
-    except requests.RequestException as e:
-        print(f"  抓取正文失败: {e}")
-        return ""
-
-
 def fetch_article_content_and_images(
     url: str,
-) -> tuple[str, list[dict[str, str]]]:
-    """从微信文章 URL 抓取正文纯文本和带上下文的图片列表。"""
+) -> tuple[str, str]:
+    """从微信文章 URL 抓取正文纯文本和 body HTML。
+
+    Returns:
+        (纯文本, body_html)。调用方负责从 body_html 中提取图片。
+    """
     try:
         body_html = _fetch_html(url)
-        images = extract_images_with_context(body_html)
         parser = HTMLTextExtractor()
         parser.feed(body_html)
-        return parser.get_text()[:MAX_ARTICLE_LENGTH], images
+        return parser.get_text()[:MAX_ARTICLE_LENGTH], body_html
     except requests.RequestException as e:
         print(f"  抓取正文失败: {e}")
-        return "", []
+        return "", ""
 
 
 def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:

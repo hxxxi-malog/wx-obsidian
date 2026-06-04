@@ -12,18 +12,19 @@ from typing import Any
 
 import requests
 
-from wx_obsidian.config import load_config, load_processed, save_processed, scan_existing_content
-from wx_obsidian.sources.rss import fetch_article_content_and_images, fetch_articles
-from wx_obsidian.processing.images import extract_images_with_context, insert_images_into_markdown
-from wx_obsidian.processing.llm import summarize_article
-from wx_obsidian.processing.markdown import generate_markdown, remove_non_cdn_images
+from wx_obsidian.config import load_config, load_processed, save_processed
 from wx_obsidian.output.validator import validate_and_fix
 from wx_obsidian.output.vault import (
     ensure_category,
     ensure_concept_page,
     maybe_create_subcategory,
+    scan_existing_content,
     update_moc,
 )
+from wx_obsidian.processing.images import extract_images_with_context, insert_images_into_markdown
+from wx_obsidian.processing.llm import summarize_article
+from wx_obsidian.processing.markdown import generate_markdown, remove_non_cdn_images
+from wx_obsidian.sources.rss import fetch_article_content_and_images, fetch_articles
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +63,9 @@ def _extract_content(
         url = article.get("url", "")
         if url:
             print("  Feed 无内容，从 URL 抓取...")
-            content, images = fetch_article_content_and_images(url)
+            content, body_html = fetch_article_content_and_images(url)
+            if body_html:
+                images = extract_images_with_context(body_html)
 
     return content, images
 
@@ -75,8 +78,12 @@ def _process_single_article(
     articles_dir: Path,
     existing_articles: list[str],
     existing_concepts: list[str],
-) -> None:
-    """处理单篇文章：抓取 → 总结 → 生成 → 写入。"""
+) -> tuple[str, list[str]]:
+    """处理单篇文章：抓取 → 总结 → 生成 → 写入。
+
+    Returns:
+        (safe_title, new_concept_names) — 用于调用方增量更新 existing 列表。
+    """
     info = _extract_article_info(article)
     article_id = info["id"]
 
@@ -90,7 +97,7 @@ def _process_single_article(
             "status": "skipped",
             "reason": "no_content",
         }
-        return
+        return ("", [])
 
     # DeepSeek 总结
     try:
@@ -108,7 +115,7 @@ def _process_single_article(
             "status": "error",
             "reason": str(e),
         }
-        return
+        return ("", [])
 
     if not summary_data:
         print("  总结解析失败")
@@ -117,7 +124,7 @@ def _process_single_article(
             "status": "error",
             "reason": "parse_failed",
         }
-        return
+        return ("", [])
 
     # 写入文件（过滤路径安全字符）
     category = re.sub(r'[<>:"/\\|?*]', "_", summary_data.get("category", "其他"))
@@ -135,6 +142,7 @@ def _process_single_article(
         info["date"],
         info["url"],
         summary_data,
+        valid_topics=existing_articles + existing_concepts,
     )
 
     md_content = remove_non_cdn_images(md_content)
@@ -152,8 +160,10 @@ def _process_single_article(
     file_path.write_text(md_content, encoding="utf-8")
 
     # 更新关联数据
+    new_concept_names: list[str] = []
     for concept in summary_data.get("concepts", []):
-        safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept["name"])
+        safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept.get("name", "未知概念"))
+        new_concept_names.append(safe_name)
         ensure_concept_page(
             vault_path, safe_name, concept.get("description", ""), articles_dir
         )
@@ -171,6 +181,7 @@ def _process_single_article(
 
     maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
     print(f"  完成 → {category}/{safe_title}.md")
+    return (safe_title, new_concept_names)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +227,7 @@ def main() -> None:
     )
 
     for article in new_articles:
-        _process_single_article(
+        new_title, new_concepts = _process_single_article(
             article,
             config,
             processed,
@@ -225,6 +236,9 @@ def main() -> None:
             existing_articles_list,
             existing_concepts_list,
         )
+        if new_title:
+            existing_articles_list.append(new_title)
+        existing_concepts_list.extend(new_concepts)
         save_processed(processed)
         time.sleep(1)
     done_count = sum(1 for v in processed.values() if v.get("status") == "done")

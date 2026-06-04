@@ -25,6 +25,7 @@ def ensure_concept_page(
     concept_file = concept_dir / f"{concept_name}.md"
 
     if not concept_file.exists():
+        concept_dir.mkdir(parents=True, exist_ok=True)
         content = f"""---
 tags: [概念]
 ---
@@ -229,3 +230,33 @@ def _update_parent_moc(
     if f"[[{sub_topic}]]" not in content:
         content = content.rstrip() + f"\n- 📁 [[{sub_topic}]]"
         parent_moc.write_text(content, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 知识库扫描
+# ---------------------------------------------------------------------------
+
+
+def scan_existing_content(
+    vault_path: Path, articles_dir_name: str
+) -> tuple[list[str], list[str]]:
+    """扫描知识库中已有的文章和概念，用于相关主题关联。"""
+    articles_base = vault_path / articles_dir_name
+    existing_articles: list[str] = []
+    existing_concepts: list[str] = []
+
+    if articles_base.exists():
+        for category_dir in articles_base.iterdir():
+            if not category_dir.is_dir() or category_dir.name.startswith("."):
+                continue
+            for md_file in category_dir.glob("*.md"):
+                if md_file.name != "_MOC.md":
+                    existing_articles.append(md_file.stem)
+
+    concept_dir = articles_base / "概念"
+    if concept_dir.exists():
+        for md_file in concept_dir.glob("*.md"):
+            if md_file.name != "_MOC.md":
+                existing_concepts.append(md_file.stem)
+
+    return existing_articles, existing_concepts

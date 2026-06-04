@@ -285,6 +285,9 @@ def main() -> None:
         sys.exit(1)
 
     if sys.argv[1] == "--dir":
+        if len(sys.argv) < 3:
+            print("错误: --dir 需要指定目录路径")
+            sys.exit(1)
         _scan_directory(Path(sys.argv[2]))
     else:
         for filepath in sys.argv[1:]:

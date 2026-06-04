@@ -21,8 +21,14 @@ def generate_markdown(
     date: str,
     url: str,
     summary_data: dict[str, Any],
+    valid_topics: list[str] | None = None,
 ) -> str:
-    """生成 Obsidian Markdown 文件内容。"""
+    """生成 Obsidian Markdown 文件内容。
+
+    Args:
+        valid_topics: 已有的文章/概念标题列表，用于过滤 related_topics。
+            若提供，不在列表中的 related_topic 将被丢弃，防止死链接。
+    """
     category = summary_data.get("category", "其他")
     sub_topic = summary_data.get("sub_topic", "")
     summary = summary_data.get("summary", "")
@@ -32,13 +38,17 @@ def generate_markdown(
     related: list[str] = summary_data.get("related_topics", [])
     body_sections: list[dict[str, str]] = summary_data.get("body_sections", [])
 
+    if valid_topics is not None:
+        valid_set = set(valid_topics)
+        related = [r for r in related if r in valid_set]
+
     frontmatter = _build_frontmatter(
         title, account_name, author, date, url, category, sub_topic, tags
     )
 
     points_md = "\n".join(f"- {p}" for p in key_points)
     concepts_md = "\n".join(
-        f"- [[{c['name']}]]：{c.get('description', '')}" for c in concepts
+        f"- [[{c.get('name', '未知概念')}]]：{c.get('description', '')}" for c in concepts
     )
     related_md = "\n".join(f"- [[{r}]]" for r in related)
 

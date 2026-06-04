@@ -17,7 +17,6 @@ categories:
 - 评测
 - 实践
 - 其他
-- Agenta架构
 deepseek:
   model: deepseek-chat
 obsidian:

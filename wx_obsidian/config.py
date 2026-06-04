@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -66,10 +67,18 @@ def load_processed() -> dict[str, Any]:
 
 
 def save_processed(processed: dict[str, Any]) -> None:
-    """保存已处理文章记录。"""
-    PROCESSED_FILE.write_text(
-        json.dumps(processed, ensure_ascii=False, indent=2), encoding="utf-8"
+    """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。"""
+    data = json.dumps(processed, ensure_ascii=False, indent=2)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=PROCESSED_FILE.parent, suffix=".tmp", prefix=".processed_"
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp_path, PROCESSED_FILE)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -87,32 +96,3 @@ def load_skill(name: str) -> str:
     parts = text.split("---", 2)
     return parts[2].strip() if len(parts) >= 3 else ""
 
-
-# ---------------------------------------------------------------------------
-# 知识库扫描
-# ---------------------------------------------------------------------------
-
-
-def scan_existing_content(
-    vault_path: Path, articles_dir_name: str
-) -> tuple[list[str], list[str]]:
-    """扫描知识库中已有的文章和概念，用于相关主题关联。"""
-    articles_base = vault_path / articles_dir_name
-    existing_articles: list[str] = []
-    existing_concepts: list[str] = []
-
-    if articles_base.exists():
-        for category_dir in articles_base.iterdir():
-            if not category_dir.is_dir() or category_dir.name.startswith("."):
-                continue
-            for md_file in category_dir.glob("*.md"):
-                if md_file.name != "_MOC.md":
-                    existing_articles.append(md_file.stem)
-
-    concept_dir = articles_base / "概念"
-    if concept_dir.exists():
-        for md_file in concept_dir.glob("*.md"):
-            if md_file.name != "_MOC.md":
-                existing_concepts.append(md_file.stem)
-
-    return existing_articles, existing_concepts
