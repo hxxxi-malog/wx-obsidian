@@ -27,3 +27,7 @@ tests/
 
 # macOS
 .DS_Store
+
+# 本地开发文档与 Claude Code 配置
+docs/
+.claude/
