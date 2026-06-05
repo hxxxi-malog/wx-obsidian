@@ -26,9 +26,15 @@ _AD_URL_PATTERNS = re.compile(
 
 _VISION_PROMPT = (
     "文章上下文：{before}...{after}\n\n"
-    "请分析这张图片，返回 JSON 格式：\n"
-    '{{"description": "图片内容描述", "is_content": true/false, '
+    "请详细分析这张图片，返回 JSON 格式：\n"
+    '{{"description": "详细描述", "is_content": true/false, '
     '"type": "diagram|photo|infographic|ad|icon|qrcode"}}\n\n'
+    "description 要求（这是后续语言模型理解图片的唯一信息来源，要尽可能详细）：\n"
+    "- 第一层：图片类型和整体内容（如'一张三层架构图'、'一个权限决策流程图'）\n"
+    "- 第二层：图中的关键元素（如有哪些模块、节点、箭头指向、数据流向）\n"
+    "- 第三层：它在文章中说明的问题（如'展示Harness/Workspace/Context三层的依赖关系'、"
+    "'说明权限系统从检查到允许/拒绝/用户确认的三态决策逻辑'）\n"
+    "- 不要写'这张图展示了'，直接写内容\n\n"
     "判断标准：\n"
     "- is_content=true：图片是文章正文的有机组成部分，帮助读者理解内容"
     "（如流程图、数据图、示意图、截图）\n"

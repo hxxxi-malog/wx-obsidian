@@ -26,16 +26,37 @@ def load_prompt_template() -> Template:
     return Template(template_file.read_text(encoding="utf-8"))
 
 
-def _build_images_context(image_descriptions: list[ImageDescription] | None) -> str:
-    """从图片描述列表构建注入 prompt 的上下文段落。"""
+def _build_images_context(
+    image_descriptions: list[ImageDescription] | None,
+    images_with_context: list[dict[str, str]] | None = None,
+) -> str:
+    """从图片描述列表构建注入 prompt 的上下文段落。
+
+    Args:
+        image_descriptions: Vision API 返回的图片描述列表。
+        images_with_context: extract_images_with_context() 的原始结果，
+            包含 url/before/after，用于告诉 LLM 每张图在文章中的位置。
+    """
     if not image_descriptions:
         return ""
     content_images = [d for d in image_descriptions if d.is_content and d.status == "ok"]
     if not content_images:
         return ""
-    lines = ["文章中的图片描述："]
-    for i, img in enumerate(content_images, 1):
-        lines.append(f"[图片{i}] URL: {img.url}, 描述: {img.description}")
+    # 构建 url -> before/after 的映射
+    context_map: dict[str, dict[str, str]] = {}
+    if images_with_context:
+        for img in images_with_context:
+            context_map[img.get("url", "")] = img
+
+    lines = ["文章中的图片（按文章出现顺序排列）："]
+    for i, desc in enumerate(content_images, 1):
+        ctx = context_map.get(desc.url, {})
+        before = ctx.get("before", "")[-60:]
+        after = ctx.get("after", "")[:60]
+        lines.append(f"[图片{i}] URL: {desc.url}")
+        lines.append(f"  内容: {desc.description}")
+        if before or after:
+            lines.append(f"  位置: ...{before} [图片] {after}...")
     return "\n".join(lines)
 
 
@@ -45,17 +66,14 @@ def build_prompt(
     content: str,
     existing_articles: list[str],
     existing_concepts: list[str],
-    image_descriptions: list[ImageDescription] | None = None,
 ) -> str:
-    """构建发送给 DeepSeek 的 prompt。"""
+    """构建 Pass 1 的 prompt（纯文本，不包含图片）。"""
     body_style = load_skill("article-body")
     metadata_style = load_skill("note-metadata")
     classification_style = load_skill("classification")
 
     articles_str = "、".join(existing_articles[:100]) if existing_articles else "（暂无）"
     concepts_str = "、".join(existing_concepts[:100]) if existing_concepts else "（暂无）"
-
-    images_context = _build_images_context(image_descriptions)
 
     template = load_prompt_template()
     return template.substitute(
@@ -67,6 +85,31 @@ def build_prompt(
         metadata_style=metadata_style,
         articles_str=articles_str,
         concepts_str=concepts_str,
+        images_context="",
+    )
+
+
+@functools.cache
+def load_refine_prompt_template() -> Template:
+    """加载 Pass 2 的 prompt 模板文件。"""
+    template_file = PROMPTS_DIR / "refine_with_images.txt"
+    return Template(template_file.read_text(encoding="utf-8"))
+
+
+def build_refine_prompt(
+    article_content: str,
+    body_sections: list[dict[str, Any]],
+    image_descriptions: list[ImageDescription],
+    images_with_context: list[dict[str, str]] | None = None,
+) -> str:
+    """构建 Pass 2 的 prompt（结合原文和图片描述修订正文）。"""
+    images_context = _build_images_context(image_descriptions, images_with_context)
+    body_json = json.dumps(body_sections, ensure_ascii=False, indent=2)
+
+    template = load_refine_prompt_template()
+    return template.substitute(
+        article_content=article_content[:MAX_PROMPT_CONTENT],
+        body_sections=body_json,
         images_context=images_context,
     )
 
@@ -147,19 +190,17 @@ def _fix_json_quotes(text: str) -> str:
 
 
 def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
-    """验证并清理 LLM 返回的 images 字段。"""
+    """验证并清理 LLM 返回的 images 字段（Pass 2 输出）。"""
     valid: list[dict[str, Any]] = []
     for item in images:
         if not isinstance(item, dict):
             continue
         url = item.get("url", "")
-        placement = item.get("placement", "")
-        if not url or not placement:
+        if not url:
             continue
         valid.append(
             {
                 "url": str(url),
-                "placement": str(placement),
                 "purpose": str(item.get("purpose", "")),
                 "valuable": bool(item.get("valuable", True)),
             }
@@ -167,30 +208,14 @@ def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
     return valid
 
 
-def summarize_article(
-    title: str,
-    content: str,
-    account_name: str,
-    image_descriptions: list[ImageDescription] | None = None,
-    existing_articles: list[str] | None = None,
-    existing_concepts: list[str] | None = None,
-) -> dict[str, Any] | None:
-    """调用 DeepSeek API 总结文章，返回结构化 JSON。"""
+def _call_llm(prompt: str) -> dict[str, Any] | None:
+    """调用 LLM API 并解析 JSON 响应。"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     model = os.environ.get("MODEL_NAME", "deepseek-v4-pro")
 
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY 未设置")
-
-    prompt = build_prompt(
-        title,
-        account_name,
-        content,
-        existing_articles or [],
-        existing_concepts or [],
-        image_descriptions,
-    )
 
     resp = requests.post(
         f"{base_url}/chat/completions",
@@ -212,7 +237,36 @@ def summarize_article(
     except (KeyError, IndexError, TypeError) as e:
         print(f"  API 响应格式异常: {e}")
         return None
-    result = _parse_api_response(text)
+    return _parse_api_response(text)
+
+
+def summarize_article(
+    title: str,
+    content: str,
+    account_name: str,
+    existing_articles: list[str] | None = None,
+    existing_concepts: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Pass 1：纯文本生成结构化笔记（不看图片）。"""
+    prompt = build_prompt(
+        title,
+        account_name,
+        content,
+        existing_articles or [],
+        existing_concepts or [],
+    )
+    return _call_llm(prompt)
+
+
+def refine_with_images(
+    article_content: str,
+    body_sections: list[dict[str, Any]],
+    image_descriptions: list[ImageDescription],
+    images_with_context: list[dict[str, str]] | None = None,
+) -> dict[str, Any] | None:
+    """Pass 2：结合原文和图片描述修订正文，返回含 [IMG:N] 占位符的 body_sections + images 数组。"""
+    prompt = build_refine_prompt(article_content, body_sections, image_descriptions, images_with_context)
+    result = _call_llm(prompt)
     if result and "images" in result:
         result["images"] = _validate_images_field(result["images"])
     return result
