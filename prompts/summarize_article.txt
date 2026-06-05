@@ -30,6 +30,8 @@ $metadata_style
 
 **重要**：`related_topics` 字段必须从上述已有内容中选取与当前文章相关的，不要凭空创建。无匹配时返回空数组。
 
+$images_context
+
 ---
 
 请严格按照以上风格和规范，输出以下 JSON（不要输出其他内容）：
@@ -48,6 +50,14 @@ $metadata_style
   ],
   "tags": ["标签1", "标签2", "标签3"],
   "related_topics": ["从已有文章或概念中选取，无匹配则空数组"],
+  "images": [
+    {
+      "url": "图片URL（从图片描述中选取）",
+      "placement": "## 章节标题（必须是 body_sections 中的 heading）",
+      "purpose": "该图片在此处的作用和价值",
+      "valuable": true
+    }
+  ],
   "body_sections": [
     {
       "heading": "一、核心概念与背景",
@@ -69,3 +79,4 @@ $metadata_style
 - 每个 section 的 content 使用 markdown 格式，善用表格、加粗、列表
 - 总共 4-6 个 section，覆盖文章核心内容
 - 每个 section 至少 200 字，主体拆解章节至少 300 字
+- images 字段：从图片描述中选取有价值的图片，placement 必须是 body_sections 中某个 section 的完整 heading，valuable=false 的图片不会被插入笔记；如果文章无图片描述，images 返回空数组
