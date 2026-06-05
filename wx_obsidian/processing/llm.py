@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from wx_obsidian.config import MAX_PROMPT_CONTENT, PROMPTS_DIR, SCRIPT_DIR, load_skill
+from wx_obsidian.processing.models import ImageDescription
 
 # ---------------------------------------------------------------------------
 # Prompt 模板
@@ -25,12 +26,26 @@ def load_prompt_template() -> Template:
     return Template(template_file.read_text(encoding="utf-8"))
 
 
+def _build_images_context(image_descriptions: list[ImageDescription] | None) -> str:
+    """从图片描述列表构建注入 prompt 的上下文段落。"""
+    if not image_descriptions:
+        return ""
+    content_images = [d for d in image_descriptions if d.is_content and d.status == "ok"]
+    if not content_images:
+        return ""
+    lines = ["文章中的图片描述："]
+    for i, img in enumerate(content_images, 1):
+        lines.append(f"[图片{i}] URL: {img.url}, 描述: {img.description}")
+    return "\n".join(lines)
+
+
 def build_prompt(
     title: str,
     account_name: str,
     content: str,
     existing_articles: list[str],
     existing_concepts: list[str],
+    image_descriptions: list[ImageDescription] | None = None,
 ) -> str:
     """构建发送给 DeepSeek 的 prompt。"""
     body_style = load_skill("article-body")
@@ -39,6 +54,8 @@ def build_prompt(
 
     articles_str = "、".join(existing_articles[:100]) if existing_articles else "（暂无）"
     concepts_str = "、".join(existing_concepts[:100]) if existing_concepts else "（暂无）"
+
+    images_context = _build_images_context(image_descriptions)
 
     template = load_prompt_template()
     return template.substitute(
@@ -50,6 +67,7 @@ def build_prompt(
         metadata_style=metadata_style,
         articles_str=articles_str,
         concepts_str=concepts_str,
+        images_context=images_context,
     )
 
 
@@ -128,10 +146,32 @@ def _fix_json_quotes(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
+    """验证并清理 LLM 返回的 images 字段。"""
+    valid: list[dict[str, Any]] = []
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url", "")
+        placement = item.get("placement", "")
+        if not url or not placement:
+            continue
+        valid.append(
+            {
+                "url": str(url),
+                "placement": str(placement),
+                "purpose": str(item.get("purpose", "")),
+                "valuable": bool(item.get("valuable", True)),
+            }
+        )
+    return valid
+
+
 def summarize_article(
     title: str,
     content: str,
     account_name: str,
+    image_descriptions: list[ImageDescription] | None = None,
     existing_articles: list[str] | None = None,
     existing_concepts: list[str] | None = None,
 ) -> dict[str, Any] | None:
@@ -149,6 +189,7 @@ def summarize_article(
         content,
         existing_articles or [],
         existing_concepts or [],
+        image_descriptions,
     )
 
     resp = requests.post(
@@ -171,4 +212,7 @@ def summarize_article(
     except (KeyError, IndexError, TypeError) as e:
         print(f"  API 响应格式异常: {e}")
         return None
-    return _parse_api_response(text)
+    result = _parse_api_response(text)
+    if result and "images" in result:
+        result["images"] = _validate_images_field(result["images"])
+    return result

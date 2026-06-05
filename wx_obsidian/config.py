@@ -23,6 +23,12 @@ MAX_ARTICLE_LENGTH = 15000
 MAX_PROMPT_CONTENT = 10000
 SUB_TOPIC_THRESHOLD = 3
 
+VISION_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+VISION_DEFAULT_MODEL = "qwen-vl-plus"
+VISION_DEFAULT_CONCURRENCY = 10
+VISION_DEFAULT_TIMEOUT = 120
+VISION_DEFAULT_MAX_RETRIES = 2
+
 # ---------------------------------------------------------------------------
 # .env 加载（不覆盖已有的环境变量）
 # ---------------------------------------------------------------------------
@@ -95,4 +101,26 @@ def load_skill(name: str) -> str:
     text = skill_file.read_text(encoding="utf-8")
     parts = text.split("---", 2)
     return parts[2].strip() if len(parts) >= 3 else ""
+
+
+# ---------------------------------------------------------------------------
+# Vision 配置
+# ---------------------------------------------------------------------------
+
+
+def load_vision_config() -> dict[str, Any] | None:
+    """加载多模态 Vision API 配置。VISION_API_KEY 未设置时返回 None。"""
+    api_key = os.environ.get("VISION_API_KEY", "")
+    if not api_key:
+        return None
+    return {
+        "api_key": api_key,
+        "base_url": os.environ.get("VISION_BASE_URL", VISION_DEFAULT_BASE_URL),
+        "model": os.environ.get("VISION_MODEL_NAME", VISION_DEFAULT_MODEL),
+        "max_concurrency": int(
+            os.environ.get("MAX_VISION_CONCURRENCY", VISION_DEFAULT_CONCURRENCY)
+        ),
+        "timeout": int(os.environ.get("VISION_TIMEOUT", VISION_DEFAULT_TIMEOUT)),
+        "max_retries": int(os.environ.get("VISION_MAX_RETRIES", VISION_DEFAULT_MAX_RETRIES)),
+    }
 
