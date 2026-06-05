@@ -108,7 +108,7 @@ vim .env
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 必填 |
-| `DEEPSEEK_BASE_URL` | API 地址 | `https://api.deepseek.com/v1` |
+| `DEEPSEEK_BASE_URL` | API 地址 | `https://api.deepseek.com` |
 | `MODEL_NAME` | 模型名称 | `deepseek-chat` |
 
 **多模态 Vision API（可选，留空则禁用多模态，自动降级到纯文本）**
