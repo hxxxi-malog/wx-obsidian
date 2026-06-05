@@ -53,7 +53,8 @@ if _ENV_FILE.exists():
 def load_config() -> dict[str, Any]:
     """加载 config.yaml 配置。"""
     with open(SCRIPT_DIR / "config.yaml", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        result: dict[str, Any] = yaml.safe_load(f)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +66,8 @@ def load_processed() -> dict[str, Any]:
     """加载已处理文章记录。"""
     if PROCESSED_FILE.exists():
         try:
-            return json.loads(PROCESSED_FILE.read_text(encoding="utf-8"))
+            result: dict[str, Any] = json.loads(PROCESSED_FILE.read_text(encoding="utf-8"))
+            return result
         except json.JSONDecodeError as e:
             print(f"警告: processed.json 解析失败 ({e})，将重新开始")
             return {}
@@ -75,9 +77,7 @@ def load_processed() -> dict[str, Any]:
 def save_processed(processed: dict[str, Any]) -> None:
     """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。"""
     data = json.dumps(processed, ensure_ascii=False, indent=2)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=PROCESSED_FILE.parent, suffix=".tmp", prefix=".processed_"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=PROCESSED_FILE.parent, suffix=".tmp", prefix=".processed_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
@@ -85,6 +85,19 @@ def save_processed(processed: dict[str, Any]) -> None:
     except BaseException:
         os.unlink(tmp_path)
         raise
+
+
+def load_last_fetch_date() -> str | None:
+    """加载上次抓取日期。"""
+    processed = load_processed()
+    return processed.get("last_fetch_date")
+
+
+def save_last_fetch_date(date_str: str) -> None:
+    """保存本次抓取日期。"""
+    processed = load_processed()
+    processed["last_fetch_date"] = date_str
+    save_processed(processed)
 
 
 # ---------------------------------------------------------------------------
@@ -124,4 +137,3 @@ def load_vision_config() -> dict[str, Any] | None:
         "timeout": int(os.environ.get("VISION_TIMEOUT", VISION_DEFAULT_TIMEOUT)),
         "max_retries": int(os.environ.get("VISION_MAX_RETRIES", VISION_DEFAULT_MAX_RETRIES)),
     }
-

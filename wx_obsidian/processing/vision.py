@@ -197,8 +197,7 @@ def describe_images(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_url = {
-            executor.submit(_describe_single, img, vision_config): img["url"]
-            for img in filtered
+            executor.submit(_describe_single, img, vision_config): img["url"] for img in filtered
         }
         for future in as_completed(future_to_url):
             img_url = future_to_url[future]

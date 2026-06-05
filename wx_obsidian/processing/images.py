@@ -17,7 +17,9 @@ RE_HTML_TAG = re.compile(r"<[^>]+>")
 RE_WHITESPACE = re.compile(r"\s+")
 
 RE_SECTION_HEAD = re.compile(r"(?=^## )", re.MULTILINE)
-RE_BODY_HEADING = re.compile(r"^## (?:[一二三四五六七八九十]+[、.]|[一二三四五六七八九十]+ |[0-9]+[.、]|[0-9]+ )")
+RE_BODY_HEADING = re.compile(
+    r"^## (?:[一二三四五六七八九十]+[、.]|[一二三四五六七八九十]+ |[0-9]+[.、]|[0-9]+ )"
+)
 RE_CN_KEYWORD = re.compile(r"[一-鿿]{2,6}")
 RE_EN_KEYWORD = re.compile(r"[a-zA-Z]{3,}")
 

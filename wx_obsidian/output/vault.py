@@ -127,9 +127,7 @@ def _append_category_to_config(category: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def count_sub_topic_articles(
-    processed: dict[str, Any], category: str, sub_topic: str
-) -> int:
+def count_sub_topic_articles(processed: dict[str, Any], category: str, sub_topic: str) -> int:
     """统计同一分类下同一子主题的文章数量。"""
     return sum(
         1
@@ -161,18 +159,14 @@ def maybe_create_subcategory(
     if sub_dir.exists():
         return
 
-    print(
-        f"  子主题「{sub_topic}」已有 {count} 篇文章，创建子目录 {category}/{sub_topic}/"
-    )
+    print(f"  子主题「{sub_topic}」已有 {count} 篇文章，创建子目录 {category}/{sub_topic}/")
     sub_dir.mkdir(parents=True, exist_ok=True)
 
     moc_file = sub_dir / "_MOC.md"
     if not moc_file.exists():
         moc_file.write_text(f"# {sub_topic}\n\n", encoding="utf-8")
 
-    _migrate_articles_to_subdir(
-        processed, category, sub_topic, articles_dir, sub_dir, moc_file
-    )
+    _migrate_articles_to_subdir(processed, category, sub_topic, articles_dir, sub_dir, moc_file)
     _update_parent_moc(articles_dir, category, sub_topic)
 
 
@@ -213,14 +207,10 @@ def _migrate_articles_to_subdir(
         entry = f"- {record.get('processed_at', '')[:10]} [[{safe_title}]]"
         moc_content = moc_file.read_text(encoding="utf-8")
         if entry not in moc_content:
-            moc_file.write_text(
-                moc_content.rstrip() + f"\n{entry}", encoding="utf-8"
-            )
+            moc_file.write_text(moc_content.rstrip() + f"\n{entry}", encoding="utf-8")
 
 
-def _update_parent_moc(
-    articles_dir: Path, category: str, sub_topic: str
-) -> None:
+def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> None:
     """在父分类 MOC 中添加子目录链接。"""
     parent_moc = articles_dir / category / "_MOC.md"
     if not parent_moc.exists():
@@ -237,9 +227,7 @@ def _update_parent_moc(
 # ---------------------------------------------------------------------------
 
 
-def scan_existing_content(
-    vault_path: Path, articles_dir_name: str
-) -> tuple[list[str], list[str]]:
+def scan_existing_content(vault_path: Path, articles_dir_name: str) -> tuple[list[str], list[str]]:
     """扫描知识库中已有的文章和概念，用于相关主题关联。"""
     articles_base = vault_path / articles_dir_name
     existing_articles: list[str] = []
@@ -260,3 +248,44 @@ def scan_existing_content(
                 existing_concepts.append(md_file.stem)
 
     return existing_articles, existing_concepts
+
+
+# ---------------------------------------------------------------------------
+# 按日归档
+# ---------------------------------------------------------------------------
+
+
+def update_daily_archive(
+    vault_path: Path,
+    date_str: str,
+    title: str,
+    category: str,
+    summary: str,
+) -> None:
+    """更新按日归档文件。"""
+    # 解析日期：2026-06-05 -> 26/06/05
+    parts = date_str.split("-")
+    if len(parts) != 3:
+        return
+    yy, mm, dd = parts[0][2:], parts[1], parts[2]
+
+    # 归档文件路径
+    archive_dir = vault_path / "归档" / yy / mm
+    archive_file = archive_dir / f"{dd}.md"
+
+    # 构建归档条目
+    safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)[:100]
+    summary_short = summary[:100] + "..." if len(summary) > 100 else summary
+    entry = f"- [[{category}/{safe_title}|{safe_title}]] — {summary_short}"
+
+    # 读取或创建归档文件
+    if archive_file.exists():
+        content = archive_file.read_text(encoding="utf-8")
+        if entry in content:
+            return  # 已存在，跳过
+        content = content.rstrip() + f"\n{entry}"
+    else:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        content = f"# {date_str} 文章归档\n\n{entry}"
+
+    archive_file.write_text(content, encoding="utf-8")

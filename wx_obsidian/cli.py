@@ -7,19 +7,26 @@ import logging
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from wx_obsidian.config import load_config, load_processed, load_vision_config, save_processed
+from wx_obsidian.config import (
+    load_config,
+    load_processed,
+    load_vision_config,
+    save_last_fetch_date,
+    save_processed,
+)
 from wx_obsidian.output.validator import validate_and_fix
 from wx_obsidian.output.vault import (
     ensure_category,
     ensure_concept_page,
     maybe_create_subcategory,
     scan_existing_content,
+    update_daily_archive,
     update_moc,
 )
 from wx_obsidian.processing.images import extract_images_with_context, insert_images_into_markdown
@@ -282,7 +289,11 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
         article_id = ctx.processed.get("article_id", "unknown")
         ctx.processed["result"] = ("", [])
         ctx.processed["final"] = {
-            article_id: {"title": info.get("title", "未知"), "status": "error", "reason": "missing_data"},
+            article_id: {
+                "title": info.get("title", "未知"),
+                "status": "error",
+                "reason": "missing_data",
+            },
         }
         ctx.config["global_processed"].update(ctx.processed["final"])
         return ctx
@@ -312,13 +323,14 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
         for concept in summary_data.get("concepts", []):
             safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept.get("name", "未知概念"))
             new_concept_names.append(safe_name)
-            ensure_concept_page(
-                vault_path, safe_name, concept.get("description", ""), articles_dir
-            )
+            ensure_concept_page(vault_path, safe_name, concept.get("description", ""), articles_dir)
         update_moc(vault_path, category, safe_title, info["date"], articles_dir)
         maybe_create_subcategory(
-            vault_path, config,
-            ctx.config["global_processed"], category, sub_topic,
+            vault_path,
+            config,
+            ctx.config["global_processed"],
+            category,
+            sub_topic,
         )
     except OSError:
         logger.warning("MOC/概念页更新失败，文章已写入: %s", file_path, exc_info=True)
@@ -338,6 +350,11 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 
     global_processed = ctx.config["global_processed"]
     global_processed.update(ctx.processed["final"])
+
+    # 更新按日归档
+    summary = summary_data.get("summary", "")
+    update_daily_archive(vault_path, info["date"], info["title"], category, summary)
+
     print(f"  完成 → {category}/{safe_title}.md")
     return ctx
 
@@ -376,15 +393,18 @@ def _process_single_article(
         processed={},
     )
 
-    ctx = run_pipeline(ctx, [
-        _fetch_stage,
-        _vision_stage,
-        _llm_pass1_stage,
-        _llm_pass2_stage,
-        _markdown_stage,
-        _image_stage,
-        _write_stage,
-    ])
+    ctx = run_pipeline(
+        ctx,
+        [
+            _fetch_stage,
+            _vision_stage,
+            _llm_pass1_stage,
+            _llm_pass2_stage,
+            _markdown_stage,
+            _image_stage,
+            _write_stage,
+        ],
+    )
 
     safe_title, new_concepts = ctx.processed.get("result", ("", []))
     return safe_title, new_concepts
@@ -398,9 +418,7 @@ def _process_single_article(
 def _parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="公众号文章 → Obsidian 知识库处理器")
-    parser.add_argument(
-        "--limit", type=int, default=0, help="最多处理 N 篇文章（0=不限制）"
-    )
+    parser.add_argument("--limit", type=int, default=0, help="最多处理 N 篇文章（0=不限制）")
     return parser.parse_args()
 
 
@@ -421,8 +439,14 @@ def main() -> None:
         print("请确认 WeWe RSS 已启动 (http://localhost:4000) 并已登录微信读书")
         sys.exit(1)
 
+    # 增量抓取：只处理最近 7 天的文章
+    seven_days_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     new_articles = [
-        a for a in articles if a.get("id") and str(a["id"]) not in processed
+        a
+        for a in articles
+        if a.get("id")
+        and str(a["id"]) not in processed
+        and a.get("date_published", "")[:10] >= seven_days_ago
     ]
     if args.limit > 0:
         new_articles = new_articles[: args.limit]
@@ -432,6 +456,7 @@ def main() -> None:
         vault_path, config["obsidian"]["articles_dir"]
     )
 
+    latest_date = ""
     for article in new_articles:
         new_title, new_concepts = _process_single_article(
             article,
@@ -446,6 +471,20 @@ def main() -> None:
             existing_articles_list.append(new_title)
         existing_concepts_list.extend(new_concepts)
         save_processed(processed)
+
+        # 记录本次处理的最新文章日期
+        article_date = article.get("date_published", "")[:10]
+        if article_date and article_date > latest_date:
+            latest_date = article_date
+
         time.sleep(1)
-    done_count = sum(1 for v in processed.values() if v.get("status") == "done")
+
+    # 更新最后抓取日期
+    if latest_date:
+        save_last_fetch_date(latest_date)
+        print(f"已更新最后抓取日期: {latest_date}")
+
+    done_count = sum(
+        1 for v in processed.values() if isinstance(v, dict) and v.get("status") == "done"
+    )
     print(f"\n处理完成！共处理 {done_count} 篇文章")

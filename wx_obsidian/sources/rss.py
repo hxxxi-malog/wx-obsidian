@@ -51,9 +51,7 @@ class HTMLTextExtractor(HTMLParser):
 
     def get_text(self) -> str:
         """返回提取的纯文本。"""
-        return "\n".join(
-            line for line in "".join(self._text).splitlines() if line.strip()
-        )
+        return "\n".join(line for line in "".join(self._text).splitlines() if line.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +101,7 @@ def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
     for item in feed.get("items", []):
         author_info = item.get("author", {})
         author_name = (
-            author_info.get("name", "")
-            if isinstance(author_info, dict)
-            else str(author_info)
+            author_info.get("name", "") if isinstance(author_info, dict) else str(author_info)
         )
         all_articles.append(
             {

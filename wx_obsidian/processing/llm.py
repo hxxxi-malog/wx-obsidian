@@ -134,10 +134,12 @@ def _parse_api_response(text: str) -> dict[str, Any] | None:
 
     raw = json_match.group()
     try:
-        return json.loads(raw, strict=False)
+        result: dict[str, Any] = json.loads(raw, strict=False)
+        return result
     except json.JSONDecodeError:
         try:
-            return json.loads(_fix_json_quotes(raw), strict=False)
+            result = json.loads(_fix_json_quotes(raw), strict=False)
+            return result
         except json.JSONDecodeError as e:
             print(f"  JSON 解析失败: {e}")
             return None
@@ -270,7 +272,9 @@ def refine_with_images(
     images_with_context: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """Pass 2：结合原文和图片描述修订正文，返回含 [IMG:N] 占位符的 body_sections + images 数组。"""
-    prompt = build_refine_prompt(article_content, body_sections, image_descriptions, images_with_context)
+    prompt = build_refine_prompt(
+        article_content, body_sections, image_descriptions, images_with_context
+    )
     result = _call_llm(prompt)
     if result and "images" in result:
         result["images"] = _validate_images_field(result["images"])
