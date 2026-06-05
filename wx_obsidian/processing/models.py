@@ -1,4 +1,4 @@
-"""数据结构：Pipeline 上下文、图片描述、Vision API 异常。"""
+"""数据结构：Pipeline 上下文、图片描述。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,3 @@ class PipelineContext:
     md_content: str | None = None
     config: dict[str, Any] = field(default_factory=dict)
     processed: dict[str, Any] = field(default_factory=dict)
-
-
-class VisionAPIError(Exception):
-    """多模态 API 调用失败。"""
