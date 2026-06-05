@@ -83,14 +83,23 @@ def _extract_content(
 
 def _fetch_stage(ctx: PipelineContext) -> PipelineContext:
     """Stage 1: 提取文章信息和正文内容。"""
-    article = ctx.article
-    info = _extract_article_info(article)
-    ctx.processed["__info"] = info
-    ctx.processed["article_id"] = info["id"]
+    try:
+        article = ctx.article
+        info = _extract_article_info(article)
+        ctx.processed["__info"] = info
+        ctx.processed["article_id"] = info["id"]
 
-    print(f"\n处理: [{info['account_name']}] {info['title']}")
+        print(f"\n处理: [{info['account_name']}] {info['title']}")
 
-    content, images = _extract_content(article)
+        content, images = _extract_content(article)
+    except (KeyError, requests.RequestException, OSError) as e:
+        article_id = ctx.article.get("id", "unknown")
+        ctx.processed["article_id"] = str(article_id)
+        ctx.processed["__info"] = {"title": "未知", "account_name": "未知"}
+        ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
+        logger.warning("FetchStage 失败: %s", e, exc_info=True)
+        return ctx
+
     if len(content) < 50:
         print("  跳过：内容过短或为空")
         ctx.processed["__skip"] = {"status": "skipped", "reason": "no_content"}
@@ -177,42 +186,49 @@ def _llm_pass2_stage(ctx: PipelineContext) -> PipelineContext:
         return ctx
 
     # 用 Pass 2 的结果更新 body_sections 和 images
-    assert ctx.summary_data is not None
+    if ctx.summary_data is None:
+        return ctx
     if "body_sections" in pass2_result:
         ctx.summary_data["body_sections"] = pass2_result["body_sections"]
     if "images" in pass2_result:
         ctx.summary_data["images"] = pass2_result["images"]
-        valuable = [img for img in pass2_result["images"] if img.get("valuable", True)]
-        print(f"  图片决策: {len(valuable)} 张有价值, {len(pass2_result['images']) - len(valuable)} 张被过滤")
+        print(f"  图片决策: {len(pass2_result['images'])} 张有价值")
 
     return ctx
 
 
 def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 4: 生成 Markdown 并校验。"""
+    """Stage 5: 生成 Markdown 并校验。"""
     if ctx.processed.get("__skip"):
         return ctx
 
     info = ctx.processed["__info"]
     summary_data = ctx.summary_data
-    assert summary_data is not None
+    if summary_data is None:
+        ctx.processed["__skip"] = {"status": "error", "reason": "no_summary_data"}
+        return ctx
 
-    valid_topics = ctx.config["existing_articles"] + ctx.config["existing_concepts"]
+    try:
+        valid_topics = ctx.config["existing_articles"] + ctx.config["existing_concepts"]
 
-    md = generate_markdown(
-        info["title"],
-        info["account_name"],
-        info["author"],
-        info["date"],
-        info["url"],
-        summary_data,
-        valid_topics=valid_topics,
-    )
-    md = remove_non_cdn_images(md)
+        md = generate_markdown(
+            info["title"],
+            info["account_name"],
+            info["author"],
+            info["date"],
+            info["url"],
+            summary_data,
+            valid_topics=valid_topics,
+        )
+        md = remove_non_cdn_images(md)
 
-    md, format_issues = validate_and_fix(md)
-    if format_issues:
-        print(f"  格式校验: {len(format_issues)} 个问题已修复")
+        md, format_issues = validate_and_fix(md)
+        if format_issues:
+            print(f"  格式校验: {len(format_issues)} 个问题已修复")
+    except (ValueError, OSError) as e:
+        ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
+        logger.warning("MarkdownStage 失败: %s", e, exc_info=True)
+        return ctx
 
     ctx.md_content = md
     return ctx
@@ -228,8 +244,7 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
     llm_images = summary_data.get("images", []) if summary_data else []
 
     if llm_images:
-        valuable = [img for img in llm_images if img.get("valuable", True)]
-        for i, img in enumerate(valuable, 1):
+        for i, img in enumerate(llm_images, 1):
             url = img.get("url", "")
             purpose = img.get("purpose", "")
             if not url:
@@ -247,70 +262,8 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
-def _normalize_quotes(text: str) -> str:
-    """统一中英文引号为 ASCII 引号，用于 heading 模糊匹配。"""
-    for ch in ("\u201c", "\u201d", "\u201e", "\u201f", "\u300c", "\u300d", "\u300e", "\u300f"):
-        text = text.replace(ch, '"')
-    for ch in ("\u2018", "\u2019", "\u201a", "\u201b", "\u2039", "\u203a"):
-        text = text.replace(ch, "'")
-    return text
-
-
-def _strip_heading_prefix(line: str) -> str:
-    """去掉 markdown heading 的 # 前缀和多余空格。"""
-    return re.sub(r"^#{1,6}\s*", "", line.strip())
-
-
-def _insert_at_anchor(md: str, anchor: str, img_md: str) -> str | None:
-    """在 anchor 文本所在段落之后插入图片。
-
-    anchor 是 LLM 从正文中选取的一段原文片段（5-15字），
-    图片会插入在包含该片段的段落之后，实现"先文字后图片"的自然排版。
-    支持模糊匹配：精确匹配失败时，用关键词匹配找最佳行。
-    """
-    lines = md.split("\n")
-    normalized_anchor = _normalize_quotes(anchor.strip())
-
-    # 精确匹配
-    anchor_line = -1
-    for i, line in enumerate(lines):
-        if normalized_anchor in _normalize_quotes(line):
-            anchor_line = i
-            break
-
-    # 模糊匹配：提取关键词，找命中最多的行
-    if anchor_line < 0:
-        keywords = [w for w in re.split(r"[，。、；：！？\s]+", normalized_anchor) if len(w) >= 2]
-        if keywords:
-            best_score = 0
-            for i, line in enumerate(lines):
-                norm_line = _normalize_quotes(line)
-                score = sum(1 for kw in keywords if kw in norm_line)
-                if score > best_score:
-                    best_score = score
-                    anchor_line = i
-            if best_score < max(2, len(keywords) // 2):
-                anchor_line = -1
-
-    if anchor_line < 0:
-        logger.warning("ImageStage: 未找到锚点文本 '%s'，跳过图片插入", anchor)
-        return None
-
-    # 从 anchor 行往下，找到该段落的最后一行（遇到空行或 heading 停止）
-    insert_pos = anchor_line + 1
-    for j in range(anchor_line + 1, len(lines)):
-        stripped = lines[j].strip()
-        if not stripped or re.match(r"^#{1,6}\s", stripped):
-            insert_pos = j
-            break
-        insert_pos = j + 1
-
-    lines.insert(insert_pos, img_md)
-    return "\n".join(lines)
-
-
 def _write_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 6: 写入 vault + 更新 MOC + 概念页。"""
+    """Stage 7: 写入 vault + 更新 MOC + 概念页。"""
     if ctx.processed.get("__skip"):
         skip_info = ctx.processed["__skip"]
         article_id = ctx.processed["article_id"]
@@ -325,8 +278,14 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 
     info = ctx.processed["__info"]
     summary_data = ctx.summary_data
-    assert summary_data is not None
-    assert ctx.md_content is not None
+    if summary_data is None or ctx.md_content is None:
+        article_id = ctx.processed.get("article_id", "unknown")
+        ctx.processed["result"] = ("", [])
+        ctx.processed["final"] = {
+            article_id: {"title": info.get("title", "未知"), "status": "error", "reason": "missing_data"},
+        }
+        ctx.config["global_processed"].update(ctx.processed["final"])
+        return ctx
 
     config = ctx.config["config"]
     vault_path = ctx.config["vault_path"]
@@ -347,16 +306,22 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 
     file_path.write_text(ctx.md_content, encoding="utf-8")
 
-    # 更新关联数据
+    # 更新关联数据（失败不阻塞，文件已写入）
     new_concept_names: list[str] = []
-    for concept in summary_data.get("concepts", []):
-        safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept.get("name", "未知概念"))
-        new_concept_names.append(safe_name)
-        ensure_concept_page(
-            vault_path, safe_name, concept.get("description", ""), articles_dir
+    try:
+        for concept in summary_data.get("concepts", []):
+            safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept.get("name", "未知概念"))
+            new_concept_names.append(safe_name)
+            ensure_concept_page(
+                vault_path, safe_name, concept.get("description", ""), articles_dir
+            )
+        update_moc(vault_path, category, safe_title, info["date"], articles_dir)
+        maybe_create_subcategory(
+            vault_path, config,
+            ctx.config["global_processed"], category, sub_topic,
         )
-
-    update_moc(vault_path, category, safe_title, info["date"], articles_dir)
+    except OSError:
+        logger.warning("MOC/概念页更新失败，文章已写入: %s", file_path, exc_info=True)
 
     article_id = ctx.processed["article_id"]
     ctx.processed["result"] = (safe_title, new_concept_names)
@@ -373,7 +338,6 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 
     global_processed = ctx.config["global_processed"]
     global_processed.update(ctx.processed["final"])
-    maybe_create_subcategory(vault_path, config, global_processed, category, sub_topic)
     print(f"  完成 → {category}/{safe_title}.md")
     return ctx
 

@@ -108,6 +108,7 @@ def load_skill(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@functools.cache
 def load_vision_config() -> dict[str, Any] | None:
     """加载多模态 Vision API 配置。VISION_API_KEY 未设置时返回 None。"""
     api_key = os.environ.get("VISION_API_KEY", "")

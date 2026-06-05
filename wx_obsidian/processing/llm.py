@@ -190,19 +190,24 @@ def _fix_json_quotes(text: str) -> str:
 
 
 def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
-    """验证并清理 LLM 返回的 images 字段（Pass 2 输出）。"""
+    """验证并清理 LLM 返回的 images 字段（Pass 2 输出）。
+
+    只保留 valuable=True 且 URL 合法的项，确保 images 数组索引与 [IMG:N] 占位符一致。
+    """
     valid: list[dict[str, Any]] = []
     for item in images:
         if not isinstance(item, dict):
             continue
-        url = item.get("url", "")
-        if not url:
+        url = str(item.get("url", ""))
+        if not url or not url.startswith(("http://", "https://")):
+            continue
+        if not item.get("valuable", True):
             continue
         valid.append(
             {
-                "url": str(url),
+                "url": url,
                 "purpose": str(item.get("purpose", "")),
-                "valuable": bool(item.get("valuable", True)),
+                "valuable": True,
             }
         )
     return valid
@@ -211,7 +216,7 @@ def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
 def _call_llm(prompt: str) -> dict[str, Any] | None:
     """调用 LLM API 并解析 JSON 响应。"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     model = os.environ.get("MODEL_NAME", "deepseek-v4-pro")
 
     if not api_key:
