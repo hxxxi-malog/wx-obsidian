@@ -34,7 +34,7 @@ from wx_obsidian.output.vault import (
     update_moc,
 )
 from wx_obsidian.processing.images import extract_images_with_context, insert_images_into_markdown
-from wx_obsidian.processing.llm import refine_with_images, summarize_article
+from wx_obsidian.processing.llm import summarize_article, validate_images_field
 from wx_obsidian.processing.markdown import generate_markdown, remove_non_cdn_images
 from wx_obsidian.processing.models import PipelineContext
 from wx_obsidian.processing.pipeline import run_pipeline
@@ -130,14 +130,23 @@ def _vision_stage(ctx: PipelineContext) -> PipelineContext:
 
     try:
         ctx.image_descriptions = describe_images(ctx.images, vision_config)
+        if ctx.image_descriptions:
+            for desc in ctx.image_descriptions:
+                logger.info(
+                    "Vision 图片: %s | type=%s is_content=%s desc=%s",
+                    desc.url[:80],
+                    desc.type,
+                    desc.is_content,
+                    desc.description[:60] if desc.description else "(空)",
+                )
     except Exception:
         logger.warning("VisionStage 失败，降级到纯文本", exc_info=True)
         ctx.image_descriptions = None
     return ctx
 
 
-def _llm_pass1_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 3: Pass 1 — 纯文本生成结构化笔记（不看图片）。"""
+def _llm_stage(ctx: PipelineContext) -> PipelineContext:
+    """Stage 3: LLM 生成结构化笔记（含图片上下文）。"""
     if ctx.processed.get("__skip"):
         return ctx
 
@@ -155,6 +164,8 @@ def _llm_pass1_stage(ctx: PipelineContext) -> PipelineContext:
             ctx.config["existing_articles"],
             ctx.config["existing_concepts"],
             config=full_config,
+            image_descriptions=ctx.image_descriptions,
+            images_with_context=ctx.images,
         )
     except (requests.RequestException, ValueError) as e:
         print(f"  DeepSeek API 调用失败: {e}")
@@ -165,46 +176,17 @@ def _llm_pass1_stage(ctx: PipelineContext) -> PipelineContext:
         print("  总结解析失败")
         ctx.processed["__skip"] = {"status": "error", "reason": "parse_failed"}
         return ctx
-    return ctx
 
-
-def _llm_pass2_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 4: Pass 2 — 结合图片描述修订正文，嵌入 [IMG:N] 占位符。"""
-    if ctx.processed.get("__skip"):
-        return ctx
-
-    if not ctx.image_descriptions:
-        return ctx
-
-    body_sections = ctx.summary_data.get("body_sections", []) if ctx.summary_data else []
-    if not body_sections:
-        return ctx
-
-    full_config = ctx.config.get("config", {})
-
-    try:
-        pass2_result = refine_with_images(
-            ctx.content,
-            body_sections,
-            ctx.image_descriptions,
-            ctx.images,
-            config=full_config,
-        )
-    except (requests.RequestException, ValueError) as e:
-        logger.warning("Pass 2 失败，降级到 Pass 1 结果: %s", e)
-        return ctx
-
-    if not pass2_result:
-        logger.warning("Pass 2 解析失败，降级到 Pass 1 结果")
-        return ctx
-
-    if ctx.summary_data is None:
-        return ctx
-    if "body_sections" in pass2_result:
-        ctx.summary_data["body_sections"] = pass2_result["body_sections"]
-    if "images" in pass2_result:
-        ctx.summary_data["images"] = pass2_result["images"]
-        print(f"  图片决策: {len(pass2_result['images'])} 张有价值")
+    # 验证 images 字段
+    if "images" in ctx.summary_data:
+        ctx.summary_data["images"] = validate_images_field(ctx.summary_data["images"])
+        if ctx.summary_data["images"]:
+            print(f"  图片决策: {len(ctx.summary_data['images'])} 张有价值")
+        else:
+            content_imgs = [d for d in (ctx.image_descriptions or []) if d.is_content]
+            print(f"  图片决策: LLM 选择不使用图片（Vision 识别 {len(content_imgs)} 张内容图）")
+    else:
+        print("  图片决策: LLM 未返回 images 字段")
 
     return ctx
 
@@ -287,53 +269,8 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
-def _is_in_table(lines: list[str], idx: int) -> bool:
-    """检测第 idx 行是否在 markdown 表格内（上下有 | 行且包含 separator）。"""
-    # 向上找最近的 | 行（跳过空行）
-    has_pipe_above = False
-    for i in range(idx - 1, -1, -1):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        if stripped.startswith("|"):
-            has_pipe_above = True
-        break
-    # 向下找最近的 | 行（跳过空行）
-    has_pipe_below = False
-    has_separator = False
-    for i in range(idx + 1, len(lines)):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        if stripped.startswith("|"):
-            has_pipe_below = True
-            if re.match(r"^\|[\s\-:|]+\|$", stripped):
-                has_separator = True
-        break
-    return has_pipe_above and has_pipe_below and has_separator
-
-
-def _is_in_code_block(lines: list[str], idx: int) -> bool:
-    """检测第 idx 行是否在代码块内。"""
-    fence_count = 0
-    for i in range(idx):
-        if lines[i].strip().startswith("```"):
-            fence_count += 1
-    return fence_count % 2 == 1
-
-
-def _find_safe_insert_point(lines: list[str], idx: int) -> int:
-    """找到表格/代码块之后的安全插入位置。"""
-    # 向下找表格结束（连续 | 行的最后一个之后）
-    for i in range(idx + 1, len(lines)):
-        stripped = lines[i].strip()
-        if not stripped.startswith("|"):
-            return i
-    return len(lines)
-
-
 def _image_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 6: 替换 [IMG:N] 占位符为图片 markdown，降级到关键词匹配。"""
+    """Stage 4: 替换 [IMG:N] 占位符为图片 markdown，清除残留占位符。"""
     if ctx.processed.get("__skip") or not ctx.md_content:
         return ctx
 
@@ -353,46 +290,17 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
                 continue
             desc = purpose[:20] if purpose else "图片"
             img_md = f"\n![{desc}]({url})\n"
-            placeholder = f"[IMG:{i}]"
-            md = _safe_insert_image(md, placeholder, img_md)
+            md = md.replace(f"[IMG:{i}]", img_md)
 
     # 清除所有未替换的 [IMG:N] 占位符
     md = re.sub(r"\[IMG:\d+\]", "", md)
 
-    # 如果 LLM 没有返回图片决策，降级到关键词匹配
-    if not llm_images and ctx.images:
+    # 未配视觉模型时，LLM 没有图片上下文，降级到关键词匹配
+    if not llm_images and ctx.images and ctx.image_descriptions is None:
         md = insert_images_into_markdown(md, ctx.images)
 
     ctx.md_content = md
     return ctx
-
-
-def _safe_insert_image(md: str, placeholder: str, img_md: str) -> str:
-    """安全插入图片：如果占位符在表格或代码块内，移到安全位置。"""
-    lines = md.split("\n")
-    img_lines = img_md.split("\n")
-    for idx, line in enumerate(lines):
-        if placeholder not in line:
-            continue
-        if _is_in_code_block(lines, idx):
-            # 代码块内：移到代码块之后
-            for j in range(idx + 1, len(lines)):
-                if lines[j].strip().startswith("```"):
-                    lines[idx] = lines[idx].replace(placeholder, "")
-                    for k, img_line in enumerate(img_lines):
-                        lines.insert(j + 1 + k, img_line)
-                    return "\n".join(lines)
-        if _is_in_table(lines, idx):
-            # 表格内：移到表格之后
-            safe_idx = _find_safe_insert_point(lines, idx)
-            lines[idx] = lines[idx].replace(placeholder, "")
-            for k, img_line in enumerate(img_lines):
-                lines.insert(safe_idx + k, img_line)
-            return "\n".join(lines)
-        # 正常位置：直接替换
-        lines[idx] = line.replace(placeholder, img_md)
-        return "\n".join(lines)
-    return md
 
 
 def _write_stage(ctx: PipelineContext) -> PipelineContext:
@@ -471,8 +379,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 _PIPELINE_STAGES: list[Callable[[PipelineContext], PipelineContext]] = [
     _fetch_stage,
     _vision_stage,
-    _llm_pass1_stage,
-    _llm_pass2_stage,
+    _llm_stage,
     _markdown_stage,
     _image_stage,
     _write_stage,

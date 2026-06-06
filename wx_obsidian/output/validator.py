@@ -29,6 +29,10 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
     issues: list[str] = []
     lines = content.split("\n")
 
+    lines, norm_issue = _normalize_fullwidth_chars(lines)
+    if norm_issue:
+        issues.append(norm_issue)
+
     lines, fm_issues = _check_frontmatter(lines, is_concept)
     issues.extend(fm_issues)
 

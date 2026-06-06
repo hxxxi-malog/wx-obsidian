@@ -57,6 +57,11 @@ class HomeScreen(Screen[None]):
     def on_mount(self) -> None:
         self._refresh_task = asyncio.create_task(self.refresh_status())
 
+    def on_screen_resume(self) -> None:
+        """从子屏幕返回时刷新状态。"""
+        self._cancel_refresh()
+        self._refresh_task = asyncio.create_task(self.refresh_status())
+
     def on_unmount(self) -> None:
         self._cancel_refresh()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import os
 import re
 from string import Template
@@ -13,6 +14,8 @@ import requests
 
 from wx_obsidian.config import MAX_PROMPT_CONTENT, PROMPTS_DIR, SCRIPT_DIR, load_skill
 from wx_obsidian.processing.models import ImageDescription
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Prompt 模板
@@ -45,7 +48,13 @@ def _build_images_context(
         if d.is_content and d.status == "ok" and len(d.description) >= 10
     ]
     if not content_images:
+        filtered_out = [
+            f"{d.type}(content={d.is_content},desc_len={len(d.description)})"
+            for d in image_descriptions
+        ]
+        logger.info("图片上下文: %d 张全部被过滤: %s", len(image_descriptions), filtered_out)
         return ""
+    logger.info("图片上下文: %d/%d 张传给 LLM", len(content_images), len(image_descriptions))
     # 构建 url -> before/after 的映射
     context_map: dict[str, dict[str, str]] = {}
     if images_with_context:
@@ -70,14 +79,20 @@ def build_prompt(
     content: str,
     existing_articles: list[str],
     existing_concepts: list[str],
+    image_descriptions: list[ImageDescription] | None = None,
+    images_with_context: list[dict[str, str]] | None = None,
 ) -> str:
-    """构建 Pass 1 的 prompt（纯文本，不包含图片）。"""
+    """构建 prompt，包含图片上下文（如果有）。"""
     body_style = load_skill("article-body")
     metadata_style = load_skill("note-metadata")
     classification_style = load_skill("classification")
 
     articles_str = "、".join(existing_articles[:100]) if existing_articles else "（暂无）"
     concepts_str = "、".join(existing_concepts[:100]) if existing_concepts else "（暂无）"
+
+    images_context = ""
+    if image_descriptions:
+        images_context = _build_images_context(image_descriptions, images_with_context)
 
     template = load_prompt_template()
     return template.substitute(
@@ -89,7 +104,7 @@ def build_prompt(
         metadata_style=metadata_style,
         articles_str=articles_str,
         concepts_str=concepts_str,
-        images_context="",
+        images_context=images_context,
     )
 
 
@@ -208,8 +223,8 @@ def _fix_json_quotes(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
-    """验证并清理 LLM 返回的 images 字段（Pass 2 输出）。
+def validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
+    """验证并清理 LLM 返回的 images 字段。
 
     只保留 valuable=True 且 URL 合法的项，确保 images 数组索引与 [IMG:N] 占位符一致。
     """
@@ -218,15 +233,23 @@ def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url", ""))
+        reason = str(item.get("reason", ""))
         if not url or not url.startswith(("http://", "https://")):
+            if reason:
+                logger.info("图片排除: url=%s reason=%s", url[:60], reason)
             continue
         if not item.get("valuable", True):
+            logger.info("图片排除: url=%s reason=%s", url[:60], reason or "valuable=false")
             continue
+        logger.info(
+            "图片选中: url=%s purpose=%s reason=%s", url[:60], item.get("purpose", ""), reason
+        )
         valid.append(
             {
                 "url": url,
                 "purpose": str(item.get("purpose", "")),
                 "valuable": True,
+                "reason": reason,
             }
         )
     return valid
@@ -282,14 +305,18 @@ def summarize_article(
     existing_articles: list[str] | None = None,
     existing_concepts: list[str] | None = None,
     config: dict[str, Any] | None = None,
+    image_descriptions: list[ImageDescription] | None = None,
+    images_with_context: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """Pass 1：纯文本生成结构化笔记（不看图片）。"""
+    """生成结构化笔记，包含图片上下文（如果有）。"""
     prompt = build_prompt(
         title,
         account_name,
         content,
         existing_articles or [],
         existing_concepts or [],
+        image_descriptions=image_descriptions,
+        images_with_context=images_with_context,
     )
     return _call_llm(prompt, config=config)
 
@@ -307,5 +334,5 @@ def refine_with_images(
     )
     result = _call_llm(prompt, config=config)
     if result and "images" in result:
-        result["images"] = _validate_images_field(result["images"])
+        result["images"] = validate_images_field(result["images"])
     return result
