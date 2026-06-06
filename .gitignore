@@ -25,6 +25,12 @@ tests/
 *.swp
 *.swo
 
+# 备份文件
+config.yaml.bak.*
+
+# Docker 数据卷
+data/
+
 # macOS
 .DS_Store
 
