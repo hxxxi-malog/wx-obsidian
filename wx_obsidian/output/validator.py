@@ -77,6 +77,18 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
 # ---------------------------------------------------------------------------
 
 
+def _normalize_fullwidth_chars(lines: list[str]) -> tuple[list[str], str | None]:
+    """将全角管道符 ＊｜＊ 替换为半角 |（LLM 中文输出常见问题）。"""
+    changed = False
+    result: list[str] = []
+    for line in lines:
+        if "｜" in line:
+            line = line.replace("｜", "|")
+            changed = True
+        result.append(line)
+    return result, "全角管道符 ｜ 已替换为半角 |" if changed else None
+
+
 def _check_frontmatter(lines: list[str], is_concept: bool) -> tuple[list[str], list[str]]:
     """校验 YAML frontmatter，返回 (lines, issues)。"""
     issues: list[str] = []
