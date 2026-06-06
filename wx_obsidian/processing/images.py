@@ -29,7 +29,7 @@ RE_EN_KEYWORD = re.compile(r"[a-zA-Z]{3,}")
 # ---------------------------------------------------------------------------
 
 
-def extract_images_with_context(html_text: str, max_images: int = 8) -> list[dict[str, str]]:
+def extract_images_with_context(html_text: str, max_images: int = 5) -> list[dict[str, str]]:
     """从 HTML 中提取图片 URL 及其前后文字上下文。
 
     返回列表，每项包含 url、before（图片前的文字）、after（图片后的文字）。
@@ -61,6 +61,10 @@ def extract_images_with_context(html_text: str, max_images: int = 8) -> list[dic
         after_text = RE_HTML_TAG.sub(" ", parts[i + 1] if i + 1 < len(parts) else "")
         before_text = RE_WHITESPACE.sub(" ", before_text).strip()[-200:]
         after_text = RE_WHITESPACE.sub(" ", after_text).strip()[:200]
+
+        # 跳过上下文太短的图片（可能是装饰图/广告）
+        if len(before_text) < 10 and len(after_text) < 10:
+            continue
 
         results.append({"url": url, "before": before_text, "after": after_text})
         if len(results) >= max_images:
@@ -118,7 +122,7 @@ def insert_images_into_markdown(md: str, images: list[dict[str, str]]) -> str:
                 best_score = overlap
                 best_sec = sec_idx
 
-        if best_sec < 1 or best_score < 2:
+        if best_sec < 1 or best_score < 4:
             continue
 
         # 在该 section 的第一个段落之后插入图片

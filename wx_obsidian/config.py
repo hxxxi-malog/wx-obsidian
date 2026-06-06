@@ -52,9 +52,15 @@ if _ENV_FILE.exists():
 
 def load_config() -> dict[str, Any]:
     """加载 config.yaml 配置。"""
-    with open(SCRIPT_DIR / "config.yaml", encoding="utf-8") as f:
-        result: dict[str, Any] = yaml.safe_load(f)
-        return result
+    config_path = SCRIPT_DIR / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            result = yaml.safe_load(f)
+            return result if isinstance(result, dict) else {}
+    except (yaml.YAMLError, OSError):
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -133,19 +139,33 @@ def load_skill(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@functools.cache
-def load_vision_config() -> dict[str, Any] | None:
-    """加载多模态 Vision API 配置。VISION_API_KEY 未设置时返回 None。"""
+def load_vision_config(config: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """加载多模态 Vision API 配置。VISION_API_KEY 未设置时返回 None。
+
+    Args:
+        config: 配置字典（来自 ConfigManager），优先从中读取 vision.base_url、
+            vision.model 等。未提供时回退到 os.environ。
+    """
     api_key = os.environ.get("VISION_API_KEY", "")
     if not api_key:
         return None
+
+    vision_cfg = config.get("vision", {}) if config else {}
+
     return {
         "api_key": api_key,
-        "base_url": os.environ.get("VISION_BASE_URL", VISION_DEFAULT_BASE_URL),
-        "model": os.environ.get("VISION_MODEL_NAME", VISION_DEFAULT_MODEL),
-        "max_concurrency": int(
-            os.environ.get("MAX_VISION_CONCURRENCY", VISION_DEFAULT_CONCURRENCY)
+        "base_url": vision_cfg.get(
+            "base_url", os.environ.get("VISION_BASE_URL", VISION_DEFAULT_BASE_URL)
         ),
-        "timeout": int(os.environ.get("VISION_TIMEOUT", VISION_DEFAULT_TIMEOUT)),
+        "model": vision_cfg.get("model", os.environ.get("VISION_MODEL_NAME", VISION_DEFAULT_MODEL)),
+        "max_concurrency": int(
+            vision_cfg.get(
+                "max_concurrency",
+                os.environ.get("MAX_VISION_CONCURRENCY", VISION_DEFAULT_CONCURRENCY),
+            )
+        ),
+        "timeout": int(
+            vision_cfg.get("timeout", os.environ.get("VISION_TIMEOUT", VISION_DEFAULT_TIMEOUT))
+        ),
         "max_retries": int(os.environ.get("VISION_MAX_RETRIES", VISION_DEFAULT_MAX_RETRIES)),
     }

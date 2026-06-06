@@ -215,11 +215,22 @@ def _validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
     return valid
 
 
-def _call_llm(prompt: str) -> dict[str, Any] | None:
-    """调用 LLM API 并解析 JSON 响应。"""
+def _call_llm(
+    prompt: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """调用 LLM API 并解析 JSON 响应。
+
+    Args:
+        config: 配置字典，优先从中读取 llm.model、llm.base_url。
+            API key 始终从 os.environ 读取（由 .env 管理）。
+    """
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    model = os.environ.get("MODEL_NAME", "deepseek-v4-pro")
+    llm_cfg = config.get("llm", {}) if config else {}
+    base_url = llm_cfg.get(
+        "base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    )
+    model = llm_cfg.get("model", os.environ.get("MODEL_NAME", "deepseek-v4-pro"))
 
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY 未设置")
@@ -253,6 +264,7 @@ def summarize_article(
     account_name: str,
     existing_articles: list[str] | None = None,
     existing_concepts: list[str] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Pass 1：纯文本生成结构化笔记（不看图片）。"""
     prompt = build_prompt(
@@ -262,7 +274,7 @@ def summarize_article(
         existing_articles or [],
         existing_concepts or [],
     )
-    return _call_llm(prompt)
+    return _call_llm(prompt, config=config)
 
 
 def refine_with_images(
@@ -270,12 +282,13 @@ def refine_with_images(
     body_sections: list[dict[str, Any]],
     image_descriptions: list[ImageDescription],
     images_with_context: list[dict[str, str]] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Pass 2：结合原文和图片描述修订正文，返回含 [IMG:N] 占位符的 body_sections + images 数组。"""
     prompt = build_refine_prompt(
         article_content, body_sections, image_descriptions, images_with_context
     )
-    result = _call_llm(prompt)
+    result = _call_llm(prompt, config=config)
     if result and "images" in result:
         result["images"] = _validate_images_field(result["images"])
     return result

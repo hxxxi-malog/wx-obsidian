@@ -32,6 +32,7 @@ def _is_retryable_error(error: Exception) -> bool:
     # 检查 HTTP 状态码
     try:
         import requests
+
         if isinstance(error, requests.HTTPError) and error.response is not None:
             return error.response.status_code in RETRYABLE_HTTP_CODES
     except ImportError:
@@ -42,19 +43,28 @@ def _is_retryable_error(error: Exception) -> bool:
 class BatchProcessor:
     """封装 ThreadPoolExecutor + as_completed() + 重试逻辑。"""
 
-    def __init__(self, max_workers: int | None = None) -> None:
+    def __init__(
+        self,
+        max_workers: int | None = None,
+        executor: ThreadPoolExecutor | None = None,
+    ) -> None:
         self._max_workers = max_workers or load_max_workers()
         self._executor: ThreadPoolExecutor | None = None
+        self._external_executor = executor is not None
+        self._provided_executor = executor
         self._shutdown_requested = False
 
     def __enter__(self) -> BatchProcessor:
-        self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
+        if self._provided_executor:
+            self._executor = self._provided_executor
+        else:
+            self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if self._executor:
+        if self._executor and not self._external_executor:
             self._executor.shutdown(wait=True)
-            self._executor = None
+        self._executor = None
 
     def request_shutdown(self) -> None:
         """请求关闭，停止提交新任务。"""
@@ -132,7 +142,7 @@ class BatchProcessor:
             except Exception as e:
                 last_error = e
                 if _is_retryable_error(e) and attempt < MAX_RETRIES - 1:
-                    base_delay = 2 ** attempt
+                    base_delay = 2**attempt
                     jitter = random.uniform(0, base_delay * 0.1)
                     delay = base_delay + jitter
                     logger.warning(
