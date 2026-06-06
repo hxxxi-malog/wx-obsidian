@@ -296,7 +296,7 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
                         print("  LLM 修正后格式校验通过")
                 else:
                     print("  LLM 修正未产生变化，保留自动修复版本")
-        except (requests.RequestException, OSError, ValueError, ImportError, KeyError) as e:
+        except (requests.RequestException, OSError, ValueError, KeyError) as e:
             logger.warning("结构性格式修正失败（跳过）: %s", e)
     except (ValueError, OSError, AttributeError) as e:
         ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
@@ -591,28 +591,42 @@ class Orchestrator:
         # 增量过滤
         max_days = self._config_manager.get("fetch.max_days", 7)
         cutoff = (datetime.now() - timedelta(days=max_days)).strftime("%Y-%m-%d")
+        MAX_CROSS_RUN_RETRIES = 3
         new_articles = []
         skipped_existing = 0
         skipped_date = 0
+        ids_to_reprocess: list[str] = []
+        prev_retry_counts: dict[str, int] = {}
         for a in articles:
             if not a.get("id"):
                 continue
             aid = str(a["id"])
             if aid in processed:
-                # 已处理但输出文件不存在 → 重新处理
                 record = processed[aid]
-                file_path = record.get("file", "") if isinstance(record, dict) else ""
-                if file_path and Path(file_path).exists():
-                    # 文件存在，确认已处理
+                if isinstance(record, dict) and record.get("status") == "done":
+                    file_path = record.get("file", "")
+                    if file_path and Path(file_path).exists():
+                        skipped_existing += 1
+                        continue
+                    # done 记录但文件被删除，绕过日期过滤重新处理
+                    logger.info("文章文件缺失，重新处理: %s", a.get("title", "")[:40])
+                    ids_to_reprocess.append(aid)
+                    new_articles.append(a)
+                elif isinstance(record, dict) and record.get("retry_count", 0) >= MAX_CROSS_RUN_RETRIES:
                     skipped_existing += 1
-                    continue
-                # 无 file 字段或文件已被删除，清除记录重新处理
-                logger.info("文章文件缺失，重新处理: %s", a.get("title", "")[:40])
-                processed.pop(aid, None)
-            if a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
+                else:
+                    # error/skipped/failed 记录，未超过重试上限，绕过日期过滤重试
+                    prev_retry_counts[aid] = record.get("retry_count", 0) if isinstance(record, dict) else 0
+                    ids_to_reprocess.append(aid)
+                    new_articles.append(a)
+            elif a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
                 skipped_date += 1
-                continue
-            new_articles.append(a)
+            else:
+                new_articles.append(a)
+        if ids_to_reprocess:
+            for aid in ids_to_reprocess:
+                processed.pop(aid, None)
+            save_processed(processed)
         if skipped_existing:
             logger.info("跳过 %d 篇已处理文章", skipped_existing)
         if skipped_date:
@@ -658,6 +672,10 @@ class Orchestrator:
         def on_complete(result: dict[str, Any]) -> None:
             nonlocal completed_count
             article_id = result.get("article_id", "unknown")
+            # 携带重试计数：失败时递增，成功时清除
+            if result.get("status") in ("error", "skipped", "failed"):
+                prev = prev_retry_counts.get(article_id, 0)
+                result["retry_count"] = prev + 1
             processed[article_id] = result
             new_ids.add(article_id)
             completed_count += 1

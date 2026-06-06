@@ -308,7 +308,10 @@ def detect_format_issues(content: str) -> list[str]:
     与 validate_and_fix 互补：validate_and_fix 做自动修复，
     detect_format_issues 发现需要 LLM 重新生成的问题。
     """
-    import mistune
+    try:
+        import mistune
+    except ImportError:
+        return []
 
     issues: list[str] = []
     md_parser = mistune.create_markdown(plugins=["table"])
