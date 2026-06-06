@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -269,8 +271,9 @@ def update_daily_archive(
         return
     yy, mm, dd = parts[0][2:], parts[1], parts[2]
 
-    # 归档文件路径
-    archive_dir = vault_path / "归档" / yy / mm
+    # 归档文件路径（放在公众号文章目录下，方便在 Obsidian 中找到）
+    articles_dir = vault_path / "公众号文章"
+    archive_dir = articles_dir / "Z归档" / yy / mm
     archive_file = archive_dir / f"{dd}.md"
 
     # 构建归档条目
@@ -288,4 +291,14 @@ def update_daily_archive(
         archive_dir.mkdir(parents=True, exist_ok=True)
         content = f"# {date_str} 文章归档\n\n{entry}"
 
-    archive_file.write_text(content, encoding="utf-8")
+    # 原子写入
+    fd, tmp_path = tempfile.mkstemp(
+        dir=archive_dir, suffix=".tmp", prefix=".archive_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, archive_file)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise

@@ -100,6 +100,17 @@ def save_last_fetch_date(date_str: str) -> None:
     save_processed(processed)
 
 
+def load_max_workers() -> int:
+    """加载并行度配置。"""
+    config = load_config()
+    try:
+        value = int(config.get("max_workers", 5))
+        return max(1, min(value, 32))
+    except (ValueError, TypeError):
+        print("警告: max_workers 配置无效，使用默认值 5")
+        return 5
+
+
 # ---------------------------------------------------------------------------
 # Skill 文件
 # ---------------------------------------------------------------------------
