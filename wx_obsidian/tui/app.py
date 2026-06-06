@@ -14,6 +14,7 @@ from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.orchestrator import Orchestrator
 from wx_obsidian.scheduler import TaskScheduler
 from wx_obsidian.tui.screens.account import AccountScreen
+from wx_obsidian.tui.screens.articles import ArticlesScreen
 from wx_obsidian.tui.screens.config import ConfigScreen
 from wx_obsidian.tui.screens.container import ContainerScreen
 from wx_obsidian.tui.screens.feeds import FeedsScreen
@@ -30,6 +31,7 @@ _SCREEN_MAP: dict[str, type[Screen[None]]] = {
     "feeds": FeedsScreen,
     "config": ConfigScreen,
     "fetch": FetchScreen,
+    "articles": ArticlesScreen,
     "scheduler": SchedulerScreen,
 }
 
