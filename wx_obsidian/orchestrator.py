@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -197,7 +199,16 @@ def _llm_stage(ctx: PipelineContext) -> PipelineContext:
 
 
 def _normalize_llm_response(data: dict[str, Any]) -> None:
-    """规范化 LLM 返回的 concepts/body_sections 字段，原地修改确保类型正确。"""
+    """规范化 LLM 返回的字段，原地修改确保类型正确。"""
+    # tags 应为 list[str]，LLM 可能返回 str（如 "AI,机器学习"）
+    tags = data.get("tags") or []
+    if isinstance(tags, str):
+        logger.warning("LLM 返回的 tags 为字符串，自动拆分为列表")
+        data["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+    elif not isinstance(tags, list):
+        logger.warning("LLM 返回的 tags 类型异常 (%s)，重置为空列表", type(tags).__name__)
+        data["tags"] = []
+
     # concepts 应为 list[dict]，LLM 可能返回 None / str / list[str]
     concepts = data.get("concepts") or []
     if isinstance(concepts, str):
@@ -733,13 +744,25 @@ class Orchestrator:
         return results
 
     async def retry_failed(self, article_ids: list[str]) -> list[ProcessingResult]:
-        """重试失败文章。仅清除 status=error 的记录，然后重新抓取。"""
+        """重试失败文章。保存原始错误信息后清除记录，然后重新抓取。"""
+        from wx_obsidian.config_manager import FAILED_FILE
+
         processed = load_processed()
+        failed_entries: list[dict[str, Any]] = []
         cleared = 0
 
         for aid in article_ids:
             record = processed.get(aid)
             if isinstance(record, dict) and record.get("status") == "error":
+                # 保存原始错误信息到 failed.json
+                failed_entries.append(
+                    {
+                        "article_id": aid,
+                        "title": record.get("title", ""),
+                        "error": record.get("reason", record.get("error", "")),
+                        "cleared_at": datetime.now().isoformat(),
+                    }
+                )
                 processed.pop(aid, None)
                 cleared += 1
 
@@ -747,8 +770,11 @@ class Orchestrator:
             logger.info("没有可重试的失败文章")
             return []
 
+        # 追加到 failed.json（保留历史错误记录）
+        _append_to_failed_json(FAILED_FILE, failed_entries)
+
         save_processed(processed)
-        logger.info("已清除 %d 条失败记录，开始重新抓取", cleared)
+        logger.info("已清除 %d 条失败记录（原始错误已保存），开始重新抓取", cleared)
 
         # 重新抓取（仅处理被清除的失败文章，不处理其他新文章）
         return await self.fetch_and_process(limit=cleared)
@@ -813,6 +839,26 @@ def _process_single(
         "status": "error",
         "reason": "unknown",
     }
+
+
+def _append_to_failed_json(failed_file: Path, entries: list[dict[str, Any]]) -> None:
+    """追加失败记录到 failed.json（原子操作）。"""
+    import contextlib
+
+    existing: list[dict[str, Any]] = []
+    if failed_file.exists():
+        with contextlib.suppress(json.JSONDecodeError, OSError):
+            existing = json.loads(failed_file.read_text(encoding="utf-8"))
+    existing.extend(entries)
+    data = json.dumps(existing, ensure_ascii=False, indent=2)
+    fd, tmp_path = tempfile.mkstemp(dir=failed_file.parent, suffix=".tmp", prefix=".failed_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp_path, failed_file)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 def _update_knowledge_graph(

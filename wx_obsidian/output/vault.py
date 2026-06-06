@@ -10,6 +10,20 @@ from typing import Any
 
 from wx_obsidian.config import SCRIPT_DIR, SUB_TOPIC_THRESHOLD
 
+
+def _atomic_write(path: Path, content: str) -> None:
+    """原子写入文件：先写临时文件，再 os.replace。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=f".{path.stem}_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # 概念页面
 # ---------------------------------------------------------------------------
@@ -41,7 +55,7 @@ tags: [概念]
 ## 相关文章
 > 自动更新
 """
-        concept_file.write_text(content, encoding="utf-8")
+        _atomic_write(concept_file, content)
     elif article_title:
         _append_related_article(concept_file, article_title, article_category)
 
@@ -70,7 +84,7 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
     else:
         content = content.rstrip() + f"\n\n## 相关文章\n{wikilink}\n"
 
-    concept_file.write_text(content, encoding="utf-8")
+    _atomic_write(concept_file, content)
 
 
 # ---------------------------------------------------------------------------
@@ -92,13 +106,13 @@ def update_moc(
 
     moc_file = category_dir / "_MOC.md"
     if not moc_file.exists():
-        moc_file.write_text(f"# {category}\n\n", encoding="utf-8")
+        _atomic_write(moc_file, f"# {category}\n\n")
 
     content = moc_file.read_text(encoding="utf-8")
     entry = f"- {date} [[{title}]]"
     if entry not in content:
         content = content.rstrip() + f"\n{entry}"
-        moc_file.write_text(content, encoding="utf-8")
+        _atomic_write(moc_file, content)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +138,7 @@ def ensure_category(
 
     moc_file = category_dir / "_MOC.md"
     if not moc_file.exists():
-        moc_file.write_text(f"# {category}\n\n", encoding="utf-8")
+        _atomic_write(moc_file, f"# {category}\n\n")
 
     config["categories"].append(category)
     _append_category_to_config(category)
@@ -134,7 +148,7 @@ def ensure_category(
         content = root_moc.read_text(encoding="utf-8")
         if f"[[{category}]]" not in content:
             content = content.rstrip() + f"\n- [[{category}]]"
-            root_moc.write_text(content, encoding="utf-8")
+            _atomic_write(root_moc, content)
 
 
 def _append_category_to_config(category: str) -> None:
@@ -201,7 +215,7 @@ def maybe_create_subcategory(
 
     moc_file = sub_dir / "_MOC.md"
     if not moc_file.exists():
-        moc_file.write_text(f"# {sub_topic}\n\n", encoding="utf-8")
+        _atomic_write(moc_file, f"# {sub_topic}\n\n")
 
     _migrate_articles_to_subdir(processed, category, sub_topic, articles_dir, sub_dir, moc_file)
     _update_parent_moc(articles_dir, category, sub_topic)
@@ -242,7 +256,7 @@ def _migrate_articles_to_subdir(
         old_cat = f'category: "{category}"'
         new_cat = f'category: "{category}/{sub_topic}"'
         if old_cat in content:
-            new_path.write_text(content.replace(old_cat, new_cat), encoding="utf-8")
+            _atomic_write(new_path, content.replace(old_cat, new_cat))
 
         # 累积子目录 MOC 条目
         safe_title = old_path.stem
@@ -251,9 +265,7 @@ def _migrate_articles_to_subdir(
             new_entries.append(entry)
 
     if new_entries:
-        moc_file.write_text(
-            moc_content.rstrip() + "\n" + "\n".join(new_entries) + "\n", encoding="utf-8"
-        )
+        _atomic_write(moc_file, moc_content.rstrip() + "\n" + "\n".join(new_entries) + "\n")
 
 
 def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> None:
@@ -265,7 +277,7 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
     content = parent_moc.read_text(encoding="utf-8")
     if f"[[{sub_topic}]]" not in content:
         content = content.rstrip() + f"\n- 📁 [[{sub_topic}]]"
-        parent_moc.write_text(content, encoding="utf-8")
+        _atomic_write(parent_moc, content)
 
 
 # ---------------------------------------------------------------------------

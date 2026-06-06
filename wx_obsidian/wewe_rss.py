@@ -119,9 +119,12 @@ class WeWeRSSClient:
         )
 
     def delete_feed(self, feed_id: str) -> bool:
-        """删除公众号。"""
-        self._trpc_mutation("feed.delete", feed_id)
-        return True
+        """删除公众号。成功返回 True，失败返回 False。"""
+        try:
+            self._trpc_mutation("feed.delete", feed_id)
+            return True
+        except requests.RequestException:
+            return False
 
     # -- 登录保活 ------------------------------------------------------------
 

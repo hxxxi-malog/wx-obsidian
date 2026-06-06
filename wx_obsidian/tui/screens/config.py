@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -235,9 +235,11 @@ class ConfigScreen(Screen[None]):
         if path:
             self.query_one("#vault-input", Input).value = str(path)
 
-    async def _test_connection(self, test_func: object, status_id: str, label: str) -> None:
+    async def _test_connection(
+        self, test_func: Callable[[], ConnectionTestResult], status_id: str, label: str
+    ) -> None:
         """异步测试连通性。"""
-        result: ConnectionTestResult = await asyncio.to_thread(test_func)  # type: ignore[arg-type]
+        result: ConnectionTestResult = await asyncio.to_thread(test_func)
         if not self.is_current:
             return
         self.query_one(status_id, StatusIndicator).set_result(label, result.success, result.message)

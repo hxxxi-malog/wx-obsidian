@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from wx_obsidian.config import save_processed
+
+logger = logging.getLogger(__name__)
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """原子写入文件：先写临时文件，再 os.replace。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=f".{path.stem}_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 def find_article(processed: dict[str, Any], query: str) -> str | None:
@@ -16,6 +34,11 @@ def find_article(processed: dict[str, Any], query: str) -> str | None:
     1. article_id 精确匹配
     2. title 精确匹配
     3. title 子串匹配（大小写不敏感）
+
+    Returns:
+        article_id（精确匹配或唯一子串匹配），
+        ""（多条子串匹配，候选列表已打印），
+        None（无匹配）。
     """
     # 1. article_id 精确匹配
     if query in processed and isinstance(processed[query], dict):
@@ -36,10 +59,10 @@ def find_article(processed: dict[str, Any], query: str) -> str | None:
     if len(matches) == 1:
         return matches[0][0]
     if len(matches) > 1:
-        print(f"匹配到 {len(matches)} 篇文章，请选择：")
+        print(f"匹配到 {len(matches)} 篇文章，请用更精确的标题重试：")
         for i, (aid, title) in enumerate(matches, 1):
             print(f"  [{i}] {title}  (ID: {aid})")
-        return None
+        return ""
 
     return None
 
@@ -52,6 +75,9 @@ def cascade_delete(
 ) -> list[str]:
     """级联删除文章及其所有关联数据。
 
+    每步操作独立 try/except，单步失败不影响后续步骤。
+    processed.json 记录移除放在最后，确保即使中途失败也能重试。
+
     Returns:
         已清理的项目列表（用于打印）。
     """
@@ -60,6 +86,7 @@ def cascade_delete(
         return [f"未找到文章记录: {article_id}"]
 
     actions: list[str] = []
+    errors: list[str] = []
     title = record.get("title", "未知")
     category = record.get("category", "")
     safe_title = Path(record.get("file", "")).stem or re.sub(r'[<>:"/\\|?*]', "_", title)[:100]
@@ -67,17 +94,25 @@ def cascade_delete(
     concepts: list[dict[str, str]] = record.get("concepts") or []
 
     # 1. 删除文章文件
-    file_path = Path(record.get("file", ""))
-    if file_path.exists():
-        file_path.unlink()
-        actions.append(f"已删除文件: {file_path}")
-    else:
-        actions.append(f"文件不存在（跳过）: {file_path}")
+    try:
+        file_path = Path(record.get("file", ""))
+        if file_path.exists():
+            file_path.unlink()
+            actions.append(f"已删除文件: {file_path}")
+        else:
+            actions.append(f"文件不存在（跳过）: {file_path}")
+    except OSError as e:
+        errors.append(f"删除文件失败: {e}")
+        logger.warning("删除文件失败: %s", e)
 
     # 2. 移除 MOC 条目
     if category:
-        moc_actions = _remove_moc_entry(articles_dir, category, safe_title, date)
-        actions.extend(moc_actions)
+        try:
+            moc_actions = _remove_moc_entry(articles_dir, category, safe_title, date)
+            actions.extend(moc_actions)
+        except OSError as e:
+            errors.append(f"移除 MOC 条目失败: {e}")
+            logger.warning("移除 MOC 条目失败: %s", e)
 
     # 3. 清理概念页面
     for concept in concepts:
@@ -85,20 +120,35 @@ def cascade_delete(
             continue
         concept_name = concept.get("name", "")
         if concept_name:
-            concept_actions = _cleanup_concept_page(
-                articles_dir, concept_name, safe_title, title, category
-            )
-            actions.extend(concept_actions)
+            try:
+                concept_actions = _cleanup_concept_page(
+                    articles_dir, concept_name, safe_title, title, category
+                )
+                actions.extend(concept_actions)
+            except OSError as e:
+                errors.append(f"清理概念页面 {concept_name} 失败: {e}")
+                logger.warning("清理概念页面失败 [%s]: %s", concept_name, e)
 
     # 4. 清理日归档
     if date:
-        archive_actions = _remove_archive_entry(articles_dir, date, safe_title, category)
-        actions.extend(archive_actions)
+        try:
+            archive_actions = _remove_archive_entry(articles_dir, date, safe_title, category)
+            actions.extend(archive_actions)
+        except OSError as e:
+            errors.append(f"清理日归档失败: {e}")
+            logger.warning("清理日归档失败: %s", e)
 
-    # 5. 从 processed.json 移除记录
-    processed.pop(article_id, None)
-    save_processed(processed)
-    actions.append("已从 processed.json 移除记录")
+    # 5. 从 processed.json 移除记录（最后执行，确保前面失败时可重试）
+    try:
+        processed.pop(article_id, None)
+        save_processed(processed)
+        actions.append("已从 processed.json 移除记录")
+    except OSError as e:
+        errors.append(f"更新 processed.json 失败: {e}")
+        logger.warning("更新 processed.json 失败: %s", e)
+
+    if errors:
+        actions.append(f"⚠ {len(errors)} 项操作失败，可重新执行以完成清理")
 
     return actions
 
@@ -119,7 +169,7 @@ def _remove_moc_entry(articles_dir: Path, category: str, safe_title: str, date: 
     if len(new_lines) == len(lines):
         return [f"MOC 条目未找到: {safe_title}"]
 
-    moc_file.write_text("\n".join(new_lines), encoding="utf-8")
+    _atomic_write(moc_file, "\n".join(new_lines))
     return [f"已从 {category}/_MOC.md 移除条目"]
 
 
@@ -170,7 +220,7 @@ def _cleanup_concept_page(
             return actions
 
     # 还有其他链接，写回
-    concept_file.write_text(new_content, encoding="utf-8")
+    _atomic_write(concept_file, new_content)
     actions.append(f"已从概念/{concept_name}.md 移除文章链接")
     return actions
 
@@ -224,5 +274,5 @@ def _remove_archive_entry(
         else:
             final_lines.append(line)
 
-    archive_file.write_text("\n".join(final_lines), encoding="utf-8")
+    _atomic_write(archive_file, "\n".join(final_lines))
     return [f"已从 Z归档/{yy}/{mm}/{dd}.md 移除条目"]

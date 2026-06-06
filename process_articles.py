@@ -37,9 +37,11 @@ def _run_delete(query: str) -> None:
         return
 
     article_id = find_article(processed, query)
-    if not article_id:
+    if article_id is None:
         print(f"未找到匹配的文章: {query}")
         return
+    if article_id == "":
+        return  # 多条匹配，候选列表已由 find_article 打印
 
     record = processed.get(article_id)
     title = record.get("title", "未知") if isinstance(record, dict) else "未知"
