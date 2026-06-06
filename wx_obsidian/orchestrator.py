@@ -210,9 +210,12 @@ def _llm_pass2_stage(ctx: PipelineContext) -> PipelineContext:
 
 def _normalize_llm_response(data: dict[str, Any]) -> None:
     """规范化 LLM 返回的 concepts/body_sections 字段，原地修改确保类型正确。"""
-    # concepts 应为 list[dict]，LLM 可能返回 list[str]
+    # concepts 应为 list[dict]，LLM 可能返回 str 或 list[str]
     concepts = data.get("concepts", [])
-    if isinstance(concepts, list) and any(not isinstance(c, dict) for c in concepts):
+    if isinstance(concepts, str):
+        logger.warning("LLM 返回的 concepts 为字符串，自动规范化")
+        data["concepts"] = [{"name": concepts, "description": ""}]
+    elif isinstance(concepts, list) and any(not isinstance(c, dict) for c in concepts):
         logger.warning("LLM 返回的 concepts 包含非 dict 元素，自动规范化")
         data["concepts"] = [
             {"name": str(c), "description": ""}
@@ -221,9 +224,12 @@ def _normalize_llm_response(data: dict[str, Any]) -> None:
             for c in concepts
         ]
 
-    # body_sections 应为 list[dict]，LLM 可能返回 list[str]
+    # body_sections 应为 list[dict]，LLM 可能返回 str 或 list[str]
     sections = data.get("body_sections", [])
-    if isinstance(sections, list) and any(not isinstance(s, dict) for s in sections):
+    if isinstance(sections, str):
+        logger.warning("LLM 返回的 body_sections 为字符串，自动规范化")
+        data["body_sections"] = [{"heading": "", "content": sections}]
+    elif isinstance(sections, list) and any(not isinstance(s, dict) for s in sections):
         logger.warning("LLM 返回的 body_sections 包含非 dict 元素，自动规范化")
         data["body_sections"] = [
             {"heading": "", "content": str(s)}
@@ -633,7 +639,7 @@ class Orchestrator:
         save_processed(processed)
 
         # 更新知识图谱（仅处理新文章）
-        _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids)
+        _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids, on_progress)
 
         # 转换为 ProcessingResult
         results: list[ProcessingResult] = []
@@ -741,15 +747,23 @@ def _update_knowledge_graph(
     articles_dir: Path,
     processed: dict[str, Any],
     new_ids: set[str] | None = None,
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> None:
     """串行阶段：更新知识图谱。仅处理 new_ids 中的文章（如果提供）。"""
-    seen_subcategory: set[tuple[str, str]] = set()
-    for article_id, record in processed.items():
-        if not isinstance(record, dict) or record.get("status") != "done":
-            continue
-        if new_ids is not None and article_id not in new_ids:
-            continue
+    # 统计待处理文章数
+    pending = [
+        (aid, rec)
+        for aid, rec in processed.items()
+        if isinstance(rec, dict)
+        and rec.get("status") == "done"
+        and (new_ids is None or aid in new_ids)
+    ]
+    total = len(pending)
+    if on_progress and total > 0:
+        on_progress("_kg", 0, total)
 
+    seen_subcategory: set[tuple[str, str]] = set()
+    for idx, (_article_id, record) in enumerate(pending, 1):
         category = record.get("category", "")
         sub_topic = record.get("sub_topic", "")
         safe_title = Path(record.get("file", "")).stem
@@ -758,16 +772,26 @@ def _update_knowledge_graph(
         if not category or not safe_title:
             continue
 
+        if on_progress:
+            on_progress(f"更新分类: {category}", idx, total)
+
         ensure_category(vault_path, config, category, articles_dir)
         update_moc(vault_path, category, safe_title, date, articles_dir)
 
         for concept in record.get("concepts", []):
+            if not isinstance(concept, dict):
+                continue
             concept_name = concept.get("name", "")
             concept_desc = concept.get("description", "")
             if concept_name:
+                if on_progress:
+                    on_progress(f"生成概念: {concept_name}", idx, total)
                 ensure_concept_page(vault_path, concept_name, concept_desc, articles_dir)
 
         key = (category, sub_topic)
         if sub_topic and key not in seen_subcategory:
             seen_subcategory.add(key)
             maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
+
+    if on_progress and total > 0:
+        on_progress("_kg_done", total, total)

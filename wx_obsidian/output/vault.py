@@ -137,7 +137,8 @@ def count_sub_topic_articles(processed: dict[str, Any], category: str, sub_topic
     return sum(
         1
         for record in processed.values()
-        if record.get("status") == "done"
+        if isinstance(record, dict)
+        and record.get("status") == "done"
         and record.get("category") == category
         and record.get("sub_topic") == sub_topic
     )
@@ -185,6 +186,8 @@ def _migrate_articles_to_subdir(
 ) -> None:
     """将已有文章迁移到子目录。"""
     for _article_id, record in processed.items():
+        if not isinstance(record, dict):
+            continue
         if (
             record.get("status") != "done"
             or record.get("category") != category
