@@ -1,21 +1,18 @@
 categories:
-- LLM
-- Agent架构
+- LLM基础
+- Agent
 - 多Agent协同
 - 上下文工程
-- 多模态
-- NLP
-- CV
+- 多模态与视觉
 - 具身智能
-- Prompt Engineering
+- Prompt工程
 - RAG
-- 模型训练与微调
-- AI Infra
+- 训练与微调
+- AI基础设施
 - AI编程
 - MCP
 - Harness Engineering
-- 评测
-- 实践
+- AI产业生态
 - 其他
 deepseek:
   model: deepseek-chat
