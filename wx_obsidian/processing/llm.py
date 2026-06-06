@@ -51,8 +51,8 @@ def _build_images_context(
     lines = ["文章中的图片（按文章出现顺序排列）："]
     for i, desc in enumerate(content_images, 1):
         ctx = context_map.get(desc.url, {})
-        before = ctx.get("before", "")[-60:]
-        after = ctx.get("after", "")[:60]
+        before = ctx.get("before", "")[-120:]
+        after = ctx.get("after", "")[:120]
         lines.append(f"[图片{i}] URL: {desc.url}")
         lines.append(f"  内容: {desc.description}")
         if before or after:

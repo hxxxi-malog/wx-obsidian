@@ -20,8 +20,10 @@ def ensure_concept_page(
     concept_name: str,
     description: str,
     articles_dir: Path | None = None,
+    article_title: str = "",
+    article_category: str = "",
 ) -> None:
-    """确保概念页面存在，不存在则创建。"""
+    """确保概念页面存在，不存在则创建；已存在则追加相关文章链接。"""
     base = articles_dir or (vault_path / "公众号文章")
     concept_dir = base / "概念"
     concept_file = concept_dir / f"{concept_name}.md"
@@ -40,6 +42,35 @@ tags: [概念]
 > 自动更新
 """
         concept_file.write_text(content, encoding="utf-8")
+    elif article_title:
+        _append_related_article(concept_file, article_title, article_category)
+
+
+def _append_related_article(concept_file: Path, article_title: str, article_category: str) -> None:
+    """向概念页面的"相关文章"部分追加文章链接。"""
+    content = concept_file.read_text(encoding="utf-8")
+    safe_title = re.sub(r'[<>:"/\\|?*]', "_", article_title)[:100]
+    if article_category:
+        wikilink = f"- [[{article_category}/{safe_title}|{article_title}]]"
+    else:
+        wikilink = f"- [[{safe_title}]]"
+
+    if safe_title in content:
+        return
+
+    if "## 相关文章" in content:
+        parts = content.split("## 相关文章", 1)
+        after = parts[1]
+        # 在"## 相关文章"标题后追加（跳过"> 自动更新"占位行）
+        after = re.sub(r"(> 自动更新\n?)", r"\1" + wikilink + "\n", after, count=1)
+        if wikilink not in after:
+            # fallback：直接在标题后追加
+            after = after.lstrip("\n") + wikilink + "\n"
+        content = parts[0] + "## 相关文章" + after
+    else:
+        content = content.rstrip() + f"\n\n## 相关文章\n{wikilink}\n"
+
+    concept_file.write_text(content, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

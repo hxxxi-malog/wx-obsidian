@@ -787,6 +787,7 @@ def _update_knowledge_graph(
             ensure_category(vault_path, config, category, articles_dir)
             update_moc(vault_path, category, safe_title, date, articles_dir)
 
+            original_title = record.get("title", safe_title)
             for concept in record.get("concepts") or []:
                 if not isinstance(concept, dict):
                     continue
@@ -795,7 +796,14 @@ def _update_knowledge_graph(
                 if concept_name:
                     if on_progress:
                         on_progress(f"生成概念: {concept_name}", idx, total)
-                    ensure_concept_page(vault_path, concept_name, concept_desc, articles_dir)
+                    ensure_concept_page(
+                        vault_path,
+                        concept_name,
+                        concept_desc,
+                        articles_dir,
+                        article_title=original_title,
+                        article_category=category,
+                    )
 
             key = (category, sub_topic)
             if sub_topic and key not in seen_subcategory:
