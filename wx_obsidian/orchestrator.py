@@ -210,6 +210,31 @@ def _llm_pass2_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
+def _normalize_llm_response(data: dict[str, Any]) -> dict[str, Any]:
+    """规范化 LLM 返回的 concepts/body_sections 字段，确保类型正确。"""
+    # concepts 应为 list[dict]，LLM 可能返回 list[str]
+    concepts = data.get("concepts", [])
+    if concepts and not isinstance(concepts[0], dict):
+        data["concepts"] = [
+            {"name": str(c), "description": ""}
+            if isinstance(c, str)
+            else {"name": "未知概念", "description": ""}
+            for c in concepts
+        ]
+
+    # body_sections 应为 list[dict]，LLM 可能返回 list[str]
+    sections = data.get("body_sections", [])
+    if sections and not isinstance(sections[0], dict):
+        data["body_sections"] = [
+            {"heading": "", "content": str(s)}
+            if isinstance(s, str)
+            else {"heading": "", "content": ""}
+            for s in sections
+        ]
+
+    return data
+
+
 def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
     """Stage 5: 生成 Markdown 并校验。"""
     if ctx.processed.get("__skip"):
@@ -220,6 +245,8 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
     if summary_data is None:
         ctx.processed["__skip"] = {"status": "error", "reason": "no_summary_data"}
         return ctx
+
+    _normalize_llm_response(summary_data)
 
     try:
         valid_topics = ctx.config["existing_articles"] + ctx.config["existing_concepts"]
@@ -238,7 +265,7 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
         md, format_issues = validate_and_fix(md)
         if format_issues:
             print(f"  格式校验: {len(format_issues)} 个问题已修复")
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, AttributeError) as e:
         ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
         logger.warning("MarkdownStage 失败: %s", e, exc_info=True)
         return ctx
@@ -258,6 +285,8 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
 
     if llm_images:
         for i, img in enumerate(llm_images, 1):
+            if not isinstance(img, dict):
+                continue
             url = img.get("url", "")
             purpose = img.get("purpose", "")
             if not url:
