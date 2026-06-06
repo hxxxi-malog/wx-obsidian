@@ -15,6 +15,12 @@ python process_articles.py
 # Process limited articles
 python process_articles.py --limit 5
 
+# TUI mode (terminal UI)
+python process_articles.py tui
+
+# Cascade delete an article and all its associated data
+python process_articles.py delete "文章标题或ID"
+
 # Lint
 ruff check .
 
@@ -44,7 +50,8 @@ wx_obsidian/
 │   └── markdown.py        ← Markdown 生成（frontmatter + body + 假图片清除）
 ├── output/                ← 输出层
 │   ├── vault.py           ← Obsidian Vault 操作（MOC、概念页面、分类、子目录）
-│   └── validator.py       ← Markdown 格式校验与自动修复
+│   ├── validator.py       ← Markdown 格式校验与自动修复
+│   └── cleanup.py         ← 文章级联删除（MOC、概念、归档、processed.json）
 └── cli.py                 ← CLI 入口，编排完整流程
 ```
 
@@ -139,6 +146,7 @@ WeWe RSS (localhost:4000) → fetch_articles() → JSON feed
 | 调整图片插入逻辑 | `processing/images.py` |
 | 修改 Vault 目录结构 | `output/vault.py`, `config.yaml` |
 | 新增数据源 | `sources/` 下新建模块, `cli.py` |
+| 文章级联删除 | `output/cleanup.py`, `tui/screens/articles.py`, `process_articles.py` |
 
 ### 关键常量速查
 
