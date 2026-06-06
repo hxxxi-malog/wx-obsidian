@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import requests
@@ -100,8 +101,6 @@ class WeWeRSSClient:
             return None
 
         # Step 2: 添加订阅
-        import time
-
         feed_data = {
             "id": data["id"],
             "mpName": data.get("mpName", ""),

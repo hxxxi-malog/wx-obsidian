@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
+from typing import Any, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -145,7 +145,7 @@ class SchedulerScreen(Screen[None]):
         for text in texts:
             await list_view.append(ListItem(Label(text, classes="job-item")))
 
-    async def _run_now(self, app: object) -> None:
+    async def _run_now(self, app: Any) -> None:
         """立即执行一次抓取。"""
         from wx_obsidian.tui.app import WxObsidianApp
 
@@ -162,7 +162,7 @@ class SchedulerScreen(Screen[None]):
         except Exception as e:
             typed_app.show_notification(f"抓取失败: {e}", severity="error")
 
-    async def _keepalive(self, app: object) -> None:
+    async def _keepalive(self, app: Any) -> None:
         """保活：刷新微信读书 cookie。"""
         from wx_obsidian.tui.app import WxObsidianApp
 

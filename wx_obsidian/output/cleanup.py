@@ -153,6 +153,14 @@ def cascade_delete(
     return actions
 
 
+def _matches_wikilink(line: str, safe_title: str) -> bool:
+    """检查行中的 wikilink 是否精确引用了 safe_title（非子串匹配）。"""
+    if not line.strip().startswith("- ") or "[[" not in line:
+        return False
+    pattern = re.compile(r"\[\[[^\]]*\b" + re.escape(safe_title) + r"\b[^\]]*\]\]")
+    return bool(pattern.search(line))
+
+
 def _remove_moc_entry(articles_dir: Path, category: str, safe_title: str, date: str) -> list[str]:
     """从分类 _MOC.md 移除文章条目。"""
     moc_file = articles_dir / category / "_MOC.md"
@@ -161,10 +169,7 @@ def _remove_moc_entry(articles_dir: Path, category: str, safe_title: str, date: 
 
     content = moc_file.read_text(encoding="utf-8")
     lines = content.split("\n")
-    # 匹配格式: "- DATE [[TITLE]]" 或 "- DATE [[CATEGORY/TITLE|ALIAS]]"
-    new_lines = [
-        line for line in lines if safe_title not in line or not line.strip().startswith("-")
-    ]
+    new_lines = [line for line in lines if not _matches_wikilink(line, safe_title)]
 
     if len(new_lines) == len(lines):
         return [f"MOC 条目未找到: {safe_title}"]
@@ -244,7 +249,7 @@ def _remove_archive_entry(
     skip_next_indent = False
 
     for line in lines:
-        if safe_title in line and line.strip().startswith("- "):
+        if _matches_wikilink(line, safe_title):
             # 这是文章条目行，跳过
             skip_next_indent = True
             continue

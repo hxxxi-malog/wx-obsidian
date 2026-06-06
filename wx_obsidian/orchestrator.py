@@ -143,7 +143,7 @@ def _vision_stage(ctx: PipelineContext) -> PipelineContext:
                     desc.is_content,
                     desc.description[:60] if desc.description else "(空)",
                 )
-    except Exception:
+    except (requests.RequestException, OSError, ValueError, KeyError):
         logger.warning("VisionStage 失败，降级到纯文本", exc_info=True)
         ctx.image_descriptions = None
     return ctx
@@ -247,7 +247,7 @@ def _normalize_llm_response(data: dict[str, Any]) -> None:
 
 
 def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 5: 生成 Markdown 并校验。"""
+    """Stage 4: 生成 Markdown 并校验。"""
     if ctx.processed.get("__skip"):
         return ctx
 
@@ -296,7 +296,7 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
                         print("  LLM 修正后格式校验通过")
                 else:
                     print("  LLM 修正未产生变化，保留自动修复版本")
-        except Exception as e:
+        except (requests.RequestException, OSError, ValueError) as e:
             logger.warning("结构性格式修正失败（跳过）: %s", e)
     except (ValueError, OSError, AttributeError) as e:
         ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
@@ -308,7 +308,7 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
 
 
 def _image_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 4: 替换 [IMG:N] 占位符为图片 markdown，清除残留占位符。"""
+    """Stage 5: 替换 [IMG:N] 占位符为图片 markdown，清除残留占位符。"""
     if ctx.processed.get("__skip") or not ctx.md_content:
         return ctx
 
@@ -331,6 +331,9 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
             md = md.replace(f"[IMG:{i}]", img_md)
 
     # 清除所有未替换的 [IMG:N] 占位符
+    leftover = re.findall(r"\[IMG:\d+\]", md)
+    if leftover:
+        logger.warning("LLM 引用了 %d 个不存在的图片占位符: %s", len(leftover), leftover)
     md = re.sub(r"\[IMG:\d+\]", "", md)
 
     # 未配视觉模型时，LLM 没有图片上下文，降级到关键词匹配
@@ -342,7 +345,7 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
 
 
 def _write_stage(ctx: PipelineContext) -> PipelineContext:
-    """Stage 7: 写入 vault 文件（知识图谱更新由串行阶段处理）。"""
+    """Stage 6: 写入 vault 文件（知识图谱更新由串行阶段处理）。"""
     if ctx.processed.get("__skip"):
         skip_info = ctx.processed["__skip"]
         article_id = ctx.processed["article_id"]
