@@ -93,9 +93,10 @@ def load_last_fetch_date() -> str | None:
     return processed.get("last_fetch_date")
 
 
-def save_last_fetch_date(date_str: str) -> None:
+def save_last_fetch_date(date_str: str, processed: dict[str, Any] | None = None) -> None:
     """保存本次抓取日期。"""
-    processed = load_processed()
+    if processed is None:
+        processed = load_processed()
     processed["last_fetch_date"] = date_str
     save_processed(processed)
 

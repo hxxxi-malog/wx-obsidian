@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 
-from wx_obsidian.batch import ArchiveWriter, BatchProcessor, ResultCollector
+from wx_obsidian.batch import ArchiveWriter, BatchProcessor
 from wx_obsidian.config import (
     load_config,
     load_processed,
@@ -412,7 +412,6 @@ def _process_article_for_batch(
     archive_writer: ArchiveWriter,
 ) -> dict[str, Any]:
     """处理单篇文章（用于批量处理）。"""
-    processed: dict[str, Any] = {}
     ctx = PipelineContext(
         article=article,
         content="",
@@ -423,7 +422,6 @@ def _process_article_for_batch(
             "articles_dir": articles_dir,
             "existing_articles": existing_articles,
             "existing_concepts": existing_concepts,
-            "global_processed": processed,
         },
         processed={},
     )
@@ -482,12 +480,8 @@ def _update_knowledge_graph(
     """串行阶段：更新知识图谱（MOC、概念页、子目录）。"""
     print("\n更新知识图谱...")
 
-    # 重新扫描所有文章和概念
-    existing_articles_list, existing_concepts_list = scan_existing_content(
-        vault_path, config["obsidian"]["articles_dir"]
-    )
-
     # 遍历所有已处理的文章，更新知识图谱
+    seen_subcategory: set[tuple[str, str]] = set()
     for _article_id, record in processed.items():
         if not isinstance(record, dict) or record.get("status") != "done":
             continue
@@ -513,8 +507,11 @@ def _update_knowledge_graph(
             if concept_name:
                 ensure_concept_page(vault_path, concept_name, concept_desc, articles_dir)
 
-        # 创建子目录（如果需要）
-        maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
+        # 创建子目录（如果需要）- 每个 (category, sub_topic) 只调用一次
+        key = (category, sub_topic)
+        if sub_topic and key not in seen_subcategory:
+            seen_subcategory.add(key)
+            maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
 
     print("知识图谱更新完成")
 
@@ -580,7 +577,6 @@ def main() -> None:
 
     # 并行阶段：处理文章
     print(f"\n开始并行处理 {len(new_articles)} 篇文章...")
-    result_collector = ResultCollector()
 
     # 预构建 article_id -> article 映射
     id_to_article = {str(a.get("id")): a for a in new_articles}
@@ -588,10 +584,7 @@ def main() -> None:
     def on_article_complete(result: dict[str, Any]) -> None:
         """每篇文章完成时的回调。"""
         article_id = result.get("article_id", "unknown")
-        result_collector.add_result(article_id, result)
-        # 每篇完成后原子保存 processed.json
         processed[article_id] = result
-        save_processed(processed)
 
     processor = BatchProcessor()
     with processor:
@@ -608,6 +601,9 @@ def main() -> None:
             ),
             on_complete=on_article_complete,
         )
+
+    # 批量保存 processed.json
+    save_processed(processed)
 
     # 计算最新文章日期
     latest_date = ""
@@ -626,7 +622,7 @@ def main() -> None:
 
     # 更新最后抓取日期
     if latest_date:
-        save_last_fetch_date(latest_date)
+        save_last_fetch_date(latest_date, processed)
         print(f"已更新最后抓取日期: {latest_date}")
 
     done_count = sum(

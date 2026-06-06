@@ -1,14 +1,16 @@
-"""批量并行处理：BatchProcessor, ResultCollector, ArchiveWriter。"""
+"""批量并行处理：BatchProcessor, ArchiveWriter。"""
 
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Callable
 
-from wx_obsidian.config import load_max_workers, save_processed
+from wx_obsidian.config import load_max_workers
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,7 @@ def _is_retryable_error(error: Exception) -> bool:
             return error.response.status_code in RETRYABLE_HTTP_CODES
     except ImportError:
         pass
-    # 降级：检查错误消息中的关键词
-    error_str = str(error).lower()
-    retryable_patterns = ["timeout", "connection", "reset"]
-    return any(pattern in error_str for pattern in retryable_patterns)
+    return False
 
 
 class BatchProcessor:
@@ -133,9 +132,11 @@ class BatchProcessor:
             except Exception as e:
                 last_error = e
                 if _is_retryable_error(e) and attempt < MAX_RETRIES - 1:
-                    delay = 2 ** attempt
+                    base_delay = 2 ** attempt
+                    jitter = random.uniform(0, base_delay * 0.1)
+                    delay = base_delay + jitter
                     logger.warning(
-                        "文章处理失败，重试 %d/%d (等待 %ds): %s - %s",
+                        "文章处理失败，重试 %d/%d (等待 %.1fs): %s - %s",
                         attempt + 1,
                         MAX_RETRIES,
                         delay,
@@ -155,47 +156,15 @@ class BatchProcessor:
         }
 
 
-class ResultCollector:
-    """线程安全地收集结果，保护 processed.json 并发写入。"""
-
-    def __init__(self) -> None:
-        self._results: dict[str, dict[str, Any]] = {}
-        self._lock = threading.Lock()
-
-    def add_result(self, article_id: str, result: dict[str, Any]) -> None:
-        """添加处理结果（线程安全）。"""
-        with self._lock:
-            self._results[article_id] = result
-
-    def get_results(self) -> dict[str, dict[str, Any]]:
-        """获取所有结果。"""
-        with self._lock:
-            return self._results.copy()
-
-    def save(self, processed: dict[str, Any]) -> None:
-        """保存结果到 processed.json（原子写入）。"""
-        with self._lock:
-            merged = {**processed, **self._results}
-            save_processed(merged)
-
-
 class ArchiveWriter:
-    """线程安全地更新归档文件。"""
+    """线程安全地更新归档文件（使用单把全局锁）。"""
 
     def __init__(self) -> None:
-        self._locks: dict[str, threading.Lock] = {}
-        self._locks_lock = threading.Lock()
-
-    def _get_lock(self, archive_path: str) -> threading.Lock:
-        """获取归档文件对应的锁。"""
-        with self._locks_lock:
-            if archive_path not in self._locks:
-                self._locks[archive_path] = threading.Lock()
-            return self._locks[archive_path]
+        self._lock = threading.Lock()
 
     def update_archive(
         self,
-        vault_path: Any,
+        vault_path: Path,
         date_str: str,
         title: str,
         category: str,
@@ -204,18 +173,5 @@ class ArchiveWriter:
         """更新归档文件（线程安全）。"""
         from wx_obsidian.output.vault import update_daily_archive
 
-        # 解析日期：2026-06-05 -> 26/06/05
-        parts = date_str.split("-")
-        if len(parts) != 3:
-            return
-        yy, mm, dd = parts[0][2:], parts[1], parts[2]
-
-        # 归档文件路径
-        archive_dir = vault_path / "归档" / yy / mm
-        archive_file = archive_dir / f"{dd}.md"
-
-        # 获取锁
-        lock = self._get_lock(str(archive_file))
-
-        with lock:
+        with self._lock:
             update_daily_archive(vault_path, date_str, title, category, summary)
