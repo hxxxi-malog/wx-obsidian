@@ -31,7 +31,6 @@ FAILED_FILE = CONFIG_DIR / "failed.json"
 # 旧配置路径（项目目录）
 _OLD_CONFIG_YAML = Path(__file__).parent.parent / "config.yaml"
 _OLD_ENV_FILE = Path(__file__).parent.parent / ".env"
-_OLD_PROCESSED_FILE = Path(__file__).parent.parent / "processed.json"
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "version": "1.0",
@@ -259,14 +258,6 @@ class ConfigManager:
         if categories:
             merged["categories"] = categories
             report.migrated_items.append(f"迁移 {len(categories)} 个分类")
-
-        # 迁移 processed.json
-        if _OLD_PROCESSED_FILE.exists() and not PROCESSED_FILE.exists():
-            try:
-                shutil.copy2(_OLD_PROCESSED_FILE, PROCESSED_FILE)
-                report.migrated_items.append("迁移 processed.json")
-            except OSError as e:
-                report.errors.append(f"迁移 processed.json 失败: {e}")
 
         # 迁移 .env（复制敏感信息到新位置）
         if _OLD_ENV_FILE.exists() and not self._env_file.exists():

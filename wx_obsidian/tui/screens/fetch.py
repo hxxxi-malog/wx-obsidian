@@ -54,11 +54,10 @@ class FetchScreen(Screen[None]):
 
     async def _load_history(self) -> None:
         """异步加载处理历史。"""
-        from wx_obsidian.tui.app import WxObsidianApp
-
-        app = cast(WxObsidianApp, self.app)
         list_view = self.query_one("#history-list", ListView)
-        processed = await asyncio.to_thread(app.orchestrator.load_processed)
+        from wx_obsidian.config import load_processed
+
+        processed = await asyncio.to_thread(load_processed)
         rows: list[str] = []
         for _aid, record in processed.items():
             if isinstance(record, dict) and record.get("status") == "done":

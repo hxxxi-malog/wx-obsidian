@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -15,8 +14,7 @@ from typing import Any, Callable
 import requests
 
 from wx_obsidian.batch import ArchiveWriter, BatchProcessor
-from wx_obsidian.config import load_processed, load_vision_config
-from wx_obsidian.config_manager import PROCESSED_FILE as NEW_PROCESSED_FILE
+from wx_obsidian.config import load_processed, load_vision_config, save_processed
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.models import (
     AccountStatus,
@@ -210,11 +208,12 @@ def _llm_pass2_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
-def _normalize_llm_response(data: dict[str, Any]) -> dict[str, Any]:
-    """规范化 LLM 返回的 concepts/body_sections 字段，确保类型正确。"""
+def _normalize_llm_response(data: dict[str, Any]) -> None:
+    """规范化 LLM 返回的 concepts/body_sections 字段，原地修改确保类型正确。"""
     # concepts 应为 list[dict]，LLM 可能返回 list[str]
     concepts = data.get("concepts", [])
-    if concepts and not isinstance(concepts[0], dict):
+    if isinstance(concepts, list) and any(not isinstance(c, dict) for c in concepts):
+        logger.warning("LLM 返回的 concepts 包含非 dict 元素，自动规范化")
         data["concepts"] = [
             {"name": str(c), "description": ""}
             if isinstance(c, str)
@@ -224,15 +223,14 @@ def _normalize_llm_response(data: dict[str, Any]) -> dict[str, Any]:
 
     # body_sections 应为 list[dict]，LLM 可能返回 list[str]
     sections = data.get("body_sections", [])
-    if sections and not isinstance(sections[0], dict):
+    if isinstance(sections, list) and any(not isinstance(s, dict) for s in sections):
+        logger.warning("LLM 返回的 body_sections 包含非 dict 元素，自动规范化")
         data["body_sections"] = [
             {"heading": "", "content": str(s)}
             if isinstance(s, str)
             else {"heading": "", "content": ""}
             for s in sections
         ]
-
-    return data
 
 
 def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
@@ -282,6 +280,8 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
     md = ctx.md_content
     summary_data = ctx.summary_data
     llm_images = summary_data.get("images", []) if summary_data else []
+    if not isinstance(llm_images, list):
+        llm_images = []
 
     if llm_images:
         for i, img in enumerate(llm_images, 1):
@@ -430,7 +430,7 @@ class Orchestrator:
 
     def get_statistics(self) -> Statistics:
         """从 processed.json 统计处理信息。"""
-        processed = self.load_processed()
+        processed = load_processed()
         categories: dict[str, int] = {}
         processed_count = 0
         failed_count = 0
@@ -517,33 +517,6 @@ class Orchestrator:
         """
         return await asyncio.to_thread(self._fetch_and_process_sync, limit, on_progress)
 
-    def load_processed(self) -> dict[str, Any]:
-        """加载 processed.json，优先使用新路径。"""
-        if NEW_PROCESSED_FILE.exists():
-            try:
-                result: dict[str, Any] = json.loads(NEW_PROCESSED_FILE.read_text(encoding="utf-8"))
-                return result
-            except (json.JSONDecodeError, OSError):
-                pass
-        return load_processed()
-
-    def _save_processed(self, processed: dict[str, Any]) -> None:
-        """原子写入 processed.json 到新路径。"""
-        import tempfile
-
-        NEW_PROCESSED_FILE.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(processed, ensure_ascii=False, indent=2)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=NEW_PROCESSED_FILE.parent, suffix=".tmp", prefix=".processed_"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(data)
-            os.replace(tmp_path, NEW_PROCESSED_FILE)
-        except BaseException:
-            os.unlink(tmp_path)
-            raise
-
     def _fetch_and_process_sync(
         self,
         limit: int = 0,
@@ -553,7 +526,7 @@ class Orchestrator:
         # 加载 .env 到 os.environ（确保 load_vision_config 等函数正常工作）
         self._load_env_to_environ()
 
-        processed = self.load_processed()
+        processed = load_processed()
         vault_path = Path(self._config_manager.get("obsidian.vault_path", ""))
         articles_dir_name = self._config_manager.get("obsidian.articles_dir", "公众号文章")
         articles_dir = vault_path / articles_dir_name
@@ -657,7 +630,7 @@ class Orchestrator:
             processed["last_fetch_date"] = latest_date
 
         # 保存 processed.json（统一写入新路径）
-        self._save_processed(processed)
+        save_processed(processed)
 
         # 更新知识图谱（仅处理新文章）
         _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids)
@@ -681,7 +654,7 @@ class Orchestrator:
 
     async def retry_failed(self, article_ids: list[str]) -> list[ProcessingResult]:
         """重试失败文章。仅清除 status=error 的记录，然后重新抓取。"""
-        processed = self.load_processed()
+        processed = load_processed()
         cleared = 0
 
         for aid in article_ids:
@@ -694,7 +667,7 @@ class Orchestrator:
             logger.info("没有可重试的失败文章")
             return []
 
-        self._save_processed(processed)
+        save_processed(processed)
         logger.info("已清除 %d 条失败记录，开始重新抓取", cleared)
 
         # 重新抓取（仅处理被清除的失败文章，不处理其他新文章）

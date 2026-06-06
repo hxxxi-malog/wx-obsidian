@@ -18,7 +18,7 @@ import yaml
 SCRIPT_DIR = Path(__file__).parent.parent
 SKILLS_DIR = SCRIPT_DIR / "skills"
 PROMPTS_DIR = SCRIPT_DIR / "prompts"
-PROCESSED_FILE = SCRIPT_DIR / "processed.json"
+PROCESSED_FILE = Path.home() / ".wx-obsidian" / "processed.json"
 MAX_ARTICLE_LENGTH = 15000
 MAX_PROMPT_CONTENT = 10000
 SUB_TOPIC_THRESHOLD = 3
@@ -82,6 +82,7 @@ def load_processed() -> dict[str, Any]:
 
 def save_processed(processed: dict[str, Any]) -> None:
     """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。"""
+    PROCESSED_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(processed, ensure_ascii=False, indent=2)
     fd, tmp_path = tempfile.mkstemp(dir=PROCESSED_FILE.parent, suffix=".tmp", prefix=".processed_")
     try:
@@ -91,20 +92,6 @@ def save_processed(processed: dict[str, Any]) -> None:
     except BaseException:
         os.unlink(tmp_path)
         raise
-
-
-def load_last_fetch_date() -> str | None:
-    """加载上次抓取日期。"""
-    processed = load_processed()
-    return processed.get("last_fetch_date")
-
-
-def save_last_fetch_date(date_str: str, processed: dict[str, Any] | None = None) -> None:
-    """保存本次抓取日期。"""
-    if processed is None:
-        processed = load_processed()
-    processed["last_fetch_date"] = date_str
-    save_processed(processed)
 
 
 def load_max_workers() -> int:
