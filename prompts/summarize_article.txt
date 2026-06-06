@@ -30,6 +30,8 @@ $metadata_style
 
 **重要**：`related_topics` 字段必须从上述已有内容中选取与当前文章相关的，不要凭空创建。无匹配时返回空数组。
 
+$images_context
+
 请严格按照以上风格和规范，输出以下 JSON（不要输出其他内容）：
 {
   "category": "按照分类规范选择或创建",
@@ -46,6 +48,9 @@ $metadata_style
   ],
   "tags": ["标签1", "标签2", "标签3"],
   "related_topics": ["从已有文章或概念中选取，无匹配则空数组"],
+  "images": [
+    {"url": "图片URL", "purpose": "15字以内的简短标题", "valuable": true, "reason": "选择/排除原因"}
+  ],
   "body_sections": [
     {
       "heading": "一、核心概念与背景",
@@ -61,6 +66,15 @@ $metadata_style
     }
   ]
 }
+
+图片使用规则（当文章包含图片描述时）：
+- images 数组：只包含你认为有价值的图片（valuable=true），过滤掉无关图片
+- 每张图片必须包含 reason 字段，说明为什么选择/排除该图片
+- 在 body_sections 的 content 中，在合适的位置插入 `[IMG:N]`（N 为 images 数组的 1-based 索引）
+- `[IMG:N]` 必须独占一行，前后有空行，不要插在表格行内或句子中间
+- 图片是对文字的补充：先有文字引出，再用 `[IMG:N]`，然后继续文字分析
+- 默认策略：不确定图片是否有价值时，不插入（宁可漏选，不可错选）
+- 如果所有图片都没有价值，images 返回空数组 []
 
 注意：
 - body_sections 是文章主体的结构化拆解，不是简单罗列，而是深度分析，要拓展读者的思路和视野
