@@ -13,31 +13,120 @@
 
 ## 核心特性
 
+- **CLI + TUI 双模式**：命令行批量处理 + Textual 终端图形界面管理
 - **全自动抓取**：通过 WeWe RSS 定时拉取公众号文章，增量处理不重复
+- **批量并行处理**：ThreadPoolExecutor 并行处理多篇文章，自动重试失败任务
 - **两轮 LLM 架构**：Pass 1 纯文本生成结构化笔记，Pass 2 结合图片描述修订正文并智能插入图片
 - **多模态 Vision**：DashScope 视觉模型识别文章图片，为 LLM 提供图片语义描述
 - **3-Skill 系统**：模块化控制输出风格，写作风格、分类规则、元数据格式独立配置
 - **智能分类**：18 个预设分类 + 动态新增，同一子主题积累 3 篇后自动创建子目录
 - **知识图谱**：`[[双向链接]]` 关联已有文章和概念页面，Obsidian Graph View 自动成图
+- **定时调度**：APScheduler 集成，支持 cron 定时抓取和处理
 - **格式保障**：每篇文章生成后自动执行 Markdown 校验与修复
 - **优雅降级**：Vision API 不可用时自动跳过 Pass 2，降级到纯文本 + 关键词匹配
+
+## Quick Start
+
+从零开始跑通整个流程，大约需要 10 分钟。
+
+### 前置条件
+
+- Python 3.9+
+- Docker（用于部署 WeWe RSS）
+- 一个 [DeepSeek API Key](https://platform.deepseek.com/)
+- （可选）一个 [DashScope API Key](https://dashscope.console.aliyun.com/)，用于多模态图片识别
+
+### Step 1: 克隆并安装依赖
+
+```bash
+git clone https://github.com/yourname/wx-obsidian.git
+cd wx-obsidian
+
+# 方式一：pip
+pip install requests pyyaml textual apscheduler
+
+# 方式二：uv（推荐）
+uv sync
+```
+
+### Step 2: 启动 WeWe RSS
+
+WeWe RSS 负责抓取微信公众号文章，以 Docker 方式部署：
+
+```bash
+docker compose up -d
+```
+
+启动后访问 http://localhost:4000，用微信扫码登录，然后添加你要订阅的公众号。
+
+### Step 3: 启动 TUI 并配置
+
+```bash
+python process_articles.py tui
+```
+
+进入 Config 界面，填写：
+
+| 配置项 | 说明 |
+|--------|------|
+| DeepSeek API Key | 必填，[获取地址](https://platform.deepseek.com/) |
+| Vision API Key | 可选，留空则禁用多模态图片识别 |
+| 知识库路径 | 你的 Obsidian Vault 路径（支持目录选择器） |
+| WeWe RSS 服务地址 | 默认 `http://localhost:4000`，一般不用改 |
+
+每项配置旁边都有「测试连通性」按钮，填完点一下确认没问题，然后点「保存配置」。
+
+### Step 4: 抓取并处理文章
+
+在 TUI 的 Fetch 界面可以手动触发文章抓取与处理。也可以直接用命令行：
+
+```bash
+# 处理所有未处理的文章
+python process_articles.py
+
+# 只处理 5 篇（试跑）
+python process_articles.py --limit 5
+```
+
+### Step 5: 查看结果
+
+打开 Obsidian，进入你配置的 Vault，找到 `公众号文章/` 目录。每篇文章生成一个 `.md` 文件，包含 frontmatter 元数据、结构化正文、`[[双向链接]]` 和图片。在 Obsidian 的 Graph View 中可以看到知识图谱自动成图。
+
+## TUI 模式
+
+基于 [Textual](https://textual.textualize.io/) 的终端图形界面，提供完整的管理功能：
+
+```
+python process_articles.py tui
+```
+
+| 界面 | 功能 |
+|------|------|
+| Home | 状态概览、快速操作入口 |
+| Container | WeWe RSS 容器状态监控、启停控制 |
+| Account | 微信登录状态、扫码保活 |
+| Feeds | 公众号订阅管理 |
+| Config | LLM/Vision/Obsidian 配置编辑、连通性测试 |
+| Fetch | 手动触发文章抓取与处理 |
+| Scheduler | 定时任务管理（cron 表达式配置） |
 
 ## 架构
 
 ```
-WeWe RSS (Docker, localhost:4000)
-    ↓ JSON Feed（定时拉取）
 process_articles.py
-    ↓ Pipeline: 7 个 Stage 串行执行
+    ├── CLI 模式 → wx_obsidian/cli.py → Orchestrator
+    └── TUI 模式 → wx_obsidian/tui/   → Orchestrator
+
+Orchestrator（核心编排器）
     │
-    ├─ Stage 1: Fetch       ← 提取文章信息 + 正文内容
-    ├─ Stage 2: Vision      ← DashScope 视觉模型识别图片（可选）
-    ├─ Stage 3: LLM Pass 1  ← DeepSeek 生成结构化笔记（纯文本）
-    ├─ Stage 4: LLM Pass 2  ← DeepSeek 结合图片描述修订正文（可选）
-    ├─ Stage 5: Markdown    ← 生成 Obsidian Markdown + 格式校验
-    ├─ Stage 6: Image       ← 替换 [IMG:N] 占位符为图片
-    └─ Stage 7: Write       ← 写入 Vault + 更新 MOC + 概念页面
-    ↓
+    ├─ Fetch       ← WeWe RSS 拉取文章（支持批量并行）
+    ├─ Vision      ← DashScope 视觉模型识别图片（可选）
+    ├─ LLM Pass 1  ← DeepSeek 生成结构化笔记（纯文本）
+    ├─ LLM Pass 2  ← DeepSeek 结合图片描述修订正文（可选）
+    ├─ Markdown    ← 生成 Obsidian Markdown + 格式校验
+    ├─ Image       ← 替换 [IMG:N] 占位符为图片
+    └─ Write       ← 写入 Vault + 更新 MOC + 概念页面
+
 Obsidian Vault/
     └── 公众号文章/
         ├── _MOC.md               ← 总目录（自动更新）
@@ -46,11 +135,57 @@ Obsidian Vault/
         │   └── *.md              ← 文章笔记
         ├── Agent架构/
         ├── Prompt Engineering/
-        ├── RAG/
-        ├── ...
         └── 概念/
             ├── Transformer.md    ← 概念页面（聚合相关文章）
             └── RAG.md
+```
+
+## 项目结构
+
+```
+wx-obsidian/
+├── process_articles.py          # 统一入口（CLI / TUI 子命令）
+├── validate_markdown.py         # Markdown 格式校验（向后兼容入口）
+├── config.yaml                  # 项目配置（Vault 路径、分类列表）
+├── docker-compose.yml           # WeWe RSS + MySQL 部署
+├── run.sh                       # 定时运行脚本
+├── pyproject.toml               # Python 项目配置
+├── .env.example                 # 环境变量模板
+│
+├── prompts/                     # LLM Prompt 模板
+│   ├── summarize_article.txt    # Pass 1：纯文本生成
+│   └── refine_with_images.txt   # Pass 2：图文修订
+│
+├── skills/                      # AI 输出控制 Skill
+│   ├── article-body/            # 写作风格 + 图片规范
+│   ├── classification/          # 分类规则
+│   └── note-metadata/           # 元数据与链接
+│
+└── wx_obsidian/                 # 核心 Python 包
+    ├── cli.py                   # CLI 入口
+    ├── orchestrator.py          # 核心编排器（TUI/CLI 共享）
+    ├── config_manager.py        # 配置管理（~/.wx-obsidian/config.json）
+    ├── config.py                # 旧版配置读取（兼容）
+    ├── models.py                # 全局数据模型
+    ├── batch.py                 # 批量并行处理 + 重试
+    ├── scheduler.py             # 定时任务调度（APScheduler）
+    ├── wewe_rss.py              # WeWe RSS tRPC API 客户端
+    ├── sources/
+    │   └── rss.py               # RSS Feed 解析 + 文章正文提取
+    ├── processing/
+    │   ├── pipeline.py          # Pipeline 引擎（函数组合式 stage）
+    │   ├── models.py            # Pipeline 数据模型
+    │   ├── vision.py            # 多模态 Vision API
+    │   ├── llm.py               # DeepSeek 两轮调用
+    │   ├── images.py            # 图片提取与插入
+    │   └── markdown.py          # Markdown 生成
+    ├── output/
+    │   ├── vault.py             # Obsidian Vault 操作
+    │   └── validator.py         # 格式校验
+    └── tui/                     # Textual TUI 界面
+        ├── app.py               # TUI 主应用
+        ├── screens/             # 各功能界面
+        └── widgets/             # 自定义组件
 ```
 
 ## Skill 系统
@@ -71,98 +206,6 @@ Obsidian Vault/
 |------|------|------|
 | Pass 1 | `prompts/summarize_article.txt` | 纯文本生成结构化笔记（不含图片决策） |
 | Pass 2 | `prompts/refine_with_images.txt` | 结合原文 + 图片描述修订正文，嵌入 `[IMG:N]` 占位符 |
-
-## 快速开始
-
-### 环境要求
-
-- Python 3.9+
-- Docker（用于部署 WeWe RSS）
-- DeepSeek API Key
-- DashScope API Key（可选，用于多模态图片识别）
-
-### 1. 部署 WeWe RSS
-
-```bash
-# 启动 WeWe RSS + MySQL
-docker compose up -d
-
-# 访问 http://localhost:4000，用微信扫码登录
-# 添加要订阅的公众号
-```
-
-### 2. 配置环境变量
-
-```bash
-# 复制配置模板
-cp .env.example .env
-
-# 编辑 .env，填入你的 API Key
-vim .env
-```
-
-`.env` 配置项：
-
-**DeepSeek API（必填）**
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 必填 |
-| `DEEPSEEK_BASE_URL` | API 地址 | `https://api.deepseek.com` |
-| `MODEL_NAME` | 模型名称 | `deepseek-chat` |
-
-**多模态 Vision API（可选，留空则禁用多模态，自动降级到纯文本）**
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `VISION_API_KEY` | DashScope API 密钥 | 留空禁用 |
-| `VISION_BASE_URL` | Vision API 地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `VISION_MODEL_NAME` | 视觉模型名称 | `qwen-vl-plus` |
-| `MAX_VISION_CONCURRENCY` | 图片识别并发数 | `10` |
-| `VISION_TIMEOUT` | Vision API 超时（秒） | `120` |
-| `VISION_MAX_RETRIES` | 重试次数 | `2` |
-
-**其他配置**
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `AUTH_CODE` | WeWe RSS 认证码 | `wxkb2026` |
-| `CRON_EXPRESSION` | 文章抓取定时 | `0 */2 * * *` |
-| `DEBUG` | 调试模式（保存 API 原始响应） | `0` |
-
-### 3. 配置 Obsidian Vault 路径
-
-编辑 `config.yaml`，修改 `vault_path` 为你的 Obsidian Vault 路径：
-
-```yaml
-obsidian:
-  vault_path: "/path/to/your/obsidian/vault"
-  articles_dir: "公众号文章"
-```
-
-### 4. 安装依赖并运行
-
-```bash
-# 安装依赖
-pip install requests pyyaml
-
-# 运行（处理所有未处理的文章）
-python process_articles.py
-
-# 只处理指定数量
-python process_articles.py --limit 5
-```
-
-### 5. 定时运行（可选）
-
-```bash
-# 使用 run.sh（自动加载环境变量）
-chmod +x run.sh
-./run.sh
-
-# 或配置 crontab
-0 */2 * * * cd /path/to/wx-obsidian && python process_articles.py >> logs/run.log 2>&1
-```
 
 ## 生成笔记示例
 
@@ -192,9 +235,6 @@ Claude Code 采用了"胖核心"设计，query.ts 刻意保持 785KB 单文件..
 
 ![架构全景图](https://mmbiz.qpic.cn/...)
 
-## 二、工具调度机制
-工具调度遵循开闭原则，所有扩展不修改核心循环...
-
 ## 关键概念
 - [[Progressive Harness]]：渐进式工程包装，在极简内核外逐层叠加生产级特性
 - [[Context Engineering]]：构建高信噪比上下文供给系统的工程方法论
@@ -220,75 +260,9 @@ Claude Code 采用了"胖核心"设计，query.ts 刻意保持 785KB 单文件..
 
 同一 `sub_topic` 积累 3 篇文章后，自动创建子目录聚合。
 
-## 项目结构
-
-```
-wx-obsidian/
-├── process_articles.py          # CLI 入口
-├── validate_markdown.py         # Markdown 格式校验与自动修复
-├── config.yaml                  # 项目配置（Vault 路径、分类列表）
-├── docker-compose.yml           # WeWe RSS + MySQL 部署
-├── run.sh                       # 定时运行脚本
-├── pyproject.toml               # Python 项目配置
-├── .env.example                 # 环境变量模板
-├── prompts/                     # LLM Prompt 模板
-│   ├── summarize_article.txt    # Pass 1：纯文本生成
-│   └── refine_with_images.txt   # Pass 2：图文修订
-├── skills/                      # AI 输出控制 Skill
-│   ├── article-body/            # 写作风格 + 图片规范
-│   ├── classification/          # 分类规则
-│   └── note-metadata/           # 元数据与链接
-├── wx_obsidian/                 # 核心 Python 包
-│   ├── cli.py                   # 流程编排（7 Stage Pipeline）
-│   ├── config.py                # 配置/持久化
-│   ├── sources/rss.py           # WeWe RSS 抓取
-│   ├── processing/
-│   │   ├── vision.py            # 多模态 Vision API
-│   │   ├── llm.py               # DeepSeek 两轮调用
-│   │   ├── images.py            # 图片提取
-│   │   ├── markdown.py          # Markdown 生成
-│   │   ├── models.py            # 数据模型
-│   │   └── pipeline.py          # Pipeline 引擎
-│   └── output/
-│       ├── vault.py             # Obsidian Vault 操作
-│       └── validator.py         # 格式校验
-├── docs/                        # 设计文档
-└── data/                        # WeWe RSS 数据目录
-```
-
-## 工作原理
-
-两轮 LLM + 多模态 Vision 的处理流程：
-
-```
-1. fetch_articles()                    ← WeWe RSS JSON Feed 拉取文章列表
-2. _fetch_stage()                      ← 提取文章信息 + 正文内容（Feed 不足时从 URL 抓取）
-3. _vision_stage()                     ← DashScope 视觉模型识别图片 → image_descriptions
-4. _llm_pass1_stage()                  ← DeepSeek 纯文本生成 → body_sections（不看图片）
-5. _llm_pass2_stage()                  ← DeepSeek 结合原文 + 图片描述修订 → [IMG:N] 占位符
-6. _markdown_stage()                   ← 生成 Obsidian Markdown + 格式校验
-7. _image_stage()                      ← 替换 [IMG:N] → ![purpose](url)
-8. _write_stage()                      ← 写入文件 → 创建概念页面 → 更新 MOC → 检查子目录拆分
-```
-
-**两轮 LLM 架构**：
-- **Pass 1**（纯文本）：不看图片，专注生成结构化笔记的骨架（摘要、核心观点、详细拆解）
-- **Pass 2**（图文修订）：拿到 Pass 1 输出 + Vision 图片描述，修订正文并在合适位置嵌入 `[IMG:N]` 占位符
-- **降级策略**：Vision API 不可用 → 跳过 Pass 2 → Pass 1 结果 + 关键词匹配插入图片
-
-关键设计：
-- **增量处理**：`processed.json` 记录已处理文章 ID，跳过重复
-- **原子进度**：每处理完一篇立即保存进度，中断不丢数据
-- **路径安全**：LLM 返回的分类名经过正则清洗，防止路径注入
-- **概念聚合**：相同概念被多篇文章引用时，自动创建概念页面形成图谱节点
-- **相关链接**：扫描已有知识库，只链接已存在的文章和概念，不创建死链接
-
 ## 开发
 
 ```bash
-# 安装开发依赖
-pip install ruff mypy pytest
-
 # 代码检查
 ruff check .
 
@@ -297,9 +271,6 @@ ruff format .
 
 # 类型检查
 mypy wx_obsidian/ process_articles.py validate_markdown.py
-
-# 运行测试
-pytest tests/
 ```
 
 ## License
