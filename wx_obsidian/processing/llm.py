@@ -39,7 +39,11 @@ def _build_images_context(
     """
     if not image_descriptions:
         return ""
-    content_images = [d for d in image_descriptions if d.is_content and d.status == "ok"]
+    content_images = [
+        d
+        for d in image_descriptions
+        if d.is_content and d.status == "ok" and len(d.description) >= 10
+    ]
     if not content_images:
         return ""
     # 构建 url -> before/after 的映射
@@ -96,6 +100,19 @@ def load_refine_prompt_template() -> Template:
     return Template(template_file.read_text(encoding="utf-8"))
 
 
+def _format_body_sections_as_markdown(body_sections: list[dict[str, Any]]) -> str:
+    """将 body_sections 格式化为可读 markdown，让 LLM 清晰看到表格/代码块结构。"""
+    parts: list[str] = []
+    for section in body_sections:
+        heading = section.get("heading", "")
+        content = section.get("content", "")
+        if heading:
+            parts.append(f"## {heading}\n")
+        parts.append(content)
+        parts.append("")  # 章节间空行
+    return "\n".join(parts)
+
+
 def build_refine_prompt(
     article_content: str,
     body_sections: list[dict[str, Any]],
@@ -104,12 +121,12 @@ def build_refine_prompt(
 ) -> str:
     """构建 Pass 2 的 prompt（结合原文和图片描述修订正文）。"""
     images_context = _build_images_context(image_descriptions, images_with_context)
-    body_json = json.dumps(body_sections, ensure_ascii=False, indent=2)
+    body_md = _format_body_sections_as_markdown(body_sections)
 
     template = load_refine_prompt_template()
     return template.substitute(
         article_content=article_content[:MAX_PROMPT_CONTENT],
-        body_sections=body_json,
+        body_sections=body_md,
         images_context=images_context,
     )
 

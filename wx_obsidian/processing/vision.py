@@ -26,26 +26,24 @@ _AD_URL_PATTERNS = re.compile(
 
 _VISION_PROMPT = (
     "文章上下文：{before}...{after}\n\n"
-    "请详细分析这张图片，返回 JSON 格式：\n"
-    '{{"description": "详细描述", "is_content": true/false, '
-    '"type": "diagram|photo|infographic|ad|icon|qrcode"}}\n\n'
-    "description 要求（这是后续语言模型理解图片的唯一信息来源，要尽可能详细）：\n"
-    "- 第一层：图片类型和整体内容（如'一张三层架构图'、'一个权限决策流程图'）\n"
-    "- 第二层：图中的关键元素（如有哪些模块、节点、箭头指向、数据流向）\n"
-    "- 第三层：它在文章中说明的问题（如'展示Harness/Workspace/Context三层的依赖关系'、"
-    "'说明权限系统从检查到允许/拒绝/用户确认的三态决策逻辑'）\n"
-    "- 不要写'这张图展示了'，直接写内容\n\n"
-    "判断标准：\n"
-    "- is_content=true：图片是文章正文的有机组成部分，帮助读者理解内容"
-    "（如流程图、数据图、示意图、架构图、代码截图）\n"
-    "- is_content=false 适用于以下所有情况（宁可误判为非正文，不可误判为正文）：\n"
-    "  * 二维码、引导关注图、公众号logo、小卡片\n"
-    "  * 广告、赞助商信息、推广内容\n"
+    "请分析这张图片，返回 JSON：\n"
+    '{{"description": "描述", "is_content": true/false, '
+    '"type": "diagram|photo|infographic|ad|icon|qrcode|watermark"}}\n\n'
+    "description 要求（后续 LLM 理解图片的唯一信息来源）：\n"
+    "- 图片类型 + 整体内容（如'三层架构图'、'流程图'）\n"
+    "- 关键元素（模块、节点、数据流向）\n"
+    "- 在文章中说明的问题\n"
+    "- 直接写内容，不要写'这张图展示了'\n\n"
+    "is_content 判断（宁可误判为 false，不可误判为 true）：\n"
+    "- true：正文有机组成部分，帮助理解内容（架构图、数据图、流程图、代码截图）\n"
+    "- false：以下任何一种情况：\n"
+    "  * 二维码、公众号logo、头像、引导关注图\n"
+    "  * 广告、赞助商、推广内容\n"
+    "  * 平台水印/标识（如'AI智能问答'等）\n"
     "  * 纯装饰图、分隔线、空白占位图\n"
-    "  * 通用平台水印图（如'AI智能问答'等平台标识）\n"
-    "  * 与文章主题无直接关联的配图\n"
-    "- type：diagram=流程图/架构图, photo=照片, infographic=信息图/数据图, "
-    "ad=广告, icon=图标, qrcode=二维码, watermark=水印/平台标识"
+    "  * 文末的推荐阅读、点赞在看引导图\n"
+    "  * 无法看出与文章内容的具体关联\n"
+    "- description 为空或极短时，is_content=false"
 )
 
 

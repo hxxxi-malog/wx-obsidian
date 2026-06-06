@@ -38,6 +38,7 @@ from wx_obsidian.processing.llm import refine_with_images, summarize_article
 from wx_obsidian.processing.markdown import generate_markdown, remove_non_cdn_images
 from wx_obsidian.processing.models import PipelineContext
 from wx_obsidian.processing.pipeline import run_pipeline
+from wx_obsidian.processing.similarity import compute_related
 from wx_obsidian.processing.vision import describe_images
 from wx_obsidian.sources.rss import fetch_article_content_and_images, fetch_articles
 from wx_obsidian.wewe_rss import WeWeRSSClient
@@ -286,6 +287,51 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
+def _is_in_table(lines: list[str], idx: int) -> bool:
+    """检测第 idx 行是否在 markdown 表格内（上下有 | 行且包含 separator）。"""
+    # 向上找最近的 | 行（跳过空行）
+    has_pipe_above = False
+    for i in range(idx - 1, -1, -1):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("|"):
+            has_pipe_above = True
+        break
+    # 向下找最近的 | 行（跳过空行）
+    has_pipe_below = False
+    has_separator = False
+    for i in range(idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("|"):
+            has_pipe_below = True
+            if re.match(r"^\|[\s\-:|]+\|$", stripped):
+                has_separator = True
+        break
+    return has_pipe_above and has_pipe_below and has_separator
+
+
+def _is_in_code_block(lines: list[str], idx: int) -> bool:
+    """检测第 idx 行是否在代码块内。"""
+    fence_count = 0
+    for i in range(idx):
+        if lines[i].strip().startswith("```"):
+            fence_count += 1
+    return fence_count % 2 == 1
+
+
+def _find_safe_insert_point(lines: list[str], idx: int) -> int:
+    """找到表格/代码块之后的安全插入位置。"""
+    # 向下找表格结束（连续 | 行的最后一个之后）
+    for i in range(idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped.startswith("|"):
+            return i
+    return len(lines)
+
+
 def _image_stage(ctx: PipelineContext) -> PipelineContext:
     """Stage 6: 替换 [IMG:N] 占位符为图片 markdown，降级到关键词匹配。"""
     if ctx.processed.get("__skip") or not ctx.md_content:
@@ -307,7 +353,8 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
                 continue
             desc = purpose[:20] if purpose else "图片"
             img_md = f"\n![{desc}]({url})\n"
-            md = md.replace(f"[IMG:{i}]", img_md)
+            placeholder = f"[IMG:{i}]"
+            md = _safe_insert_image(md, placeholder, img_md)
 
     # 清除所有未替换的 [IMG:N] 占位符
     md = re.sub(r"\[IMG:\d+\]", "", md)
@@ -318,6 +365,34 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
 
     ctx.md_content = md
     return ctx
+
+
+def _safe_insert_image(md: str, placeholder: str, img_md: str) -> str:
+    """安全插入图片：如果占位符在表格或代码块内，移到安全位置。"""
+    lines = md.split("\n")
+    img_lines = img_md.split("\n")
+    for idx, line in enumerate(lines):
+        if placeholder not in line:
+            continue
+        if _is_in_code_block(lines, idx):
+            # 代码块内：移到代码块之后
+            for j in range(idx + 1, len(lines)):
+                if lines[j].strip().startswith("```"):
+                    lines[idx] = lines[idx].replace(placeholder, "")
+                    for k, img_line in enumerate(img_lines):
+                        lines.insert(j + 1 + k, img_line)
+                    return "\n".join(lines)
+        if _is_in_table(lines, idx):
+            # 表格内：移到表格之后
+            safe_idx = _find_safe_insert_point(lines, idx)
+            lines[idx] = lines[idx].replace(placeholder, "")
+            for k, img_line in enumerate(img_lines):
+                lines.insert(safe_idx + k, img_line)
+            return "\n".join(lines)
+        # 正常位置：直接替换
+        lines[idx] = line.replace(placeholder, img_md)
+        return "\n".join(lines)
+    return md
 
 
 def _write_stage(ctx: PipelineContext) -> PipelineContext:
@@ -384,6 +459,8 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
             "date": info["date"],
             "processed_at": datetime.now().isoformat(),
             "concepts": concepts,
+            "summary": summary_data.get("summary", ""),
+            "tags": summary_data.get("tags", []),
         }
     }
 
@@ -646,6 +723,9 @@ class Orchestrator:
         # 保存 processed.json（统一写入新路径）
         save_processed(processed)
 
+        # 计算同批文章间的关联，回填相关主题
+        _update_related_topics(processed, new_ids, on_progress)
+
         # 更新知识图谱（仅处理新文章）
         _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids, on_progress)
 
@@ -814,3 +894,54 @@ def _update_knowledge_graph(
 
     if on_progress and total > 0:
         on_progress("_kg_done", total, total)
+
+
+def _update_related_topics(
+    processed: dict[str, Any],
+    new_ids: set[str] | None,
+    on_progress: Callable[[str, int, int], None] | None = None,
+) -> None:
+    """计算同批文章间的关联，回填 markdown 的相关主题。"""
+    if not new_ids:
+        return
+
+    if on_progress:
+        on_progress("_related", 0, 1)
+
+    related_map = compute_related(processed, new_ids)
+
+    updated = 0
+    for article_id, related_titles in related_map.items():
+        if not related_titles:
+            continue
+        record = processed.get(article_id)
+        if not isinstance(record, dict):
+            continue
+        file_path_str = record.get("file", "")
+        if not file_path_str:
+            continue
+        file_path = Path(file_path_str)
+        if not file_path.exists():
+            continue
+
+        try:
+            md = file_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        related_md = "\n".join(f"- [[{t}]]" for t in related_titles)
+        new_md, count = re.subn(
+            r"(## 相关主题\n)([^\n#]*)",
+            r"\1" + related_md + "\n",
+            md,
+            flags=re.DOTALL,
+        )
+        if count > 0 and new_md != md:
+            file_path.write_text(new_md, encoding="utf-8")
+            updated += 1
+
+    if updated > 0:
+        logger.info("相关主题回填完成：%d 篇文章", updated)
+
+    if on_progress:
+        on_progress("_related_done", 1, 1)
