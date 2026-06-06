@@ -98,7 +98,15 @@ class FetchScreen(Screen[None]):
         try:
             results = await app.orchestrator.fetch_and_process(on_progress=on_progress)
             done = sum(1 for r in results if r.status == "done")
-            status.update(f"  完成: {done}/{len(results)} 篇")
+            failed = [r for r in results if r.status in ("error", "skipped")]
+            msg = f"  完成: {done}/{len(results)} 篇"
+            if failed:
+                reasons = []
+                for r in failed:
+                    err = r.error or "未知原因"
+                    reasons.append(f"    - {r.title[:30]}: {err}")
+                msg += "\n  失败:\n" + "\n".join(reasons)
+            status.update(msg)
             await self._load_history()
         except Exception as e:
             status.update(f"  抓取失败: {e}")

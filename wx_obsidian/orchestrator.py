@@ -80,10 +80,12 @@ def _extract_content(
     if len(content) < 50:
         url = article.get("url", "")
         if url:
-            print("  Feed 无内容，从 URL 抓取...")
+            logger.info("Feed 无内容，从 URL 抓取: %s", url[:80])
             content, body_html = fetch_article_content_and_images(url)
             if body_html:
                 images = extract_images_with_context(body_html)
+        else:
+            logger.warning("Feed 无内容且无 URL，跳过")
 
     return content, images
 
@@ -173,8 +175,11 @@ def _llm_stage(ctx: PipelineContext) -> PipelineContext:
         return ctx
 
     if not ctx.summary_data:
-        print("  总结解析失败")
-        ctx.processed["__skip"] = {"status": "error", "reason": "parse_failed"}
+        logger.warning("LLM 返回内容解析失败（详见 last_response.txt）: %s", info["title"])
+        ctx.processed["__skip"] = {
+            "status": "error",
+            "reason": "LLM返回JSON解析失败，详见last_response.txt",
+        }
         return ctx
 
     # 验证 images 字段
@@ -613,7 +618,6 @@ class Orchestrator:
                 ),
                 on_complete=on_complete,
             )
-        executor.shutdown(wait=False)
 
         # 更新最后抓取日期（加入 processed dict，一起保存）
         latest_date = ""
@@ -629,6 +633,52 @@ class Orchestrator:
 
         # 保存 processed.json（统一写入新路径）
         save_processed(processed)
+
+        # 自动重试失败文章（清除记录后重新抓取）
+        failed_articles = [
+            id_to_article[aid]
+            for aid in new_ids
+            if aid in id_to_article
+            and isinstance(processed.get(aid), dict)
+            and processed[aid].get("status") in ("error", "skipped")
+        ]
+        if failed_articles:
+            logger.info("自动重试 %d 篇失败文章", len(failed_articles))
+            for art in failed_articles:
+                processed.pop(str(art.get("id", "")), None)
+            save_processed(processed)
+
+            retry_completed = 0
+
+            def on_retry_complete(result: dict[str, Any]) -> None:
+                nonlocal retry_completed
+                article_id = result.get("article_id", "unknown")
+                processed[article_id] = result
+                new_ids.add(article_id)
+                retry_completed += 1
+                if on_progress:
+                    title = result.get("title", "未知")
+                    on_progress(title, retry_completed, len(failed_articles))
+
+            with BatchProcessor(executor=executor) as retry_processor:
+                retry_raw = retry_processor.process_articles(
+                    failed_articles,
+                    lambda article: _process_single(
+                        article,
+                        config,
+                        vault_path,
+                        articles_dir,
+                        existing_articles,
+                        existing_concepts,
+                        archive_writer,
+                    ),
+                    on_complete=on_retry_complete,
+                )
+            # 合并重试结果
+            results_raw.extend(retry_raw)
+            save_processed(processed)
+
+        executor.shutdown(wait=False)
 
         # 计算同批文章间的关联，回填相关主题
         _update_related_topics(processed, new_ids, on_progress)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -11,6 +12,8 @@ from typing import Any
 import requests
 
 from wx_obsidian.config import MAX_ARTICLE_LENGTH
+
+logger = logging.getLogger(__name__)
 
 # 全局锁：微信 URL 抓取串行化，避免并发触发反爬
 _fetch_lock = threading.Lock()
@@ -91,9 +94,12 @@ def fetch_article_content_and_images(
         body_html = _fetch_html(url)
         parser = HTMLTextExtractor()
         parser.feed(body_html)
-        return parser.get_text()[:MAX_ARTICLE_LENGTH], body_html
+        text = parser.get_text()[:MAX_ARTICLE_LENGTH]
+        if len(text) < 50:
+            logger.warning("URL 抓取内容过短 (%d 字符): %s", len(text), url[:80])
+        return text, body_html
     except requests.RequestException as e:
-        print(f"  抓取正文失败: {e}")
+        logger.warning("URL 抓取失败: %s — %s", url[:80], e)
         return "", ""
 
 

@@ -153,7 +153,11 @@ class SchedulerScreen(Screen[None]):
         try:
             results = await typed_app.orchestrator.fetch_and_process()
             done = sum(1 for r in results if r.status == "done")
-            typed_app.show_notification(f"抓取完成: {done}/{len(results)} 篇")
+            failed = [r for r in results if r.status in ("error", "skipped")]
+            msg = f"抓取完成: {done}/{len(results)} 篇"
+            if failed:
+                msg += f"（{len(failed)} 篇失败）"
+            typed_app.show_notification(msg)
             await self._refresh_jobs()
         except Exception as e:
             typed_app.show_notification(f"抓取失败: {e}", severity="error")

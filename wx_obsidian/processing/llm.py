@@ -162,6 +162,8 @@ def _parse_api_response(text: str) -> dict[str, Any] | None:
 
     json_match = re.search(r"\{[\s\S]*\}", clean)
     if not json_match:
+        logger.warning("LLM 响应中未找到 JSON 对象，响应前200字: %s", text[:200])
+        (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
         return None
 
     raw = json_match.group()
@@ -173,7 +175,8 @@ def _parse_api_response(text: str) -> dict[str, Any] | None:
             result = json.loads(_fix_json_quotes(raw), strict=False)
             return result
         except json.JSONDecodeError as e:
-            print(f"  JSON 解析失败: {e}")
+            logger.warning("JSON 解析失败: %s", e)
+            (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
             return None
 
 
