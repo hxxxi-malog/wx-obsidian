@@ -708,9 +708,16 @@ class Orchestrator:
         # 更新知识图谱（仅处理新文章）
         _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids, on_progress)
 
+        # 按 article_id 去重，重试成功覆盖首次失败
+        deduped: dict[str, dict[str, Any]] = {}
+        for r in results_raw:
+            aid = str(r.get("article_id", ""))
+            if aid:
+                deduped[aid] = r
+
         # 转换为 ProcessingResult
         results: list[ProcessingResult] = []
-        for r in results_raw:
+        for r in deduped.values():
             results.append(
                 ProcessingResult(
                     article_id=str(r.get("article_id", "")),
