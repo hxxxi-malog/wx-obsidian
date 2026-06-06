@@ -6,6 +6,8 @@ requires-python = ">=3.9"
 dependencies = [
     "requests>=2.31.0",
     "pyyaml>=6.0",
+    "textual>=0.40.0",
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]
@@ -31,3 +33,11 @@ python_version = "3.9"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["textual.*", "apscheduler.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["wx_obsidian.tui.*"]
+ignore_missing_imports = true
