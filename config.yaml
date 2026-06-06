@@ -19,6 +19,7 @@ categories:
 - 其他
 deepseek:
   model: deepseek-chat
+max_workers: 5
 obsidian:
   articles_dir: 公众号文章
   vault_path: /Users/malog/Downloads
