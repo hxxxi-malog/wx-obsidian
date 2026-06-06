@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from html.parser import HTMLParser
 from typing import Any
 
 import requests
 
 from wx_obsidian.config import MAX_ARTICLE_LENGTH
+
+# 全局锁：微信 URL 抓取串行化，避免并发触发反爬
+_fetch_lock = threading.Lock()
 
 # 预编译正则
 RE_BODY_HTML = re.compile(r'id="js_content"[^>]*>(.*?)</div>\s*<script', re.DOTALL)
@@ -61,10 +66,12 @@ class HTMLTextExtractor(HTMLParser):
 
 def _fetch_html(url: str) -> str:
     """从微信文章 URL 抓取正文 HTML。"""
-    resp = requests.get(url, headers=_HEADERS, timeout=15)
-    resp.encoding = "utf-8"
-    match = RE_BODY_HTML.search(resp.text)
-    return match.group(1) if match else resp.text
+    with _fetch_lock:
+        time.sleep(1)  # 串行化 + 间隔，避免并发触发微信反爬
+        resp = requests.get(url, headers=_HEADERS, timeout=15)
+        resp.encoding = "utf-8"
+        match = RE_BODY_HTML.search(resp.text)
+        return match.group(1) if match else resp.text
 
 
 # ---------------------------------------------------------------------------

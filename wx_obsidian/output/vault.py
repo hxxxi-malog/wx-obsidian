@@ -267,37 +267,40 @@ def update_daily_archive(
     category: str,
     summary: str,
 ) -> None:
-    """更新按日归档文件。"""
+    """更新按日归档文件，按分类分组显示。"""
     # 解析日期：2026-06-05 -> 26/06/05
     parts = date_str.split("-")
     if len(parts) != 3:
         return
     yy, mm, dd = parts[0][2:], parts[1], parts[2]
 
-    # 归档文件路径（放在公众号文章目录下，方便在 Obsidian 中找到）
+    # 归档文件路径
     articles_dir = vault_path / "公众号文章"
     archive_dir = articles_dir / "Z归档" / yy / mm
     archive_file = archive_dir / f"{dd}.md"
 
-    # 构建归档条目
     safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)[:100]
-    summary_short = summary[:100] + "..." if len(summary) > 100 else summary
-    entry = f"- [[{category}/{safe_title}|{safe_title}]] — {summary_short}"
+    wikilink = f"[[{category}/{safe_title}|{safe_title}]]"
 
-    # 读取或创建归档文件
+    # 读取已有条目，追加新条目，去重
+    entries: list[tuple[str, str]] = []  # (category, entry_line)
     if archive_file.exists():
-        content = archive_file.read_text(encoding="utf-8")
-        if entry in content:
-            return  # 已存在，跳过
-        content = content.rstrip() + f"\n{entry}"
-    else:
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        content = f"# {date_str} 文章归档\n\n{entry}"
+        for cat, line in _parse_archive_entries(archive_file.read_text(encoding="utf-8")):
+            entries.append((cat, line))
+
+    new_entry = f"- {wikilink}\n  {summary}"
+    # 去重：检查 wikilink 是否已存在
+    if any(wikilink in line for _, line in entries):
+        return
+
+    entries.append((category, new_entry))
+
+    # 按分组重新生成文件
+    content = _build_grouped_archive(date_str, entries)
 
     # 原子写入
-    fd, tmp_path = tempfile.mkstemp(
-        dir=archive_dir, suffix=".tmp", prefix=".archive_"
-    )
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=archive_dir, suffix=".tmp", prefix=".archive_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
@@ -305,3 +308,47 @@ def update_daily_archive(
     except BaseException:
         os.unlink(tmp_path)
         raise
+
+
+def _parse_archive_entries(content: str) -> list[tuple[str, str]]:
+    """从归档文件内容中解析已有条目，返回 (category, entry_line) 列表。
+
+    格式：## Category 分组 + 缩进摘要。
+    """
+    entries: list[tuple[str, str]] = []
+    current_cat = ""
+    entry_lines: list[str] = []
+
+    for line in content.split("\n"):
+        if line.startswith("## "):
+            if entry_lines and current_cat:
+                entries.append((current_cat, "\n".join(entry_lines)))
+            current_cat = line[3:].strip()
+            entry_lines = []
+        elif line.startswith("- ") and current_cat:
+            if entry_lines:
+                entries.append((current_cat, "\n".join(entry_lines)))
+            entry_lines = [line]
+        elif line.startswith("  ") and entry_lines:
+            entry_lines.append(line)
+
+    if entry_lines and current_cat:
+        entries.append((current_cat, "\n".join(entry_lines)))
+
+    return entries
+
+
+def _build_grouped_archive(date_str: str, entries: list[tuple[str, str]]) -> str:
+    """将条目按分类分组，生成归档文件内容。"""
+    # 按分类分组，保持插入顺序
+    groups: dict[str, list[str]] = {}
+    for cat, line in entries:
+        groups.setdefault(cat, []).append(line)
+
+    lines = [f"# {date_str} 文章归档\n"]
+    for cat, items in groups.items():
+        lines.append(f"## {cat}")
+        lines.extend(items)
+        lines.append("")  # 分组间空行
+
+    return "\n".join(lines)
