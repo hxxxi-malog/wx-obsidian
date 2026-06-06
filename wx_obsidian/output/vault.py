@@ -56,9 +56,12 @@ def update_moc(
 ) -> None:
     """更新分类 MOC 文件，追加新文章链接。"""
     base = articles_dir or (vault_path / "公众号文章")
-    moc_file = base / category / "_MOC.md"
+    category_dir = base / category
+    category_dir.mkdir(parents=True, exist_ok=True)
+
+    moc_file = category_dir / "_MOC.md"
     if not moc_file.exists():
-        return
+        moc_file.write_text(f"# {category}\n\n", encoding="utf-8")
 
     content = moc_file.read_text(encoding="utf-8")
     entry = f"- {date} [[{title}]]"

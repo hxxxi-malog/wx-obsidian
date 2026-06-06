@@ -54,6 +54,10 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
     if space_issue:
         issues.append(space_issue)
 
+    content, backslash_issue = _fix_standalone_backslashes(content)
+    if backslash_issue:
+        issues.append(backslash_issue)
+
     content = content.rstrip() + "\n"
 
     if not is_concept:
@@ -238,6 +242,18 @@ def _compress_blank_lines(content: str) -> tuple[str, str | None]:
     compressed = re.sub(r"\n{4,}", "\n\n\n", content)
     if compressed != content:
         return compressed, "压缩了过多连续空行"
+    return content, None
+
+
+def _fix_standalone_backslashes(content: str) -> tuple[str, str | None]:
+    """修复单独的反斜杠行（LLM 生成的无效字符）。"""
+    # 匹配只包含反斜杠和空白的行
+    pattern = re.compile(r"^\s*\\\s*$", re.MULTILINE)
+    if pattern.search(content):
+        fixed = pattern.sub("", content)
+        # 清理因此产生的多余空行
+        fixed = re.sub(r"\n{3,}", "\n\n", fixed)
+        return fixed, "移除了单独的反斜杠行"
     return content, None
 
 
