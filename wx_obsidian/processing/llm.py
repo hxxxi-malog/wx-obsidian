@@ -324,6 +324,64 @@ def summarize_article(
     return _call_llm(prompt, config=config)
 
 
+def fix_format_issues(
+    current_markdown: str,
+    format_issues: list[str],
+    config: dict[str, Any] | None = None,
+) -> str | None:
+    """将格式问题反馈给 LLM，请求修正 markdown。
+
+    Returns:
+        修正后的 markdown，或 None（调用失败时）。
+    """
+    issues_text = "\n".join(f"- {issue}" for issue in format_issues)
+    prompt = (
+        "以下是 markdown 文档，存在以下格式问题：\n\n"
+        f"{issues_text}\n\n"
+        "请修正上述问题，返回完整的修正后 markdown 文本。"
+        "只修正格式问题，不要改动内容。"
+        "不要用代码块包裹，直接返回 markdown 原文。\n\n"
+        "--- 当前 markdown ---\n"
+        f"{current_markdown[:MAX_PROMPT_CONTENT]}\n"
+        "--- 结束 ---"
+    )
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    llm_cfg = config.get("llm", {}) if config else {}
+    base_url = llm_cfg.get(
+        "base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    )
+    model = llm_cfg.get("model", os.environ.get("MODEL_NAME", "deepseek-v4-pro"))
+
+    if not api_key:
+        return None
+
+    try:
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 8192,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"]
+        # 去掉可能的代码块包裹
+        text = re.sub(r"^```(?:markdown)?\s*\n?", "", text)
+        text = re.sub(r"\n?```\s*$", "", text)
+        return text.strip()
+    except (requests.RequestException, KeyError, IndexError, TypeError) as e:
+        logger.warning("格式修正 LLM 调用失败: %s", e)
+        return None
+
+
 def refine_with_images(
     article_content: str,
     body_sections: list[dict[str, Any]],

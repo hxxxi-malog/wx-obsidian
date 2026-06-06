@@ -47,8 +47,8 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
     link_issues = _check_wikilinks(lines)
     issues.extend(link_issues)
 
-    lines, compress_issues = _fix_compressed_tables(lines)
-    issues.extend(compress_issues)
+    lines, split_sep_issues = _fix_split_table_separators(lines)
+    issues.extend(split_sep_issues)
 
     lines, table_issues = _check_tables(lines)
     issues.extend(table_issues)
@@ -172,38 +172,55 @@ def _check_wikilinks(lines: list[str]) -> list[str]:
     return issues
 
 
-def _fix_compressed_tables(lines: list[str]) -> tuple[list[str], list[str]]:
-    """修复被压缩到单行的表格（LLM JSON 响应中换行符被转义）。
+def _fix_split_table_separators(lines: list[str]) -> tuple[list[str], list[str]]:
+    """修复分隔行与下一行断裂的表格，以及分隔行后的空行。
 
-    检测模式：一行中包含 '| --- |' 分隔符，说明多行表格被挤到了一行。
+    处理两种模式：
+    1. `| --- |` 后紧跟空行 + `---` → 合并为完整分隔行
+    2. `| --- |` 后紧跟 `--- | --- |`（分隔行被截断为两行）→ 合并并删除中间空行
     """
     issues: list[str] = []
     result: list[str] = []
-
-    for i, line in enumerate(lines):
-        # 检测压缩表格：一行中有分隔符 '| --- |'
-        sep_match = re.search(r"(\|[\s]*---[\s]*(?:\|[\s]*---[\s]*)*\|)", line)
-        if not sep_match:
-            result.append(line)
-            continue
-
-        sep = sep_match.group(1)
-        before = line[: sep_match.start()].strip()
-        after = line[sep_match.end() :].strip()
-
-        # 确保 header 行以 | 结尾
-        if before and not before.endswith("|"):
-            before += " |"
-
-        # 按行边界分割 data rows：| 后跟空格再跟非 - 内容
-        data_rows = [r.strip() for r in re.split(r"(?<=\|)\s+(?=\|[^-])", after) if r.strip()]
-
-        if before:
-            result.append(before)
-        result.append(sep)
-        result.extend(data_rows)
-        issues.append(f"第 {i + 1} 行: 压缩表格已拆分为 {2 + len(data_rows)} 行")
-
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # 检测分隔行（完整或不完整）
+        if stripped.endswith("|") and re.match(r"^\|[\s]*---[\s]*(\|[\s]*---[\s]*)*\|$", stripped):
+            # 向前看：跳过空行
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines):
+                next_stripped = lines[j].strip()
+                if next_stripped == "---":
+                    # 模式 1：分隔行 + 空行 + --- → 合并
+                    result.append(stripped.rstrip() + " --- |")
+                    issues.append(f"第 {i + 1} 行: 分隔行与 --- 已合并")
+                    i = j + 1
+                    continue
+                if re.match(r"^---+\s*\|", next_stripped) and "|" in next_stripped:
+                    # 模式 2：分隔行被截断，续行以 ---| 开头
+                    # 合并为一行：去掉续行开头多余的 -
+                    continuation = re.sub(r"^---+", " --- ", next_stripped).strip()
+                    merged = stripped.rstrip() + continuation
+                    if not merged.endswith("|"):
+                        merged += " |"
+                    result.append(merged)
+                    issues.append(f"第 {i + 1}-{j + 1} 行: 截断的分隔行已合并")
+                    # 跳过续行及其后的空行
+                    i = j + 1
+                    while i < len(lines) and not lines[i].strip():
+                        i += 1
+                    continue
+            # 分隔行已完整，但后面有空行隔断数据行 → 删除空行
+            if j > i + 1:
+                result.append(line)
+                issues.append(f"第 {i + 2}-{j} 行: 分隔行后空行已删除")
+                i = j
+                continue
+        result.append(line)
+        i += 1
     return result, issues
 
 
@@ -278,6 +295,52 @@ def _check_footer(content: str) -> str | None:
     if "> 来源：" not in content:
         return "缺少来源 footer（> 来源：xxx | [原文链接](url)）"
     return None
+
+
+# ---------------------------------------------------------------------------
+# 基于 mistune 的结构性校验
+# ---------------------------------------------------------------------------
+
+
+def detect_format_issues(content: str) -> list[str]:
+    """用 mistune 解析 markdown，检测自动修复无法处理的结构性问题。
+
+    与 validate_and_fix 互补：validate_and_fix 做自动修复，
+    detect_format_issues 发现需要 LLM 重新生成的问题。
+    """
+    import mistune
+
+    issues: list[str] = []
+    md_parser = mistune.create_markdown(plugins=["table"])
+    html = str(md_parser(content))
+
+    # 表格：统计 markdown 中的表格块数 vs HTML 中的 <table> 数
+    lines = content.split("\n")
+    table_block_count = 0
+    in_table = False
+    for line in lines:
+        is_table_row = line.strip().startswith("|") and len(line.strip()) > 3
+        if is_table_row and not in_table:
+            table_block_count += 1
+            in_table = True
+        elif not is_table_row and in_table:
+            in_table = False
+    html_table_count = html.count("<table>")
+    if table_block_count > 0 and html_table_count < table_block_count:
+        issues.append(
+            f"表格格式错误：markdown 中有 {table_block_count} 个表格块，"
+            f"但只有 {html_table_count} 个渲染为有效表格。"
+            "常见原因：分隔行（| --- |）列数与表头不一致、分隔行被截断、"
+            "表格行之间有空行打断。请确保分隔行列数与表头完全匹配，"
+            "表格内不要有空行。"
+        )
+
+    # 代码块未闭合
+    code_opens = content.count("```")
+    if code_opens % 2 != 0:
+        issues.append(f"代码块未闭合（检测到 {code_opens} 个 ``` 标记）")
+
+    return issues
 
 
 # ---------------------------------------------------------------------------

@@ -265,6 +265,28 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
         md, format_issues = validate_and_fix(md)
         if format_issues:
             print(f"  格式校验: {len(format_issues)} 个问题已修复")
+
+        # 结构性问题检测 + LLM 反馈修正
+        try:
+            from wx_obsidian.output.validator import detect_format_issues
+            from wx_obsidian.processing.llm import fix_format_issues as _fix_format
+
+            structural_issues = detect_format_issues(md)
+            if structural_issues:
+                full_config = ctx.config.get("config", {})
+                logger.info("结构性格式问题，反馈 LLM 修正: %s", structural_issues)
+                print(f"  结构性格式问题: {len(structural_issues)} 个，反馈 LLM 修正...")
+                fixed_md = _fix_format(md, structural_issues, config=full_config)
+                if fixed_md and fixed_md != md:
+                    md, re_fix_issues = validate_and_fix(fixed_md)
+                    if re_fix_issues:
+                        print(f"  LLM 修正后再校验: {len(re_fix_issues)} 个问题已修复")
+                    else:
+                        print("  LLM 修正后格式校验通过")
+                else:
+                    print("  LLM 修正未产生变化，保留自动修复版本")
+        except Exception as e:
+            logger.warning("结构性格式修正失败（跳过）: %s", e)
     except (ValueError, OSError, AttributeError) as e:
         ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
         logger.warning("MarkdownStage 失败: %s", e, exc_info=True)

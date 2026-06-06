@@ -111,6 +111,7 @@ class BatchProcessor:
                 logger.error("文章处理失败: %s - %s", article.get("title", "未知"), e)
                 result = {
                     "article_id": article.get("id", "unknown"),
+                    "title": article.get("title", "未知"),
                     "status": "failed",
                     "error": str(e),
                 }
@@ -161,6 +162,7 @@ class BatchProcessor:
 
         return {
             "article_id": article.get("id", "unknown"),
+            "title": article.get("title", "未知"),
             "status": "failed",
             "error": str(last_error) if last_error else "unknown error",
         }
