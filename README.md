@@ -20,7 +20,8 @@
 - **多模态 Vision**：DashScope 视觉模型识别文章图片，为 LLM 提供图片语义描述
 - **3-Skill 系统**：模块化控制输出风格，写作风格、分类规则、元数据格式独立配置
 - **智能分类**：18 个预设分类 + 动态新增，同一子主题积累 3 篇后自动创建子目录
-- **知识图谱**：`[[双向链接]]` 关联已有文章和概念页面，Obsidian Graph View 自动成图
+- **知识图谱**：`[[双向链接]]` 关联已有文章和概念页面，概念页面自动聚合相关文章，Obsidian Graph View 自动成图
+- **智能关联**：基于概念重叠 + 标签 Jaccard + TF-IDF 余弦的混合算法，自动计算文章间关联，无需额外 LLM 调用
 - **定时调度**：APScheduler 集成，支持 cron 定时抓取和处理
 - **格式保障**：每篇文章生成后自动执行 Markdown 校验与修复
 - **优雅降级**：Vision API 不可用时自动跳过 Pass 2，降级到纯文本 + 关键词匹配
@@ -125,7 +126,9 @@ Orchestrator（核心编排器）
     ├─ LLM Pass 2  ← DeepSeek 结合图片描述修订正文（可选）
     ├─ Markdown    ← 生成 Obsidian Markdown + 格式校验
     ├─ Image       ← 替换 [IMG:N] 占位符为图片
-    └─ Write       ← 写入 Vault + 更新 MOC + 概念页面
+    ├─ Write       ← 写入 Vault + 更新 MOC + 概念页面
+    ├─ Related     ← 混合关联算法计算文章间相似度，回填相关主题
+    └─ Knowledge   ← 更新概念页面相关文章、子目录拆分
 
 Obsidian Vault/
     └── 公众号文章/
@@ -136,7 +139,7 @@ Obsidian Vault/
         ├── Agent架构/
         ├── Prompt Engineering/
         └── 概念/
-            ├── Transformer.md    ← 概念页面（聚合相关文章）
+            ├── Transformer.md    ← 概念页面（自动聚合引用该概念的文章）
             └── RAG.md
 ```
 
@@ -178,7 +181,8 @@ wx-obsidian/
     │   ├── vision.py            # 多模态 Vision API
     │   ├── llm.py               # DeepSeek 两轮调用
     │   ├── images.py            # 图片提取与插入
-    │   └── markdown.py          # Markdown 生成
+    │   ├── markdown.py          # Markdown 生成
+    │   └── similarity.py        # 文章相似度计算（混合关联算法）
     ├── output/
     │   ├── vault.py             # Obsidian Vault 操作
     │   └── validator.py         # 格式校验
@@ -206,6 +210,30 @@ wx-obsidian/
 |------|------|------|
 | Pass 1 | `prompts/summarize_article.txt` | 纯文本生成结构化笔记（不含图片决策） |
 | Pass 2 | `prompts/refine_with_images.txt` | 结合原文 + 图片描述修订正文，嵌入 `[IMG:N]` 占位符 |
+
+## 知识图谱与关联
+
+系统自动维护三层关联关系：
+
+| 关联类型 | 机制 | 说明 |
+|---------|------|------|
+| 文章 → 概念 | LLM 提取关键概念 | 文章底部的 `[[概念名]]` 双向链接 |
+| 概念 → 文章 | 自动追加 backlink | 概念页面的 `## 相关文章` 自动聚合引用该概念的所有文章 |
+| 文章 → 文章 | 混合关联算法 | 基于概念重叠（40%）+ 标签 Jaccard（30%）+ TF-IDF 余弦（30%）自动计算，每篇最多关联 3 篇 |
+
+### 混合关联算法
+
+批量处理完成后，系统自动计算同批文章间的相似度并回填 `## 相关主题`，无需额外 LLM 调用：
+
+```
+score = 0.4 × concept_jaccard + 0.3 × tag_jaccard + 0.3 × tfidf_cosine
+```
+
+- **概念重叠**：两篇文章共享概念的 Jaccard 相似度
+- **标签 Jaccard**：两篇文章 tags 集合的相似度
+- **TF-IDF 余弦**：从摘要提取中文关键词（2-6 字），计算 TF-IDF 余弦相似度
+
+阈值 0.1，低于此值不关联。算法实现在 `wx_obsidian/processing/similarity.py`。
 
 ## 生成笔记示例
 
