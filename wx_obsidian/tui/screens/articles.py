@@ -102,20 +102,20 @@ class ArticlesScreen(Screen[None]):
         self._article_ids: list[str] = []
 
         done_records: list[tuple[str, dict[str, Any]]] = []
-        other_records: list[tuple[str, dict[str, Any]]] = []
+        failed_count = 0
 
         for aid, record in processed.items():
             if not isinstance(record, dict):
                 continue
             if record.get("status") == "done":
                 done_records.append((aid, record))
-            else:
-                other_records.append((aid, record))
+            elif record.get("status") in ("error", "failed", "skipped"):
+                failed_count += 1
 
         # 已完成的文章按日期倒序
         done_records.sort(key=lambda x: x[1].get("date", ""), reverse=True)
 
-        for aid, record in done_records + other_records:
+        for aid, record in done_records:
             self._article_ids.append(aid)
             table.add_row(
                 record.get("title", "")[:50],
@@ -126,7 +126,10 @@ class ArticlesScreen(Screen[None]):
             )
 
         status = self.query_one("#articles-status", Static)
-        status.update(f"  共 {len(self._article_ids)} 篇文章")
+        msg = f"  共 {len(self._article_ids)} 篇文章"
+        if failed_count:
+            msg += f"（{failed_count} 篇失败未写入，下次抓取自动重试）"
+        status.update(msg)
 
     def action_refresh(self) -> None:
         """刷新文章列表。"""

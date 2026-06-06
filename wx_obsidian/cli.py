@@ -41,4 +41,10 @@ def main() -> None:
     results = asyncio.run(orchestrator.fetch_and_process(limit=args.limit))
 
     done_count = sum(1 for r in results if r.status == "done")
-    print(f"\n处理完成！共处理 {done_count} 篇文章")
+    failed = [r for r in results if r.status in ("error", "skipped", "failed")]
+    print(f"\n处理完成！共处理 {done_count}/{len(results)} 篇文章")
+    if failed:
+        print(f"\n失败 {len(failed)} 篇:")
+        for r in failed:
+            err = r.error or "未知原因"
+            print(f"  - {r.title[:50]}: {err}")

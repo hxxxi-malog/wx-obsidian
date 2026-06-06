@@ -85,11 +85,20 @@ class FetchScreen(Screen[None]):
         def on_progress(title: str, completed: int, total: int) -> None:
             if title == "_start":
                 app.call_from_thread(progress.update, total=total)
+            elif title.startswith("_empty:"):
+                detail = title[7:]  # 去掉 "_empty:" 前缀
+                app.call_from_thread(status.update, f"  没有新文章需要处理（{detail}）")
+            elif title == "_done":
+                pass  # 最终结果由下方 results 逻辑处理
             elif title == "_kg":
                 app.call_from_thread(status.update, "  正在更新知识图谱...")
             elif title == "_kg_done":
                 app.call_from_thread(progress.advance)
                 app.call_from_thread(status.update, "  知识图谱更新完成")
+            elif title == "_related":
+                app.call_from_thread(status.update, "  正在计算文章关联...")
+            elif title == "_related_done":
+                pass
             else:
                 app.call_from_thread(progress.advance)
                 short = title[:30] + ("..." if len(title) > 30 else "")
@@ -97,8 +106,12 @@ class FetchScreen(Screen[None]):
 
         try:
             results = await app.orchestrator.fetch_and_process(on_progress=on_progress)
+            if not results:
+                # _empty 事件已通过 on_progress 设置了诊断信息，此处不覆盖
+                await self._load_history()
+                return
             done = sum(1 for r in results if r.status == "done")
-            failed = [r for r in results if r.status in ("error", "skipped")]
+            failed = [r for r in results if r.status in ("error", "skipped", "failed")]
             msg = f"  完成: {done}/{len(results)} 篇"
             if failed:
                 reasons = []

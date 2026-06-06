@@ -296,7 +296,7 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
                         print("  LLM 修正后格式校验通过")
                 else:
                     print("  LLM 修正未产生变化，保留自动修复版本")
-        except (requests.RequestException, OSError, ValueError) as e:
+        except (requests.RequestException, OSError, ValueError, ImportError, KeyError) as e:
             logger.warning("结构性格式修正失败（跳过）: %s", e)
     except (ValueError, OSError, AttributeError) as e:
         ctx.processed["__skip"] = {"status": "error", "reason": str(e)}
@@ -591,18 +591,46 @@ class Orchestrator:
         # 增量过滤
         max_days = self._config_manager.get("fetch.max_days", 7)
         cutoff = (datetime.now() - timedelta(days=max_days)).strftime("%Y-%m-%d")
-        new_articles = [
-            a
-            for a in articles
-            if a.get("id")
-            and str(a["id"]) not in processed
-            and (not a.get("date_published") or a.get("date_published", "")[:10] >= cutoff)
-        ]
+        new_articles = []
+        skipped_existing = 0
+        skipped_date = 0
+        for a in articles:
+            if not a.get("id"):
+                continue
+            aid = str(a["id"])
+            if aid in processed:
+                # 已处理但输出文件不存在 → 重新处理
+                record = processed[aid]
+                file_path = record.get("file", "") if isinstance(record, dict) else ""
+                if file_path and Path(file_path).exists():
+                    # 文件存在，确认已处理
+                    skipped_existing += 1
+                    continue
+                # 无 file 字段或文件已被删除，清除记录重新处理
+                logger.info("文章文件缺失，重新处理: %s", a.get("title", "")[:40])
+                processed.pop(aid, None)
+            if a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
+                skipped_date += 1
+                continue
+            new_articles.append(a)
+        if skipped_existing:
+            logger.info("跳过 %d 篇已处理文章", skipped_existing)
+        if skipped_date:
+            logger.info("跳过 %d 篇超过 %d 天的文章", skipped_date, max_days)
         if limit > 0:
             new_articles = new_articles[:limit]
 
         if not new_articles:
-            logger.info("没有新文章需要处理")
+            parts = [f"RSS 共 {len(articles)} 篇"]
+            if skipped_existing:
+                parts.append(f"已处理跳过 {skipped_existing}")
+            if skipped_date:
+                parts.append(f"日期过滤 {skipped_date}")
+            detail = "，".join(parts)
+            logger.info("没有新文章需要处理（%s）", detail)
+            if on_progress:
+                on_progress("_start", 0, 0)
+                on_progress(f"_empty:{detail}", 0, 0)
             return []
 
         total = len(new_articles)
@@ -676,7 +704,7 @@ class Orchestrator:
             for aid in new_ids
             if aid in id_to_article
             and isinstance(processed.get(aid), dict)
-            and processed[aid].get("status") in ("error", "skipped")
+            and processed[aid].get("status") in ("error", "skipped", "failed")
         ]
         if failed_articles:
             logger.info("自动重试 %d 篇失败文章", len(failed_articles))
