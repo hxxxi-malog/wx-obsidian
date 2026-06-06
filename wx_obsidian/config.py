@@ -74,7 +74,7 @@ def load_processed() -> dict[str, Any]:
         try:
             result: dict[str, Any] = json.loads(PROCESSED_FILE.read_text(encoding="utf-8"))
             return result
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, OSError) as e:
             print(f"警告: processed.json 解析失败 ({e})，将重新开始")
             return {}
     return {}

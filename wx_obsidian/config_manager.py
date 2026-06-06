@@ -25,7 +25,6 @@ CONFIG_DIR = Path.home() / ".wx-obsidian"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 ENV_FILE = CONFIG_DIR / ".env"
 LOGS_DIR = CONFIG_DIR / "logs"
-PROCESSED_FILE = CONFIG_DIR / "processed.json"
 FAILED_FILE = CONFIG_DIR / "failed.json"
 
 # 旧配置路径（项目目录）
@@ -352,9 +351,9 @@ class ConfigManager:
     # -- 内部方法 -----------------------------------------------------------
 
     def _load_env(self) -> dict[str, str]:
-        """加载 .env 文件（新位置优先，回退到旧位置），并设置到 os.environ。"""
+        """加载 .env 文件（合并旧位置和新位置，新位置覆盖同名键），并设置到 os.environ。"""
         env: dict[str, str] = {}
-        for path in [self._env_file, _OLD_ENV_FILE]:
+        for path in [_OLD_ENV_FILE, self._env_file]:
             if path.exists():
                 for line in path.read_text(encoding="utf-8").splitlines():
                     line = line.strip()
@@ -362,11 +361,9 @@ class ConfigManager:
                         continue
                     key, _, value = line.partition("=")
                     value = value.strip()
-                    # 去除首尾引号（支持 KEY="value" 和 KEY='value' 格式）
                     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                         value = value[1:-1]
                     env[key.strip()] = value
-                break
         # 同步到 os.environ，确保依赖 os.environ 的模块（如 load_vision_config）正常工作
         for k, v in env.items():
             if k not in os.environ:
