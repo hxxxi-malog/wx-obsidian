@@ -185,6 +185,9 @@ def _migrate_articles_to_subdir(
     moc_file: Path,
 ) -> None:
     """将已有文章迁移到子目录。"""
+    moc_content = moc_file.read_text(encoding="utf-8")
+    new_entries: list[str] = []
+
     for _article_id, record in processed.items():
         if not isinstance(record, dict):
             continue
@@ -210,12 +213,16 @@ def _migrate_articles_to_subdir(
         if old_cat in content:
             new_path.write_text(content.replace(old_cat, new_cat), encoding="utf-8")
 
-        # 更新子目录 MOC
+        # 累积子目录 MOC 条目
         safe_title = old_path.stem
         entry = f"- {record.get('processed_at', '')[:10]} [[{safe_title}]]"
-        moc_content = moc_file.read_text(encoding="utf-8")
         if entry not in moc_content:
-            moc_file.write_text(moc_content.rstrip() + f"\n{entry}", encoding="utf-8")
+            new_entries.append(entry)
+
+    if new_entries:
+        moc_file.write_text(
+            moc_content.rstrip() + "\n" + "\n".join(new_entries) + "\n", encoding="utf-8"
+        )
 
 
 def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> None:

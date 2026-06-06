@@ -86,9 +86,9 @@ class FetchScreen(Screen[None]):
             if title == "_start":
                 app.call_from_thread(progress.update, total=total)
             elif title == "_kg":
-                app.call_from_thread(progress.update, total=total)
                 app.call_from_thread(status.update, "  正在更新知识图谱...")
             elif title == "_kg_done":
+                app.call_from_thread(progress.advance)
                 app.call_from_thread(status.update, "  知识图谱更新完成")
             else:
                 app.call_from_thread(progress.advance)

@@ -210,8 +210,8 @@ def _llm_pass2_stage(ctx: PipelineContext) -> PipelineContext:
 
 def _normalize_llm_response(data: dict[str, Any]) -> None:
     """规范化 LLM 返回的 concepts/body_sections 字段，原地修改确保类型正确。"""
-    # concepts 应为 list[dict]，LLM 可能返回 str 或 list[str]
-    concepts = data.get("concepts", [])
+    # concepts 应为 list[dict]，LLM 可能返回 None / str / list[str]
+    concepts = data.get("concepts") or []
     if isinstance(concepts, str):
         logger.warning("LLM 返回的 concepts 为字符串，自动规范化")
         data["concepts"] = [{"name": concepts, "description": ""}]
@@ -223,9 +223,12 @@ def _normalize_llm_response(data: dict[str, Any]) -> None:
             else {"name": "未知概念", "description": ""}
             for c in concepts
         ]
+    elif not isinstance(concepts, list):
+        logger.warning("LLM 返回的 concepts 类型异常 (%s)，重置为空列表", type(concepts).__name__)
+        data["concepts"] = []
 
-    # body_sections 应为 list[dict]，LLM 可能返回 str 或 list[str]
-    sections = data.get("body_sections", [])
+    # body_sections 应为 list[dict]，LLM 可能返回 None / str / list[str]
+    sections = data.get("body_sections") or []
     if isinstance(sections, str):
         logger.warning("LLM 返回的 body_sections 为字符串，自动规范化")
         data["body_sections"] = [{"heading": "", "content": sections}]
@@ -237,6 +240,11 @@ def _normalize_llm_response(data: dict[str, Any]) -> None:
             else {"heading": "", "content": ""}
             for s in sections
         ]
+    elif not isinstance(sections, list):
+        logger.warning(
+            "LLM 返回的 body_sections 类型异常 (%s)，重置为空列表", type(sections).__name__
+        )
+        data["body_sections"] = []
 
 
 def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
@@ -355,7 +363,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
     file_path.write_text(ctx.md_content, encoding="utf-8")
 
     concepts: list[dict[str, str]] = []
-    for concept in summary_data.get("concepts", []):
+    for concept in summary_data.get("concepts") or []:
         safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept.get("name", "未知概念"))
         concepts.append(
             {
@@ -772,26 +780,29 @@ def _update_knowledge_graph(
         if not category or not safe_title:
             continue
 
-        if on_progress:
-            on_progress(f"更新分类: {category}", idx, total)
+        try:
+            if on_progress:
+                on_progress(f"更新分类: {category}", idx, total)
 
-        ensure_category(vault_path, config, category, articles_dir)
-        update_moc(vault_path, category, safe_title, date, articles_dir)
+            ensure_category(vault_path, config, category, articles_dir)
+            update_moc(vault_path, category, safe_title, date, articles_dir)
 
-        for concept in record.get("concepts", []):
-            if not isinstance(concept, dict):
-                continue
-            concept_name = concept.get("name", "")
-            concept_desc = concept.get("description", "")
-            if concept_name:
-                if on_progress:
-                    on_progress(f"生成概念: {concept_name}", idx, total)
-                ensure_concept_page(vault_path, concept_name, concept_desc, articles_dir)
+            for concept in record.get("concepts") or []:
+                if not isinstance(concept, dict):
+                    continue
+                concept_name = concept.get("name", "")
+                concept_desc = concept.get("description", "")
+                if concept_name:
+                    if on_progress:
+                        on_progress(f"生成概念: {concept_name}", idx, total)
+                    ensure_concept_page(vault_path, concept_name, concept_desc, articles_dir)
 
-        key = (category, sub_topic)
-        if sub_topic and key not in seen_subcategory:
-            seen_subcategory.add(key)
-            maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
+            key = (category, sub_topic)
+            if sub_topic and key not in seen_subcategory:
+                seen_subcategory.add(key)
+                maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
+        except (OSError, ValueError, KeyError) as e:
+            logger.warning("知识图谱更新失败 [%s/%s]: %s", category, safe_title, e, exc_info=True)
 
     if on_progress and total > 0:
         on_progress("_kg_done", total, total)
