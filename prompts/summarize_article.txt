@@ -49,7 +49,7 @@ $images_context
   "tags": ["标签1", "标签2", "标签3"],
   "related_topics": ["从已有文章或概念中选取，无匹配则空数组"],
   "images": [
-    {"url": "图片URL", "purpose": "15字以内的简短标题", "valuable": true, "reason": "选择/排除原因"}
+    {"url": "图片URL", "purpose": "20-60字的图片描述，说明图片展示了什么内容", "valuable": true, "reason": "选择/排除原因"}
   ],
   "body_sections": [
     {
