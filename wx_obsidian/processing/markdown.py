@@ -50,7 +50,11 @@ def generate_markdown(
     concepts_md = "\n".join(
         f"- [[{c.get('name', '未知概念')}]]：{c.get('description', '')}" for c in concepts
     )
-    related_md = "\n".join(f"- [[{r}]]" for r in related)
+    related_lines: list[str] = []
+    for r in related:
+        safe = re.sub(r'[<>:"/\\|?*]', "_", r)[:100]
+        related_lines.append(f"- [[{safe}|{r}]]" if safe != r else f"- [[{r}]]")
+    related_md = "\n".join(related_lines)
 
     body_parts: list[str] = []
     for section in body_sections:
@@ -72,9 +76,6 @@ def generate_markdown(
 
 ## 相关主题
 {related_md}
-
----
-> 来源：{account_name} | [原文链接]({url})
 """
 
 

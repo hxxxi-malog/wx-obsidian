@@ -175,6 +175,7 @@ def _llm_stage(ctx: PipelineContext) -> PipelineContext:
             config=full_config,
             image_descriptions=ctx.image_descriptions,
             images_with_context=ctx.images,
+            article_id=info["id"],
         )
     except (requests.RequestException, ValueError) as e:
         print(f"  DeepSeek API 调用失败: {e}")
@@ -957,9 +958,9 @@ def _update_knowledge_graph(
                 on_progress(f"更新分类: {category}", idx, total)
 
             ensure_category(vault_path, config, category, articles_dir)
-            update_moc(vault_path, category, safe_title, date, articles_dir)
-
             original_title = record.get("title", safe_title)
+            update_moc(vault_path, category, safe_title, date, articles_dir, original_title)
+
             for concept in record.get("concepts") or []:
                 if not isinstance(concept, dict):
                     continue
@@ -1021,7 +1022,11 @@ def _update_related_topics(
         except OSError:
             continue
 
-        related_md = "\n".join(f"- [[{t}]]" for t in related_titles)
+        related_lines: list[str] = []
+        for t in related_titles:
+            safe = re.sub(r'[<>:"/\\|?*]', "_", t)[:100]
+            related_lines.append(f"- [[{safe}|{t}]]" if safe != t else f"- [[{t}]]")
+        related_md = "\n".join(related_lines)
         new_md, count = re.subn(
             r"(## 相关主题\n).*?(?=\n## |\Z)",
             r"\1" + related_md + "\n",

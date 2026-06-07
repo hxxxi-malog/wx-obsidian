@@ -151,7 +151,19 @@ def build_refine_prompt(
 # ---------------------------------------------------------------------------
 
 
-def _parse_api_response(text: str) -> dict[str, Any] | None:
+def _save_debug_response(article_id: str, text: str) -> None:
+    """保存 LLM 原始响应用于调试，按文章 ID 分文件。"""
+    debug_dir = SCRIPT_DIR / "logs" / "responses"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_file = debug_dir / f"{article_id}.txt"
+    debug_file.write_text(text, encoding="utf-8")
+    # 自动清理：保留最近 50 个文件
+    files = sorted(debug_dir.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for old_file in files[50:]:
+        old_file.unlink(missing_ok=True)
+
+
+def _parse_api_response(text: str, article_id: str = "") -> dict[str, Any] | None:
     """从 API 响应中提取 JSON，处理常见的格式问题。"""
     if os.environ.get("DEBUG"):
         (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
@@ -163,7 +175,8 @@ def _parse_api_response(text: str) -> dict[str, Any] | None:
     json_match = re.search(r"\{[\s\S]*\}", clean)
     if not json_match:
         logger.warning("LLM 响应中未找到 JSON 对象，响应前200字: %s", text[:200])
-        (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
+        if article_id:
+            _save_debug_response(article_id, text)
         return None
 
     raw = json_match.group()
@@ -171,12 +184,18 @@ def _parse_api_response(text: str) -> dict[str, Any] | None:
         result: dict[str, Any] = json.loads(raw, strict=False)
         return result
     except json.JSONDecodeError:
+        # 尝试修复截断的 JSON
+        completed = _try_complete_truncated_json(raw)
+        if completed is not None:
+            return completed
+        # 尝试修复未转义引号
         try:
             result = json.loads(_fix_json_quotes(raw), strict=False)
             return result
         except json.JSONDecodeError as e:
             logger.warning("JSON 解析失败: %s", e)
-            (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
+            if article_id:
+                _save_debug_response(article_id, text)
             return None
 
 
@@ -221,6 +240,79 @@ def _fix_json_quotes(text: str) -> str:
     return "".join(result)
 
 
+def _try_complete_truncated_json(raw: str) -> dict[str, Any] | None:
+    """尝试修复被截断的 JSON：补全缺失的括号和引号。"""
+    # 统计括号匹配
+    open_braces = raw.count("{") - raw.count("}")
+    open_brackets = raw.count("[") - raw.count("]")
+
+    if open_braces <= 0 and open_brackets <= 0:
+        return None  # 括号已匹配，不是截断问题
+
+    # 检查是否有未闭合的字符串值
+    in_string = False
+    escaped = False
+    for ch in raw:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+
+    suffix = ""
+    if in_string:
+        suffix += '"'  # 闭合字符串
+    suffix += "]" * max(0, open_brackets)
+    suffix += "}" * max(0, open_braces)
+
+    candidate = raw + suffix
+    try:
+        result: dict[str, Any] = json.loads(candidate, strict=False)
+        logger.info("截断 JSON 修复成功（补全 %d 个括号）", open_braces + open_brackets)
+        return result
+    except json.JSONDecodeError:
+        return None
+
+
+def _retry_fix_json(
+    raw_text: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    article_id: str,
+) -> dict[str, Any] | None:
+    """将格式异常的 LLM 响应发回 LLM 请求修正。"""
+    fix_prompt = (
+        "以下 JSON 格式有误，请修正后只返回合法 JSON，不要添加任何解释或代码块：\n\n"
+        f"{raw_text[:8000]}"
+    )
+    try:
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 4096,
+                "response_format": {"type": "json_object"},
+                "messages": [{"role": "user", "content": fix_prompt}],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"]
+        return _parse_api_response(text, article_id)
+    except (requests.RequestException, KeyError, IndexError, TypeError) as e:
+        logger.warning("JSON 修复 LLM 调用失败: %s", e)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 公开函数
 # ---------------------------------------------------------------------------
@@ -261,12 +353,14 @@ def validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
 def _call_llm(
     prompt: str,
     config: dict[str, Any] | None = None,
+    article_id: str = "",
 ) -> dict[str, Any] | None:
     """调用 LLM API 并解析 JSON 响应。
 
     Args:
         config: 配置字典，优先从中读取 llm.model、llm.base_url。
             API key 始终从 os.environ 读取（由 .env 管理）。
+        article_id: 文章 ID，用于调试日志保存。
     """
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     llm_cfg = config.get("llm", {}) if config else {}
@@ -278,6 +372,10 @@ def _call_llm(
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY 未设置")
 
+    # 动态 max_tokens：长 prompt 需要更多 output token
+    base_max = llm_cfg.get("max_tokens", 8192)
+    dynamic_max = min(16384, max(base_max, len(prompt) // 2))
+
     resp = requests.post(
         f"{base_url}/chat/completions",
         headers={
@@ -286,7 +384,8 @@ def _call_llm(
         },
         json={
             "model": model,
-            "max_tokens": 8192,
+            "max_tokens": dynamic_max,
+            "response_format": {"type": "json_object"},
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=120,
@@ -298,7 +397,11 @@ def _call_llm(
     except (KeyError, IndexError, TypeError) as e:
         print(f"  API 响应格式异常: {e}")
         return None
-    return _parse_api_response(text)
+    result = _parse_api_response(text, article_id)
+    if result is None and article_id:
+        logger.info("首次解析失败，尝试 LLM 修复: %s", article_id)
+        result = _retry_fix_json(text, base_url, api_key, model, article_id)
+    return result
 
 
 def summarize_article(
@@ -310,6 +413,7 @@ def summarize_article(
     config: dict[str, Any] | None = None,
     image_descriptions: list[ImageDescription] | None = None,
     images_with_context: list[dict[str, str]] | None = None,
+    article_id: str = "",
 ) -> dict[str, Any] | None:
     """生成结构化笔记，包含图片上下文（如果有）。"""
     prompt = build_prompt(
@@ -321,7 +425,7 @@ def summarize_article(
         image_descriptions=image_descriptions,
         images_with_context=images_with_context,
     )
-    return _call_llm(prompt, config=config)
+    return _call_llm(prompt, config=config, article_id=article_id)
 
 
 def fix_format_issues(
@@ -388,12 +492,13 @@ def refine_with_images(
     image_descriptions: list[ImageDescription],
     images_with_context: list[dict[str, str]] | None = None,
     config: dict[str, Any] | None = None,
+    article_id: str = "",
 ) -> dict[str, Any] | None:
     """Pass 2：结合原文和图片描述修订正文，返回含 [IMG:N] 占位符的 body_sections + images 数组。"""
     prompt = build_refine_prompt(
         article_content, body_sections, image_descriptions, images_with_context
     )
-    result = _call_llm(prompt, config=config)
+    result = _call_llm(prompt, config=config, article_id=article_id)
     if result and "images" in result:
         result["images"] = validate_images_field(result["images"])
     return result

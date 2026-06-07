@@ -98,8 +98,14 @@ def update_moc(
     title: str,
     date: str,
     articles_dir: Path | None = None,
+    original_title: str = "",
 ) -> None:
-    """更新分类 MOC 文件，追加新文章链接。"""
+    """更新分类 MOC 文件，追加新文章链接。
+
+    Args:
+        title: safe_title（文件名），用作 wikilink 目标。
+        original_title: 原始标题，用作 wikilink 显示文本。为空时直接用 title。
+    """
     base = articles_dir or (vault_path / "公众号文章")
     category_dir = base / category
     category_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +115,11 @@ def update_moc(
         _atomic_write(moc_file, f"# {category}\n\n")
 
     content = moc_file.read_text(encoding="utf-8")
-    entry = f"- {date} [[{title}]]"
+    if original_title and original_title != title:
+        wikilink = f"[[{title}|{original_title}]]"
+    else:
+        wikilink = f"[[{title}]]"
+    entry = f"- {date} {wikilink}"
     if entry not in content:
         content = content.rstrip() + f"\n{entry}"
         _atomic_write(moc_file, content)
