@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import html
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from wx_obsidian.processing.models import ImageDescription
 
 # ---------------------------------------------------------------------------
 # 预编译正则
@@ -22,6 +26,14 @@ RE_BODY_HEADING = re.compile(
 )
 RE_CN_KEYWORD = re.compile(r"[一-鿿]{2,6}")
 RE_EN_KEYWORD = re.compile(r"[a-zA-Z]{3,}")
+
+# 非内容图片的关键词模式（用于兜底过滤）
+_NON_CONTENT_PATTERNS = re.compile(
+    r"扫码|关注|二维码|qrcode|公众号|AI智能问答|点赞|在看|阅读原文|"
+    r"banner|头图|封面|logo|头像|水印|广告|赞助|推广|"
+    r"点击关注|长按识别|扫描二维码|加入.*群|数据库",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,14 +85,30 @@ def extract_images_with_context(html_text: str, max_images: int = 5) -> list[dic
     return results
 
 
-def insert_images_into_markdown(md: str, images: list[dict[str, str]]) -> str:
+def insert_images_into_markdown(
+    md: str,
+    images: list[dict[str, str]],
+    image_descriptions: list[ImageDescription] | None = None,
+) -> str:
     """将图片自动匹配到 markdown 的对应章节中。
 
     匹配策略：对每张图片，用其前后文字与各章节内容做关键词重叠度评分，
     插入得分最高的章节的第一个段落之后。
+
+    Args:
+        md: Markdown 文本。
+        images: extract_images_with_context() 返回的图片列表。
+        image_descriptions: Vision API 返回的图片描述，优先用作 alt text。
     """
     if not images:
         return md
+
+    # 构建 url -> vision 描述的映射
+    desc_map: dict[str, str] = {}
+    if image_descriptions:
+        for d in image_descriptions:
+            if d.is_content and d.status == "ok" and len(d.description) >= 10:
+                desc_map[d.url] = d.description
 
     # 按 ## 标题拆分 markdown 为 section
     raw_sections = RE_SECTION_HEAD.split(md)
@@ -112,6 +140,11 @@ def insert_images_into_markdown(md: str, images: list[dict[str, str]]) -> str:
         if not img_kw:
             continue
 
+        # 兜底过滤：跳过明显的非内容图（二维码、banner、推广图等）
+        desc_for_check = desc_map.get(img["url"], "")
+        if _is_non_content_image(desc_for_check, img["before"], img.get("after", "")):
+            continue
+
         best_score = 0
         best_sec = -1
         for sec_idx in body_section_indices:
@@ -136,7 +169,9 @@ def insert_images_into_markdown(md: str, images: list[dict[str, str]]) -> str:
                 insert_pos = j + 1
                 break
 
-        desc = _truncate_description(img["before"])
+        desc = desc_map.get(img["url"]) or _smart_extract_description(
+            img["before"], img.get("after", "")
+        )
         img_md = f"\n![{desc}]({img['url']})"
         lines.insert(insert_pos, img_md)
         raw_sections[best_sec] = "\n".join(lines)
@@ -158,15 +193,26 @@ def _extract_keywords(text: str) -> set[str]:
     return cn | en
 
 
-def _truncate_description(before_text: str) -> str:
-    """从图片前的文字中截取有意义的描述。"""
-    desc = before_text[-50:].strip()
-    # 去掉开头不完整的片段
-    for sep in ("。", "，", "；", ".", ",", " "):
-        idx = desc.find(sep)
-        if 0 < idx < len(desc) - 5:
-            desc = desc[idx + 1 :].strip()
-            break
-    if len(desc) > 40:
-        desc = desc[:40]
-    return desc
+def _is_non_content_image(description: str, before: str = "", after: str = "") -> bool:
+    """检查图片是否为非内容图（二维码、banner、推广图等）。
+
+    基于 Vision API 描述和上下文文字中的关键词判断。
+    """
+    text = f"{description} {before} {after}"
+    return bool(_NON_CONTENT_PATTERNS.search(text))
+
+
+def _smart_extract_description(before: str, after: str = "") -> str:
+    """从图片前后文字中提取完整句子作为 alt text。
+
+    优先取图片前最近的完整句子，不足时补充图片后文字。
+    """
+    text = before[-120:] + " " + after[:60]
+    # 按中英文句号/问号/叹号分割
+    sentences = re.split(r"(?<=[。！？.!?])", text)
+    for s in reversed(sentences):
+        s = s.strip()
+        if len(s) > 10:
+            return s[:125]
+    # 兜底：返回清理后的文本
+    return text.strip()[:125]
