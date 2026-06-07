@@ -105,10 +105,13 @@ def cascade_delete(
         errors.append(f"删除文件失败: {e}")
         logger.warning("删除文件失败: %s", e)
 
-    # 2. 移除 MOC 条目
+    # 2. 移除 MOC 条目（MOC 中存储的是 safe_title，即文件名）
     if category:
         try:
-            moc_actions = _remove_moc_entry(articles_dir, category, safe_title, date)
+            # 优先从文件实际路径推断 MOC 所在目录（处理子目录迁移的情况）
+            file_path = Path(record.get("file", ""))
+            moc_dir = _resolve_moc_dir(articles_dir, category, file_path)
+            moc_actions = _remove_moc_entry(moc_dir, safe_title)
             actions.extend(moc_actions)
         except OSError as e:
             errors.append(f"移除 MOC 条目失败: {e}")
@@ -122,14 +125,22 @@ def cascade_delete(
         if concept_name:
             try:
                 concept_actions = _cleanup_concept_page(
-                    articles_dir, concept_name, safe_title, title, category
+                    articles_dir, concept_name, title, safe_title, category
                 )
                 actions.extend(concept_actions)
             except OSError as e:
                 errors.append(f"清理概念页面 {concept_name} 失败: {e}")
                 logger.warning("清理概念页面失败 [%s]: %s", concept_name, e)
 
-    # 4. 清理日归档
+    # 3.5 清理孤立概念页面（"相关文章"部分无任何文章链接的概念页面）
+    try:
+        orphan_actions = _cleanup_orphaned_concepts(articles_dir)
+        actions.extend(orphan_actions)
+    except OSError as e:
+        errors.append(f"清理孤立概念页面失败: {e}")
+        logger.warning("清理孤立概念页面失败: %s", e)
+
+    # 4. 清理日归档（归档文件用 safe_title，因为写入时就是用 safe_title 构建的）
     if date:
         try:
             archive_actions = _remove_archive_entry(articles_dir, date, safe_title, category)
@@ -153,17 +164,42 @@ def cascade_delete(
     return actions
 
 
-def _matches_wikilink(line: str, safe_title: str) -> bool:
-    """检查行中的 wikilink 是否精确引用了 safe_title（非子串匹配）。"""
+def _resolve_moc_dir(articles_dir: Path, category: str, file_path: Path) -> Path:
+    """从文件实际路径推断 MOC 所在目录。
+
+    文章可能被迁移到子目录（如 category/sub_topic/），此时 MOC 在子目录中。
+    如果文件路径的父目录是 category 的子目录，返回子目录；否则返回 category 目录。
+    """
+    if not file_path.exists():
+        return articles_dir / category
+    parent = file_path.parent
+    category_dir = articles_dir / category
+    # 文件直接在 category 目录下
+    if parent == category_dir:
+        return category_dir
+    # 文件在 category 的子目录下（子目录迁移）
+    if category_dir in parent.parents:
+        return parent
+    return category_dir
+
+
+def _matches_wikilink(line: str, title: str) -> bool:
+    """检查行中的 wikilink 是否引用了 title（按路径段匹配，非子串）。"""
     if not line.strip().startswith("- ") or "[[" not in line:
         return False
-    pattern = re.compile(r"\[\[[^\]]*\b" + re.escape(safe_title) + r"\b[^\]]*\]\]")
-    return bool(pattern.search(line))
+    m = re.search(re.escape(title), line)
+    if not m:
+        return False
+    # 确保匹配的是 wikilink 中的路径段（前面是 [[ 或 /，后面是 | 或 ]]）
+    before_ok = m.start() == 0 or line[m.start() - 1] in "[/"  # noqa: PLC1901
+    after_pos = m.end()
+    after_ok = after_pos >= len(line) or line[after_pos] in "|]/"  # noqa: PLC1901
+    return before_ok and after_ok
 
 
-def _remove_moc_entry(articles_dir: Path, category: str, safe_title: str, date: str) -> list[str]:
+def _remove_moc_entry(moc_dir: Path, safe_title: str) -> list[str]:
     """从分类 _MOC.md 移除文章条目。"""
-    moc_file = articles_dir / category / "_MOC.md"
+    moc_file = moc_dir / "_MOC.md"
     if not moc_file.exists():
         return []
 
@@ -175,14 +211,14 @@ def _remove_moc_entry(articles_dir: Path, category: str, safe_title: str, date: 
         return [f"MOC 条目未找到: {safe_title}"]
 
     _atomic_write(moc_file, "\n".join(new_lines))
-    return [f"已从 {category}/_MOC.md 移除条目"]
+    return [f"已从 {moc_dir.name}/_MOC.md 移除条目"]
 
 
 def _cleanup_concept_page(
     articles_dir: Path,
     concept_name: str,
-    safe_title: str,
     article_title: str,
+    safe_title: str,
     category: str,
 ) -> list[str]:
     """清理概念页面中的文章链接，无剩余链接时删除页面。"""
@@ -193,40 +229,66 @@ def _cleanup_concept_page(
     content = concept_file.read_text(encoding="utf-8")
     actions: list[str] = []
 
-    # 移除该文章的 wikilink 行
-    article_ref = re.sub(r'[<>:"/\\|?*]', "_", article_title)[:100]
+    # 移除该文章的 wikilink 行（同时匹配原始标题和 safe_title）
     lines = content.split("\n")
     new_lines = []
     for line in lines:
-        # 匹配 wikilink 行：- [[...safe_title...]] 或 - [[category/safe_title|...]]
-        if line.strip().startswith("- [[") and safe_title in line:
-            continue
-        # 也匹配用 article_title 构建的引用
-        if line.strip().startswith("- [[") and article_ref in line:
+        if line.strip().startswith("- [[") and (article_title in line or safe_title in line):
             continue
         new_lines.append(line)
 
-    if len(new_lines) == len(lines):
-        return []
-
+    content_changed = len(new_lines) != len(lines)
     new_content = "\n".join(new_lines)
 
-    # 检查 "## 相关文章" 部分是否还有实际链接
+    # 检查概念页面是否仍引用该文章（标题可能出现在描述中）
+    references_article = article_title in new_content or safe_title in new_content
+
+    if not references_article:
+        if content_changed:
+            _atomic_write(concept_file, new_content)
+            actions.append(f"已从概念/{concept_name}.md 移除文章链接")
+        return actions
+
+    # 概念页面仍引用该文章，检查是否有其他文章链接
+    has_other_links = False
     if "## 相关文章" in new_content:
         after_section = new_content.split("## 相关文章", 1)[1]
-        # 去掉占位行 "> 自动更新"，看是否还有链接
+        remaining = re.sub(r">\s*自动更新\s*", "", after_section).strip()
+        has_other_links = bool(re.search(r"- \[\[", remaining))
+
+    if not has_other_links:
+        concept_file.unlink()
+        actions.append(f"已删除概念页面（仅关联已删除文章）: 概念/{concept_name}.md")
+        return actions
+
+    if content_changed:
+        _atomic_write(concept_file, new_content)
+        actions.append(f"已从概念/{concept_name}.md 移除文章链接")
+    return actions
+
+
+def _cleanup_orphaned_concepts(articles_dir: Path) -> list[str]:
+    """清理"相关文章"部分无任何文章链接的孤立概念页面。"""
+    concept_dir = articles_dir / "概念"
+    if not concept_dir.exists():
+        return []
+
+    actions: list[str] = []
+    for concept_file in concept_dir.glob("*.md"):
+        if concept_file.name == "_MOC.md":
+            continue
+        content = concept_file.read_text(encoding="utf-8")
+        if "## 相关文章" not in content:
+            continue
+
+        after_section = content.split("## 相关文章", 1)[1]
         remaining = re.sub(r">\s*自动更新\s*", "", after_section).strip()
         has_links = bool(re.search(r"- \[\[", remaining))
 
         if not has_links:
-            # 没有其他文章引用，删除整个概念页面
             concept_file.unlink()
-            actions.append(f"已删除概念页面（无其他引用）: 概念/{concept_name}.md")
-            return actions
+            actions.append(f"已删除孤立概念页面: 概念/{concept_file.name}")
 
-    # 还有其他链接，写回
-    _atomic_write(concept_file, new_content)
-    actions.append(f"已从概念/{concept_name}.md 移除文章链接")
     return actions
 
 
