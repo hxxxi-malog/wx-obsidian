@@ -64,11 +64,6 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
 
     content = content.rstrip() + "\n"
 
-    if not is_concept:
-        footer_issue = _check_footer(content)
-        if footer_issue:
-            issues.append(footer_issue)
-
     return content, issues
 
 
@@ -139,21 +134,43 @@ def _remove_duplicate_title(lines: list[str]) -> tuple[list[str], str | None]:
 
 
 def _check_unclosed_code_block(lines: list[str]) -> tuple[list[str], list[str]]:
-    """检查并修复未闭合的代码块。"""
+    """检查并修复未闭合的代码块，处理孤立的闭合 ```。"""
     issues: list[str] = []
-    in_code_block = False
-    code_block_start = -1
 
-    for i, line in enumerate(lines):
-        if line.strip().startswith("```"):
-            if not in_code_block:
-                in_code_block = True
-                code_block_start = i
-            else:
-                in_code_block = False
+    fence_count = sum(1 for line in lines if line.strip().startswith("```"))
+    if fence_count == 0:
+        return lines, issues
 
-    if in_code_block:
-        issues.append(f"第 {code_block_start + 1} 行: 代码块未闭合，自动补全")
+    if fence_count % 2 == 0:
+        # 偶数个 ``` → 配对扫描确认是否正常
+        in_block = False
+        for line in lines:
+            if line.strip().startswith("```"):
+                in_block = not in_block
+        if in_block:
+            # 偶数但未闭合（理论上不会发生，防御性处理）
+            issues.append("代码块未闭合，自动补全")
+            lines.append("```")
+        return lines, issues
+
+    # 奇数个 ``` → 必定有一个孤立
+    # 判断是"开启未闭合"还是"闭合无开启"：
+    # 检查第一个 ``` 之前是否有内容行（JSON/代码等），若有则是孤立闭合
+    first_fence = next(i for i, line in enumerate(lines) if line.strip().startswith("```"))
+    has_content_before = any(lines[j].strip() for j in range(first_fence))
+
+    if has_content_before:
+        # 孤立的闭合 ``` → 在其前面的非空行前插入 ```
+        insert_at = first_fence
+        for j in range(first_fence - 1, -1, -1):
+            if lines[j].strip():
+                insert_at = j
+                break
+        lines.insert(insert_at, "```")
+        issues.append(f"第 {insert_at + 1} 行: 补充缺失的代码块开始标记 ```")
+    else:
+        # 开启未闭合 → 在末尾补全
+        issues.append(f"第 {first_fence + 1} 行: 代码块未闭合，自动补全")
         lines.append("```")
 
     return lines, issues
@@ -288,13 +305,6 @@ def _fix_standalone_backslashes(content: str) -> tuple[str, str | None]:
         fixed = re.sub(r"\n{3,}", "\n\n", fixed)
         return fixed, "移除了单独的反斜杠行"
     return content, None
-
-
-def _check_footer(content: str) -> str | None:
-    """检查是否存在来源 footer。"""
-    if "> 来源：" not in content:
-        return "缺少来源 footer（> 来源：xxx | [原文链接](url)）"
-    return None
 
 
 # ---------------------------------------------------------------------------
