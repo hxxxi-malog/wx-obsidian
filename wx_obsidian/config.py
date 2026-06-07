@@ -105,6 +105,15 @@ def load_max_workers() -> int:
         return 5
 
 
+def load_similarity_db_path() -> Path:
+    """加载相似度数据库路径配置。"""
+    config = load_config()
+    raw = config.get("similarity_db_path")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".wx-obsidian" / "similarity.sqlite"
+
+
 # ---------------------------------------------------------------------------
 # Skill 文件
 # ---------------------------------------------------------------------------

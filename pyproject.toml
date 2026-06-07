@@ -9,6 +9,7 @@ dependencies = [
     "textual>=0.40.0",
     "apscheduler>=3.10.0",
     "mistune>=3.2.1",
+    "jieba>=0.42",
 ]
 
 [project.optional-dependencies]
@@ -41,4 +42,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["wx_obsidian.tui.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["jieba.*"]
 ignore_missing_imports = true

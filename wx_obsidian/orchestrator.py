@@ -16,7 +16,12 @@ from typing import Any, Callable
 import requests
 
 from wx_obsidian.batch import ArchiveWriter, BatchProcessor
-from wx_obsidian.config import load_processed, load_vision_config, save_processed
+from wx_obsidian.config import (
+    load_processed,
+    load_similarity_db_path,
+    load_vision_config,
+    save_processed,
+)
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.models import (
     AccountStatus,
@@ -410,6 +415,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
             "concepts": concepts,
             "summary": summary_data.get("summary", ""),
             "tags": summary_data.get("tags", []),
+            "key_points": summary_data.get("key_points", []),
         }
     }
 
@@ -612,11 +618,16 @@ class Orchestrator:
                     logger.info("文章文件缺失，重新处理: %s", a.get("title", "")[:40])
                     ids_to_reprocess.append(aid)
                     new_articles.append(a)
-                elif isinstance(record, dict) and record.get("retry_count", 0) >= MAX_CROSS_RUN_RETRIES:
+                elif (
+                    isinstance(record, dict)
+                    and record.get("retry_count", 0) >= MAX_CROSS_RUN_RETRIES
+                ):
                     skipped_existing += 1
                 else:
                     # error/skipped/failed 记录，未超过重试上限，绕过日期过滤重试
-                    prev_retry_counts[aid] = record.get("retry_count", 0) if isinstance(record, dict) else 0
+                    prev_retry_counts[aid] = (
+                        record.get("retry_count", 0) if isinstance(record, dict) else 0
+                    )
                     ids_to_reprocess.append(aid)
                     new_articles.append(a)
             elif a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
@@ -989,7 +1000,7 @@ def _update_related_topics(
     if on_progress:
         on_progress("_related", 0, 1)
 
-    related_map = compute_related(processed, new_ids)
+    related_map = compute_related(processed, new_ids, db_path=load_similarity_db_path())
 
     updated = 0
     for article_id, related_titles in related_map.items():
@@ -1012,7 +1023,7 @@ def _update_related_topics(
 
         related_md = "\n".join(f"- [[{t}]]" for t in related_titles)
         new_md, count = re.subn(
-            r"(## 相关主题\n)([^\n#]*)",
+            r"(## 相关主题\n).*?(?=\n## |\Z)",
             r"\1" + related_md + "\n",
             md,
             flags=re.DOTALL,
