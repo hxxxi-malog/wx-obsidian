@@ -12,17 +12,181 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 权重
-W_BM25 = 0.50
-W_CONCEPT = 0.20
-W_TAG = 0.20
-BONUS_SUB_TOPIC = 0.10
+# RRF 参数：k 随语料库大小线性插值，k = K_MIN + (K_MAX - K_MIN) * min(1, N / K_REF)
+RRF_K_MIN = 15  # 语料库极小时的 k
+RRF_K_MAX = 60  # 语料库 >= K_REF 时的 k
+RRF_K_REF = 300  # 参考语料库大小（k 到达 K_MAX 的拐点）
+
+# BM25F 字段权重
+FIELD_WEIGHTS = {
+    "title": 3.0,
+    "tags": 2.5,
+    "concepts": 2.0,
+    "key_points": 1.5,
+    "summary": 1.0,
+}
+
+# 结构化加成
+BONUS_SUB_TOPIC = 0.03
+BONUS_SAME_CATEGORY = 0.03
+BONUS_SAME_SOURCE = 0.05
 
 # BM25 查询参数
 TOP_K_KEYWORDS = 20
 
 # 标点符号集合（用于过滤 BM25 关键词）
 _PUNCTUATION = set("、，。！？；：''【】（）《》…—·,.!?;:\"'()[]{}<> \t\n")
+
+# 领域停用词：通用中文停用词 + AI/技术领域高频低信息词
+_STOP_WORDS: set[str] = {
+    # 通用中文停用词
+    "的",
+    "了",
+    "在",
+    "是",
+    "我",
+    "有",
+    "和",
+    "就",
+    "不",
+    "人",
+    "都",
+    "一",
+    "一个",
+    "上",
+    "也",
+    "很",
+    "到",
+    "说",
+    "要",
+    "去",
+    "你",
+    "会",
+    "着",
+    "没有",
+    "看",
+    "好",
+    "自己",
+    "这",
+    "他",
+    "她",
+    "它",
+    "们",
+    "那",
+    "被",
+    "从",
+    "把",
+    "对",
+    "让",
+    "用",
+    "为",
+    "以",
+    "所",
+    "之",
+    "与",
+    "及",
+    "或",
+    "但",
+    "而",
+    "如",
+    "若",
+    "因",
+    "则",
+    "其",
+    "此",
+    "等",
+    "来",
+    "后",
+    "前",
+    "时",
+    "中",
+    "下",
+    "可",
+    "能",
+    "已",
+    "于",
+    "又",
+    "更",
+    "再",
+    "将",
+    "还",
+    "没",
+    "才",
+    "只",
+    "即",
+    "使",
+    "因为",
+    "所以",
+    "但是",
+    "然而",
+    "如果",
+    "虽然",
+    "由于",
+    "进行",
+    # AI/技术领域高频低信息词（几乎所有文章都出现，无区分度）
+    "核心",
+    "技术",
+    "方案",
+    "文章",
+    "分析",
+    "问题",
+    "解决",
+    "实现",
+    "使用",
+    "支持",
+    "提供",
+    "包括",
+    "以及",
+    "同时",
+    "目前",
+    "其中",
+    "可以",
+    "需要",
+    "基于",
+    "利用",
+    "采用",
+    "场景",
+    "能力",
+    "功能",
+    "系统",
+    "平台",
+    "工具",
+    "方法",
+    "方式",
+    "关键",
+    "重要",
+    "主要",
+    "基础",
+    "整体",
+    "具体",
+    "相关",
+    "不同",
+    "能够",
+    "已经",
+    "因此",
+    "介绍",
+    "内容",
+    "部分",
+    "方面",
+    "特点",
+    "优势",
+    "价值",
+    "目标",
+    "通过",
+    "显著",
+    "有效",
+    "全面",
+    "深入",
+    "快速",
+    "简单",
+    "直接",
+    "进一步",
+    "基本",
+    "传统",
+    "典型",
+    "常见",
+    "本质",
+}
 
 # 默认数据库路径
 _DEFAULT_DB_PATH = Path.home() / ".wx-obsidian" / "similarity.sqlite"
@@ -59,16 +223,16 @@ def _get_jieba() -> Any:
 def _tokenize(text: str) -> str:
     """分词，返回空格分隔的 token 字符串（供 FTS5 索引）。
 
-    jieba 可用时使用 jieba，否则降级到正则分词。
+    jieba 可用时使用 jieba，否则降级到正则分词。自动过滤停用词。
     """
     jb = _get_jieba()
     if jb is not None:
         tokens = jb.lcut(text)
-        return " ".join(t for t in tokens if t.strip())
+        return " ".join(t for t in tokens if t.strip() and t not in _STOP_WORDS)
     # 正则分词 fallback
     cn = RE_CN_TOKEN.findall(text)
     en = [w.lower() for w in RE_EN_TOKEN.findall(text)]
-    return " ".join(cn + en)
+    return " ".join(t for t in cn + en if t not in _STOP_WORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -139,22 +303,6 @@ def _token_jaccard(tags_a: list[str], tags_b: list[str]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def _score_pair(
-    meta_a: dict[str, Any],
-    meta_b: dict[str, Any],
-    bm25_score: float,
-) -> float:
-    """计算两篇文章的融合相似度分数。"""
-    concept_sim = _fuzzy_concept_score(meta_a["concepts"], meta_b["concepts"])
-    tag_sim = _token_jaccard(meta_a["tags"], meta_b["tags"])
-    bonus = (
-        BONUS_SUB_TOPIC
-        if meta_a["sub_topic"] and meta_a["sub_topic"] == meta_b["sub_topic"]
-        else 0.0
-    )
-    return W_BM25 * bm25_score + W_CONCEPT * concept_sim + W_TAG * tag_sim + bonus
-
-
 # ---------------------------------------------------------------------------
 # SimilarityEngine
 # ---------------------------------------------------------------------------
@@ -213,42 +361,41 @@ class SimilarityEngine:
         return conn
 
     def _insert_one_article(self, conn: sqlite3.Connection, aid: str, rec: dict[str, Any]) -> None:
-        """将一篇文章插入 articles 表和 articles_fts 表。"""
+        """将一篇文章插入 articles 表和 articles_fts 表（BM25F 分字段）。"""
         concepts = [c.get("name", "") for c in (rec.get("concepts") or []) if isinstance(c, dict)]
         tags = rec.get("tags") or []
         conn.execute(
             "INSERT OR IGNORE INTO articles "
-            "(article_id, title, category, sub_topic, concepts, tags) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(article_id, title, category, sub_topic, source, concepts, tags) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 aid,
                 rec.get("title", ""),
                 rec.get("category", ""),
                 rec.get("sub_topic", ""),
+                rec.get("source", ""),
                 json.dumps(concepts),
                 json.dumps(tags),
             ),
         )
 
-        text = " ".join(
-            filter(
-                None,
-                [
-                    rec.get("summary", ""),
-                    " ".join(rec.get("key_points") or []),
-                    " ".join(concepts),
-                    " ".join(tags),
-                ],
-            )
-        )
-        tokenized = _tokenize(text)
+        # BM25F: 每个字段独立分词后插入
         conn.execute(
-            "INSERT INTO articles_fts (article_id, content) VALUES (?, ?)",
-            (aid, tokenized),
+            "INSERT INTO articles_fts "
+            "(article_id, title, tags, concepts, key_points, summary) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                aid,
+                _tokenize(rec.get("title", "")),
+                _tokenize(" ".join(tags)),
+                _tokenize(" ".join(concepts)),
+                _tokenize(" ".join(rec.get("key_points") or [])),
+                _tokenize(rec.get("summary", "")),
+            ),
         )
 
     def _build_fts_index(self, conn: sqlite3.Connection, articles: dict[str, Any]) -> None:
-        """构建 SQLite 表和 FTS5 全文索引。"""
+        """构建 SQLite 表和 FTS5 全文索引（BM25F 分字段）。"""
         conn.execute("DROP TABLE IF EXISTS articles")
         conn.execute("DROP TABLE IF EXISTS articles_fts")
         conn.execute("""
@@ -257,15 +404,21 @@ class SimilarityEngine:
                 title TEXT NOT NULL,
                 category TEXT,
                 sub_topic TEXT,
+                source TEXT,
                 concepts TEXT,
                 tags TEXT
             )
         """)
+        # BM25F: 每个字段独立索引，查询时按 FIELD_WEIGHTS 加权
         conn.execute("""
             CREATE VIRTUAL TABLE articles_fts USING fts5(
                 article_id UNINDEXED,
-                content,
-                tokenize='unicode61'
+                title,
+                tags,
+                concepts,
+                key_points,
+                summary,
+                tokenize='ascii'
             )
         """)
 
@@ -318,17 +471,26 @@ class SimilarityEngine:
     def _query_bm25(
         self, conn: sqlite3.Connection, article_id: str, limit: int
     ) -> list[tuple[str, float]]:
-        """FTS5 BM25 查询，返回 [(article_id, normalized_score), ...]。"""
+        """FTS5 BM25F 查询，返回 [(article_id, normalized_score), ...]。
+
+        使用字段加权 BM25：title 权重 3.0, tags 2.5, concepts 2.0, key_points 1.5, summary 1.0。
+        """
+        # 从所有字段收集 token
         row = conn.execute(
-            "SELECT content FROM articles_fts WHERE article_id = ?",
+            "SELECT title, tags, concepts, key_points, summary "
+            "FROM articles_fts WHERE article_id = ?",
             (article_id,),
         ).fetchone()
         if not row:
             return []
 
-        tokens = row[0].split()
+        # 合并所有字段的 token，按频率排序取 top-K
+        all_tokens: list[str] = []
+        for field_text in row:
+            if field_text:
+                all_tokens.extend(field_text.split())
         freq: dict[str, int] = {}
-        for t in tokens:
+        for t in all_tokens:
             if len(t) >= 2 and not all(c in _PUNCTUATION for c in t):
                 freq[t] = freq.get(t, 0) + 1
 
@@ -339,9 +501,16 @@ class SimilarityEngine:
 
         # 用双引号包裹每个 token 作为短语查询，避免 FTS5 运算符解释
         query = " OR ".join(f'"{t}"' for t in top_tokens)
+
+        # BM25F: bm25() 接受每列的权重参数，顺序对应 FTS5 表的列
+        # 列顺序: title, tags, concepts, key_points, summary
+        w = FIELD_WEIGHTS
+        weights_sql = (
+            f"{w['title']}, {w['tags']}, {w['concepts']}, {w['key_points']}, {w['summary']}"
+        )
         try:
             rows = conn.execute(
-                "SELECT article_id, bm25(articles_fts) AS score "
+                f"SELECT article_id, bm25(articles_fts, {weights_sql}) AS score "
                 "FROM articles_fts WHERE articles_fts MATCH ? "
                 "AND article_id != ? "
                 "ORDER BY score LIMIT ?",
@@ -353,6 +522,7 @@ class SimilarityEngine:
 
         results: list[tuple[str, float]] = []
         for aid, score in rows:
+            # FTS5 bm25 返回负数（越小越相关），sigmoid 归一化到 (0, 1)
             normalized = 1.0 / (1.0 + math.exp(score))
             results.append((aid, normalized))
         return results
@@ -360,22 +530,23 @@ class SimilarityEngine:
     def _load_all_meta(self, conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         """批量加载所有文章元数据到内存。"""
         rows = conn.execute(
-            "SELECT article_id, title, category, sub_topic, concepts, tags FROM articles"
+            "SELECT article_id, title, category, sub_topic, source, concepts, tags FROM articles"
         ).fetchall()
         meta: dict[str, dict[str, Any]] = {}
         for row in rows:
             try:
-                concepts = json.loads(row[4]) if row[4] else []
+                concepts = json.loads(row[5]) if row[5] else []
             except (json.JSONDecodeError, TypeError):
                 concepts = []
             try:
-                tags = json.loads(row[5]) if row[5] else []
+                tags = json.loads(row[6]) if row[6] else []
             except (json.JSONDecodeError, TypeError):
                 tags = []
             meta[row[0]] = {
                 "title": row[1],
                 "category": row[2],
                 "sub_topic": row[3],
+                "source": row[4] or "",
                 "concepts": concepts,
                 "tags": tags,
             }
@@ -410,18 +581,70 @@ class SimilarityEngine:
         top_n: int,
         threshold: float,
     ) -> list[str]:
-        """对 BM25 候选做融合评分，返回 top_n 篇关联文章标题。"""
-        scores: list[tuple[float, str]] = []
-        for cand_id, bm25_score in bm25_hits:
+        """RRF 融合 BM25 + 概念 + 标签三个信号，返回 top_n 篇关联文章标题。
+
+        RRF 公式: score = sum(w_i / (k + rank_i))。
+        k 随语料库大小线性插值：k = 15 + 45 * min(1, N/300)。
+        对每个信号独立排序，再按 RRF 融合排名，避免不同信号分数不可比的问题。
+        """
+        if not bm25_hits:
+            return []
+
+        # --- 信号 1: BM25 排名（已按分数排序） ---
+        bm25_ranked = [aid for aid, _ in bm25_hits]
+
+        # --- 信号 2: 概念相似度排名 ---
+        concept_scores: list[tuple[float, str]] = []
+        for cand_id, _ in bm25_hits:
             meta_b = all_meta.get(cand_id)
             if not meta_b:
                 continue
-            score = _score_pair(source_meta, meta_b, bm25_score)
-            if score >= threshold:
-                scores.append((score, meta_b["title"]))
+            score = _fuzzy_concept_score(source_meta["concepts"], meta_b["concepts"])
+            concept_scores.append((score, cand_id))
+        concept_scores.sort(reverse=True)
+        concept_ranked = [aid for _, aid in concept_scores]
 
-        scores.sort(reverse=True)
-        return [title for _, title in scores[:top_n]]
+        # --- 信号 3: 标签相似度排名 ---
+        tag_scores: list[tuple[float, str]] = []
+        for cand_id, _ in bm25_hits:
+            meta_b = all_meta.get(cand_id)
+            if not meta_b:
+                continue
+            score = _token_jaccard(source_meta["tags"], meta_b["tags"])
+            tag_scores.append((score, cand_id))
+        tag_scores.sort(reverse=True)
+        tag_ranked = [aid for _, aid in tag_scores]
+
+        # --- RRF 融合 ---
+        rrf_scores: dict[str, float] = {}
+        # k 平滑插值：语料库越大，排名差异越被拉平
+        corpus_size = len(all_meta)
+        k = RRF_K_MIN + (RRF_K_MAX - RRF_K_MIN) * min(1.0, corpus_size / RRF_K_REF)
+
+        for rank, aid in enumerate(bm25_ranked, 1):
+            rrf_scores[aid] = rrf_scores.get(aid, 0.0) + 1.0 / (k + rank)
+        for rank, aid in enumerate(concept_ranked, 1):
+            rrf_scores[aid] = rrf_scores.get(aid, 0.0) + 0.8 / (k + rank)
+        for rank, aid in enumerate(tag_ranked, 1):
+            rrf_scores[aid] = rrf_scores.get(aid, 0.0) + 0.6 / (k + rank)
+
+        # --- 结构化加成 ---
+        for aid in rrf_scores:
+            meta_b = all_meta.get(aid)
+            if not meta_b:
+                continue
+            if source_meta.get("source") and source_meta["source"] == meta_b.get("source"):
+                rrf_scores[aid] += BONUS_SAME_SOURCE
+            if source_meta["category"] == meta_b["category"]:
+                rrf_scores[aid] += BONUS_SAME_CATEGORY
+            if source_meta["sub_topic"] and source_meta["sub_topic"] == meta_b["sub_topic"]:
+                rrf_scores[aid] += BONUS_SUB_TOPIC
+
+        # --- 排序 + 阈值过滤 ---
+        sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+        return [
+            all_meta[aid]["title"] for aid, score in sorted_results[:top_n] if score >= threshold
+        ]
 
     def compute_related(
         self,

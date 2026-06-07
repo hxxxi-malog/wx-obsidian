@@ -332,7 +332,7 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
             purpose = img.get("purpose", "")
             if not url:
                 continue
-            desc = purpose[:20] if purpose else "图片"
+            desc = purpose[:80] if purpose else "图片"
             img_md = f"\n![{desc}]({url})\n"
             md = md.replace(f"[IMG:{i}]", img_md)
 
@@ -343,8 +343,8 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
     md = re.sub(r"\[IMG:\d+\]", "", md)
 
     # 未配视觉模型时，LLM 没有图片上下文，降级到关键词匹配
-    if not llm_images and ctx.images and ctx.image_descriptions is None:
-        md = insert_images_into_markdown(md, ctx.images)
+    if not llm_images and ctx.images:
+        md = insert_images_into_markdown(md, ctx.images, ctx.image_descriptions)
 
     ctx.md_content = md
     return ctx
