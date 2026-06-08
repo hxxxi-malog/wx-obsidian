@@ -1,23 +1,18 @@
 categories:
 - LLM基础
 - Agent
-- 多Agent协同
-- 上下文工程
 - 多模态与视觉
 - 具身智能
-- Prompt工程
-- RAG
 - 训练与微调
-- AI基础设施
 - AI编程
-- MCP
+- 后端技术
 - Harness Engineering
 - AI产业生态
 - 其他
-deepseek:
-  model: deepseek-chat
-max_workers: 5
-obsidian:
+- 后端技术deepseek:
+- 品牌营销  model: deepseek-chat
+- 后端技术max_workers: 5
+- 数据标注obsidian:
   articles_dir: 公众号文章
   vault_path: /Users/malog/Downloads
 wewe_rss:

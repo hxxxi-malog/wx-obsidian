@@ -78,7 +78,7 @@ cli.py → sources/rss.py → processing/{images,llm,markdown}.py → output/{va
 | Skill | Path | Controls |
 |-------|------|----------|
 | `article-body` | `skills/article-body/SKILL.md` | Chapter structure (4-6 sections), writing style, table usage |
-| `classification` | `skills/classification/SKILL.md` | category selection (18 presets), sub_topic extraction rules |
+| `classification` | `skills/classification/SKILL.md` | category selection (11 presets), sub_topic extraction rules |
 | `note-metadata` | `skills/note-metadata/SKILL.md` | Frontmatter format, summary, concept extraction, related topics |
 
 ### Prompt Template
