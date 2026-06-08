@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -15,8 +16,11 @@ from wx_obsidian.config import MAX_ARTICLE_LENGTH
 
 logger = logging.getLogger(__name__)
 
-# 全局锁：微信 URL 抓取串行化，避免并发触发反爬
-_fetch_lock = threading.Lock()
+# 速率限制：最多 2 个并发请求，请求间隔至少 0.5 秒
+_fetch_semaphore = threading.Semaphore(2)
+_fetch_last_time = 0.0
+_fetch_time_lock = threading.Lock()
+_FETCH_MIN_INTERVAL = 0.5
 
 # 预编译正则
 RE_BODY_HTML = re.compile(r'id="js_content"[^>]*>(.*?)</div>\s*<script', re.DOTALL)
@@ -69,8 +73,15 @@ class HTMLTextExtractor(HTMLParser):
 
 def _fetch_html(url: str) -> str:
     """从微信文章 URL 抓取正文 HTML。"""
-    with _fetch_lock:
-        time.sleep(1)  # 串行化 + 间隔，避免并发触发微信反爬
+    global _fetch_last_time
+    with _fetch_semaphore:
+        # 自适应延迟：确保请求间隔至少 _FETCH_MIN_INTERVAL 秒
+        with _fetch_time_lock:
+            now = time.monotonic()
+            elapsed = now - _fetch_last_time
+            if elapsed < _FETCH_MIN_INTERVAL:
+                time.sleep(_FETCH_MIN_INTERVAL - elapsed)
+            _fetch_last_time = time.monotonic()
         resp = requests.get(url, headers=_HEADERS, timeout=15)
         resp.encoding = "utf-8"
         match = RE_BODY_HTML.search(resp.text)
@@ -108,7 +119,11 @@ def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
     base_url = config["wewe_rss"]["base_url"]
     resp = requests.get(f"{base_url}/feeds/all.json", timeout=15)
     resp.raise_for_status()
-    feed = resp.json()
+    try:
+        feed = resp.json()
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error("RSS Feed 返回非 JSON 响应: %s", e)
+        return []
 
     all_articles: list[dict[str, Any]] = []
     for item in feed.get("items", []):

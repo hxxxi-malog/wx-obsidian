@@ -34,6 +34,7 @@ from wx_obsidian.models import (
 )
 from wx_obsidian.output.validator import validate_and_fix
 from wx_obsidian.output.vault import (
+    _atomic_write,
     ensure_category,
     ensure_concept_page,
     maybe_create_subcategory,
@@ -140,13 +141,15 @@ def _save_vision_log(ctx: PipelineContext) -> None:
 
     entries = []
     for desc in ctx.image_descriptions:
-        entries.append({
-            "url": desc.url,
-            "description": desc.description,
-            "is_content": desc.is_content,
-            "type": desc.type,
-            "status": desc.status,
-        })
+        entries.append(
+            {
+                "url": desc.url,
+                "description": desc.description,
+                "is_content": desc.is_content,
+                "type": desc.type,
+                "status": desc.status,
+            }
+        )
     log_data = {
         "title": title,
         "article_id": info.get("id", ""),
@@ -423,7 +426,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
     category_dir.mkdir(parents=True, exist_ok=True)
     file_path = category_dir / f"{safe_title}.md"
 
-    file_path.write_text(ctx.md_content, encoding="utf-8")
+    _atomic_write(file_path, ctx.md_content)
 
     concepts: list[dict[str, str]] = []
     for concept in summary_data.get("concepts") or []:
@@ -682,7 +685,11 @@ class Orchestrator:
             else:
                 if aid in processed and force:
                     ids_to_reprocess.append(aid)
-                if not force and a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
+                if (
+                    not force
+                    and a.get("date_published")
+                    and a.get("date_published", "")[:10] < cutoff
+                ):
                     skipped_date += 1
                 else:
                     new_articles.append(a)
@@ -798,6 +805,10 @@ class Orchestrator:
             def on_retry_complete(result: dict[str, Any]) -> None:
                 nonlocal retry_completed
                 article_id = result.get("article_id", "unknown")
+                # 携带重试计数：失败时递增，成功时清除
+                if result.get("status") in ("error", "skipped", "failed"):
+                    prev = prev_retry_counts.get(article_id, 0)
+                    result["retry_count"] = prev + 1
                 processed[article_id] = result
                 new_ids.add(article_id)
                 retry_completed += 1
@@ -1088,7 +1099,7 @@ def _update_related_topics(
             flags=re.DOTALL,
         )
         if count > 0 and new_md != md:
-            file_path.write_text(new_md, encoding="utf-8")
+            _atomic_write(file_path, new_md)
             updated += 1
 
     if updated > 0:

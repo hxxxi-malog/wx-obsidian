@@ -191,11 +191,10 @@ def _append_category_to_config(category: str) -> None:
         # 在最后一个条目后追加
         new_block = categories_block.rstrip() + f"\n- {category}"
         content = content[: match.start()] + new_block + content[match.end() :]
-        config_path.write_text(content, encoding="utf-8")
+        _atomic_write(config_path, content)
     else:
         # fallback：如果解析失败，追加到文件末尾
-        with open(config_path, "a", encoding="utf-8") as f:
-            f.write(f"- {category}\n")
+        _atomic_write(config_path, content.rstrip() + f"\n- {category}\n")
 
 
 # ---------------------------------------------------------------------------

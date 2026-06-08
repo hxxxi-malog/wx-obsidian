@@ -50,6 +50,7 @@ if _ENV_FILE.exists():
 # ---------------------------------------------------------------------------
 
 
+@functools.cache
 def load_config() -> dict[str, Any]:
     """加载 config.yaml 配置。"""
     config_path = SCRIPT_DIR / "config.yaml"

@@ -151,16 +151,22 @@ def build_refine_prompt(
 # ---------------------------------------------------------------------------
 
 
+_debug_save_count = 0
+
+
 def _save_debug_response(article_id: str, text: str) -> None:
     """保存 LLM 原始响应用于调试，按文章 ID 分文件。"""
+    global _debug_save_count
     debug_dir = SCRIPT_DIR / "logs" / "responses"
     debug_dir.mkdir(parents=True, exist_ok=True)
     debug_file = debug_dir / f"{article_id}.txt"
     debug_file.write_text(text, encoding="utf-8")
-    # 自动清理：保留最近 50 个文件
-    files = sorted(debug_dir.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
-    for old_file in files[50:]:
-        old_file.unlink(missing_ok=True)
+    # 每 10 次调用清理一次，避免每次 glob+sort 的 O(n log n) 开销
+    _debug_save_count += 1
+    if _debug_save_count % 10 == 0:
+        files = sorted(debug_dir.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for old_file in files[50:]:
+            old_file.unlink(missing_ok=True)
 
 
 def _parse_api_response(text: str, article_id: str = "") -> dict[str, Any] | None:
