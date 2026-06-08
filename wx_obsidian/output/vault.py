@@ -62,7 +62,11 @@ tags: [概念]
 
 
 def _append_related_article(concept_file: Path, article_title: str, article_category: str) -> None:
-    """向概念页面的"相关文章"部分追加文章链接。"""
+    """向概念页面的"相关文章"部分追加文章链接。
+
+    按文章标题（显示文本）去重：若已存在同标题链接但 category 路径不同
+    （例如文章被 maybe_create_subcategory 移入子目录后），自动更新链接路径。
+    """
     content = concept_file.read_text(encoding="utf-8")
     safe_title = re.sub(r'[<>:"/\\|?*]', "_", article_title)[:100]
     if article_category:
@@ -70,7 +74,18 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
     else:
         wikilink = f"- [[{safe_title}]]"
 
-    if safe_title in content:
+    # 按文章标题（显示文本）检查是否已存在
+    escaped_title = re.escape(article_title)
+    existing_pattern = re.compile(r"- \[\[[^\]]*?" + escaped_title + r"\]\]")
+    existing_match = existing_pattern.search(content)
+
+    if existing_match:
+        existing_link = existing_match.group(0)
+        if existing_link == wikilink:
+            return  # 链接完全一致，无需操作
+        # category 路径已变更（文章被移入子目录），更新链接
+        content = content[: existing_match.start()] + wikilink + content[existing_match.end() :]
+        _atomic_write(concept_file, content)
         return
 
     if "## 相关文章" in content:
@@ -228,8 +243,37 @@ def maybe_create_subcategory(
     if not moc_file.exists():
         _atomic_write(moc_file, f"# {sub_topic}\n\n")
 
-    _migrate_articles_to_subdir(processed, category, sub_topic, articles_dir, sub_dir, moc_file)
+    concept_dir = articles_dir / "概念"
+    _migrate_articles_to_subdir(
+        processed, category, sub_topic, articles_dir, sub_dir, moc_file, concept_dir
+    )
     _update_parent_moc(articles_dir, category, sub_topic)
+
+
+def _fix_concept_links(
+    concept_dir: Path,
+    article_title: str,
+    old_category: str,
+    new_category: str,
+) -> None:
+    """扫描所有概念页面，将指向 old_category 的链接更新为 new_category。
+
+    在 maybe_create_subcategory 迁移文章时调用，确保概念页面链接不会因
+    文章移入子目录而断裂。
+    """
+    escaped_title = re.escape(article_title)
+    # 匹配旧路径的链接：- [[旧category/safe_title|display]]
+    old_pattern = re.compile(
+        r"(- \[\[)" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
+    )
+
+    for concept_file in concept_dir.glob("*.md"):
+        content = concept_file.read_text(encoding="utf-8")
+        if not old_pattern.search(content):
+            continue
+        new_content = old_pattern.sub(r"\g<1>" + new_category + r"/\2", content)
+        if new_content != content:
+            _atomic_write(concept_file, new_content)
 
 
 def _migrate_articles_to_subdir(
@@ -239,8 +283,9 @@ def _migrate_articles_to_subdir(
     articles_dir: Path,
     sub_dir: Path,
     moc_file: Path,
+    concept_dir: Path | None = None,
 ) -> None:
-    """将已有文章迁移到子目录。"""
+    """将已有文章迁移到子目录，同步更新概念页面中的链接。"""
     moc_content = moc_file.read_text(encoding="utf-8")
     new_entries: list[str] = []
 
@@ -268,6 +313,11 @@ def _migrate_articles_to_subdir(
         new_cat = f'category: "{category}/{sub_topic}"'
         if old_cat in content:
             _atomic_write(new_path, content.replace(old_cat, new_cat))
+
+        # 更新概念页面中的链接路径
+        if concept_dir and concept_dir.exists():
+            article_title = record.get("title", old_path.stem)
+            _fix_concept_links(concept_dir, article_title, category, f"{category}/{sub_topic}")
 
         # 累积子目录 MOC 条目
         safe_title = old_path.stem
