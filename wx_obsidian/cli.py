@@ -12,6 +12,8 @@ def _parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="公众号文章 → Obsidian 知识库处理器")
     parser.add_argument("--limit", type=int, default=0, help="最多处理 N 篇文章（0=不限制）")
+    parser.add_argument("--force", action="store_true", help="强制重新处理已处理过的文章")
+    parser.add_argument("--article-id", type=str, default="", help="只处理指定 ID 的文章")
     return parser.parse_args()
 
 
@@ -38,7 +40,11 @@ def main() -> None:
 
     import asyncio
 
-    results = asyncio.run(orchestrator.fetch_and_process(limit=args.limit))
+    results = asyncio.run(
+        orchestrator.fetch_and_process(
+            limit=args.limit, force=args.force, article_id=args.article_id
+        )
+    )
 
     done_count = sum(1 for r in results if r.status == "done")
     failed = [r for r in results if r.status in ("error", "skipped", "failed")]

@@ -126,6 +126,37 @@ def _fetch_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
+def _save_vision_log(ctx: PipelineContext) -> None:
+    """将 Vision 阶段结果持久化到日志文件，供事后排查。"""
+    if not ctx.image_descriptions:
+        return
+    log_dir = Path(__file__).resolve().parent.parent / "logs" / "vision"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    info = ctx.processed.get("__info", {})
+    title = info.get("title", "unknown")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)[:50]
+    log_file = log_dir / f"{ts}_{safe_title}.json"
+
+    entries = []
+    for desc in ctx.image_descriptions:
+        entries.append({
+            "url": desc.url,
+            "description": desc.description,
+            "is_content": desc.is_content,
+            "type": desc.type,
+            "status": desc.status,
+        })
+    log_data = {
+        "title": title,
+        "article_id": info.get("id", ""),
+        "total_images": len(ctx.images),
+        "vision_results": entries,
+    }
+    log_file.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Vision 日志已保存: %s", log_file.name)
+
+
 def _vision_stage(ctx: PipelineContext) -> PipelineContext:
     """Stage 2: 调用多模态 Vision API 生成图片描述。失败时降级到纯文本。"""
     if ctx.processed.get("__skip") or not ctx.images:
@@ -148,6 +179,8 @@ def _vision_stage(ctx: PipelineContext) -> PipelineContext:
                     desc.is_content,
                     desc.description[:60] if desc.description else "(空)",
                 )
+            # 持久化 Vision 结果到日志文件
+            _save_vision_log(ctx)
     except (requests.RequestException, OSError, ValueError, KeyError):
         logger.warning("VisionStage 失败，降级到纯文本", exc_info=True)
         ctx.image_descriptions = None
@@ -554,19 +587,27 @@ class Orchestrator:
         self,
         limit: int = 0,
         on_progress: Callable[[str, int, int], None] | None = None,
+        force: bool = False,
+        article_id: str = "",
     ) -> list[ProcessingResult]:
         """核心抓取流程。异步包装，同步逻辑在线程池中执行。
 
         Args:
             limit: 最大处理篇数，0 表示不限制。
             on_progress: 进度回调 (title, completed, total)。在后台线程中调用。
+            force: 强制重新处理已处理过的文章。
+            article_id: 只处理指定 ID 的文章。
         """
-        return await asyncio.to_thread(self._fetch_and_process_sync, limit, on_progress)
+        return await asyncio.to_thread(
+            self._fetch_and_process_sync, limit, on_progress, force, article_id
+        )
 
     def _fetch_and_process_sync(
         self,
         limit: int = 0,
         on_progress: Callable[[str, int, int], None] | None = None,
+        force: bool = False,
+        article_id: str = "",
     ) -> list[ProcessingResult]:
         """核心抓取流程（同步实现）。"""
         # 加载 .env 到 os.environ（确保 load_vision_config 等函数正常工作）
@@ -595,6 +636,13 @@ class Orchestrator:
             logger.error("获取文章失败: %s", e)
             return []
 
+        # 按 article_id 过滤
+        if article_id:
+            articles = [a for a in articles if str(a.get("id", "")) == article_id]
+            if not articles:
+                logger.error("未找到 ID 为 %s 的文章", article_id)
+                return []
+
         # 增量过滤
         max_days = self._config_manager.get("fetch.max_days", 7)
         cutoff = (datetime.now() - timedelta(days=max_days)).strftime("%Y-%m-%d")
@@ -608,7 +656,7 @@ class Orchestrator:
             if not a.get("id"):
                 continue
             aid = str(a["id"])
-            if aid in processed:
+            if aid in processed and not force:
                 record = processed[aid]
                 if isinstance(record, dict) and record.get("status") == "done":
                     file_path = record.get("file", "")
@@ -631,10 +679,13 @@ class Orchestrator:
                     )
                     ids_to_reprocess.append(aid)
                     new_articles.append(a)
-            elif a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
-                skipped_date += 1
             else:
-                new_articles.append(a)
+                if aid in processed and force:
+                    ids_to_reprocess.append(aid)
+                if not force and a.get("date_published") and a.get("date_published", "")[:10] < cutoff:
+                    skipped_date += 1
+                else:
+                    new_articles.append(a)
         if ids_to_reprocess:
             for aid in ids_to_reprocess:
                 processed.pop(aid, None)
@@ -982,7 +1033,7 @@ def _update_knowledge_graph(
             if sub_topic and key not in seen_subcategory:
                 seen_subcategory.add(key)
                 maybe_create_subcategory(vault_path, config, processed, category, sub_topic)
-        except (OSError, ValueError, KeyError) as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("知识图谱更新失败 [%s/%s]: %s", category, safe_title, e, exc_info=True)
 
     if on_progress and total > 0:

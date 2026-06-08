@@ -62,6 +62,8 @@ def main() -> None:
     # CLI 子命令（默认）
     cli_parser = subparsers.add_parser("cli", help="CLI 模式（默认）")
     cli_parser.add_argument("--limit", type=int, default=0, help="最多处理 N 篇文章（0=不限制）")
+    cli_parser.add_argument("--force", action="store_true", help="强制重新处理已处理过的文章")
+    cli_parser.add_argument("--article-id", type=str, default="", help="只处理指定 ID 的文章")
 
     # TUI 子命令
     subparsers.add_parser("tui", help="TUI 模式（终端图形界面）")
@@ -86,10 +88,14 @@ def main() -> None:
         tui_main()
     else:
         # CLI 模式（默认）
-        # 将 --limit 参数传递给 cli.main
+        # 将参数传递给 cli.main
         sys.argv = [sys.argv[0]]
         if hasattr(args, "limit") and args.limit:
             sys.argv.extend(["--limit", str(args.limit)])
+        if hasattr(args, "force") and args.force:
+            sys.argv.append("--force")
+        if hasattr(args, "article_id") and args.article_id:
+            sys.argv.extend(["--article-id", args.article_id])
         from wx_obsidian.cli import main as cli_main
 
         cli_main()
