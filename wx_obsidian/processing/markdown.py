@@ -47,19 +47,27 @@ def generate_markdown(
     )
 
     points_md = "\n".join(f"- {p}" for p in key_points)
+
+    def _clean_concept_name(raw: str) -> str:
+        """去除概念名中可能由 LLM 添加的双向链接标记。"""
+        return re.sub(r"[\[\]]", "", raw).strip()
+
     concepts_md = "\n".join(
-        f"- [[{c.get('name', '未知概念')}]]：{c.get('description', '')}" for c in concepts
+        f"- [[{_clean_concept_name(c.get('name', '未知概念'))}]]：{c.get('description', '')}"
+        for c in concepts
     )
     related_lines: list[str] = []
     for r in related:
-        safe = re.sub(r'[<>:"/\\|?*]', "_", r)[:100]
-        related_lines.append(f"- [[{safe}|{r}]]" if safe != r else f"- [[{r}]]")
+        clean_r = re.sub(r"[\[\]]", "", r).strip()
+        safe = re.sub(r'[<>:"/\\|?*]', "_", clean_r)[:100]
+        related_lines.append(f"- [[{safe}|{clean_r}]]" if safe != clean_r else f"- [[{clean_r}]]")
     related_md = "\n".join(related_lines)
 
     body_parts: list[str] = []
     for section in body_sections:
         heading = section.get("heading", "")
         body_content = section.get("content", "")
+        body_content = body_content.replace("\\n", "\n")
         body_parts.append(f"\n## {heading}\n\n{body_content}\n")
     body_md = "".join(body_parts)
 

@@ -27,6 +27,11 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
         (修复后内容, 问题列表)。
     """
     issues: list[str] = []
+
+    content, nl_issue = _fix_literal_newlines(content)
+    if nl_issue:
+        issues.append(nl_issue)
+
     lines = content.split("\n")
 
     lines, norm_issue = _normalize_fullwidth_chars(lines)
@@ -70,6 +75,18 @@ def validate_and_fix(content: str, *, is_concept: bool = False) -> tuple[str, li
 # ---------------------------------------------------------------------------
 # 内部校验函数
 # ---------------------------------------------------------------------------
+
+
+def _fix_literal_newlines(content: str) -> tuple[str, str | None]:
+    """修复 LLM 返回的字面量 \\n 为实际换行符。
+
+    LLM 的 JSON 响应有时会双重转义换行符，
+    导致 content 中出现字面量的 \\n 而非真正的换行。
+    """
+    if "\\n" not in content:
+        return content, None
+    fixed = content.replace("\\n", "\n")
+    return fixed, "修复了字面量 \\n 为实际换行符"
 
 
 def _normalize_fullwidth_chars(lines: list[str]) -> tuple[list[str], str | None]:
