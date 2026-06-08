@@ -831,6 +831,9 @@ class Orchestrator:
         # 更新知识图谱（仅处理新文章）
         _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids, on_progress)
 
+        # 保存知识图谱更新（可能包含文件路径变更）
+        save_processed(processed)
+
         # 按 article_id 去重，重试成功覆盖首次失败
         deduped: dict[str, dict[str, Any]] = {}
         for r in results_raw:
