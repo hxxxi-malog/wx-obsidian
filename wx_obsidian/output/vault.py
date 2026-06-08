@@ -56,7 +56,8 @@ tags: [概念]
 > 自动更新
 """
         _atomic_write(concept_file, content)
-    elif article_title:
+
+    if article_title:
         _append_related_article(concept_file, article_title, article_category)
 
 
