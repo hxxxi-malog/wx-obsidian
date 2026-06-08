@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import cast
 
+import requests as http_requests
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -85,7 +86,19 @@ class FeedsScreen(Screen[None]):
                 input_widget.value = ""
                 await self._load_feeds()
             else:
-                app.show_notification("添加失败，请检查链接是否正确", severity="error")
+                app.show_notification(
+                    "添加失败: 链接无效或无法识别公众号，请确认是微信公众号文章链接",
+                    severity="error",
+                )
+        except http_requests.ConnectionError:
+            logger.warning("添加公众号失败: 无法连接 WeWe RSS 服务")
+            app.show_notification(
+                "添加失败: 无法连接 WeWe RSS 服务，请检查服务是否运行",
+                severity="error",
+            )
+        except http_requests.RequestException as e:
+            logger.warning("添加公众号失败: HTTP 请求错误 %s", e)
+            app.show_notification(f"添加失败: 网络错误 {e}", severity="error")
         except Exception as e:
             logger.warning("添加公众号失败: %s", e)
             app.show_notification(f"添加失败: {e}", severity="error")

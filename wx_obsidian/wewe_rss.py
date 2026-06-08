@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
 import requests
 
 from wx_obsidian.models import AccountStatus, Feed
+
+logger = logging.getLogger(__name__)
 
 
 class WeWeRSSClient:
@@ -41,10 +44,12 @@ class WeWeRSSClient:
             params={"batch": "1"},
             json={"0": data if data is not None else {}},
             headers={"Authorization": self._auth_code},
-            timeout=10,
+            timeout=30,
         )
         resp.raise_for_status()
         result = resp.json()
+        logger.debug("tRPC %s response: %s", procedure, result)
+        # tRPC batch 响应通常是 list，取第一个元素
         if isinstance(result, list) and result:
             return result[0]
         return result
@@ -54,7 +59,9 @@ class WeWeRSSClient:
     def get_account_status(self) -> AccountStatus:
         """获取微信读书登录状态。"""
         result = self._trpc_call("account.list")
-        data = result.get("result", {}).get("data", result)
+        data = self._extract_trpc_data(result)
+        if not isinstance(data, dict):
+            return AccountStatus(is_logged_in=False)
         items = data.get("items", [])
         if not items:
             return AccountStatus(is_logged_in=False)
@@ -78,8 +85,8 @@ class WeWeRSSClient:
     def get_feeds(self) -> list[Feed]:
         """获取已添加的公众号列表。"""
         result = self._trpc_call("feed.list")
-        data = result.get("result", {}).get("data", result)
-        items = data if isinstance(data, list) else data.get("items", data.get("list", []))
+        data = self._extract_trpc_data(result)
+        items = data if isinstance(data, list) else data.get("items", data.get("list", [])) if isinstance(data, dict) else []
         feeds: list[Feed] = []
         for item in items:
             feeds.append(
@@ -92,29 +99,70 @@ class WeWeRSSClient:
             )
         return feeds
 
+    def _extract_trpc_data(self, raw: Any) -> Any:
+        """从 tRPC 响应中提取 data 字段，兼容多种结构。
+
+        WeWe RSS tRPC 响应结构示例:
+          [{"result": {"data": {...}}}]          — mutation batch
+          {"result": {"data": [...]}}             — query
+          {"result": {"data": [{"id": ...}]}}     — getMpInfo (data 本身是 list)
+        """
+        if isinstance(raw, list):
+            raw = raw[0] if raw else {}
+        if isinstance(raw, dict):
+            result = raw.get("result", raw)
+            if isinstance(result, dict):
+                data = result.get("data", result)
+                # data 可能是单元素 list（如 getMpInfo 响应）
+                if isinstance(data, list) and len(data) == 1:
+                    return data[0]
+                return data
+        return raw
+
     def add_feed(self, article_url: str) -> Feed | None:
-        """通过文章链接添加公众号。先获取公众号信息，再添加订阅。"""
+        """通过文章链接添加公众号。先获取公众号信息，再添加订阅。
+
+        Returns:
+            Feed 对象，或 None（链接无效时）。
+
+        Raises:
+            requests.RequestException: WeWe RSS 服务连接失败。
+        """
         # Step 1: 通过文章链接获取公众号元信息
-        mp_info = self._trpc_mutation("platform.getMpInfo", {"wxsLink": article_url})
-        data = mp_info.get("result", {}).get("data", mp_info)
-        if not data.get("id"):
+        try:
+            mp_info = self._trpc_mutation("platform.getMpInfo", {"wxsLink": article_url})
+        except requests.RequestException as exc:
+            logger.error("连接 WeWe RSS 失败: %s", exc)
+            raise
+        data = self._extract_trpc_data(mp_info)
+        if not isinstance(data, dict) or not data.get("id"):
+            logger.warning(
+                "getMpInfo 返回无效数据 (link=%s): raw=%s, extracted=%s",
+                article_url, mp_info, data,
+            )
             return None
 
-        # Step 2: 添加订阅
+        # Step 2: 添加订阅（getMpInfo 返回 name/cover/intro，feed.add 需要 mpName/mpCover/mpIntro）
         feed_data = {
             "id": data["id"],
-            "mpName": data.get("mpName", ""),
-            "mpCover": data.get("mpCover", ""),
-            "mpIntro": data.get("mpIntro", ""),
+            "mpName": data.get("mpName", data.get("name", "")),
+            "mpCover": data.get("mpCover", data.get("cover", "")),
+            "mpIntro": data.get("mpIntro", data.get("intro", "")),
             "updateTime": data.get("updateTime", int(time.time())),
         }
-        result = self._trpc_mutation("feed.add", feed_data)
-        feed_data_resp = result.get("result", {}).get("data", result)
+        try:
+            result = self._trpc_mutation("feed.add", feed_data)
+        except requests.RequestException as exc:
+            logger.error("添加订阅失败: %s", exc)
+            raise
+        feed_data_resp = self._extract_trpc_data(result)
+        if not isinstance(feed_data_resp, dict):
+            feed_data_resp = data
         return Feed(
             id=str(feed_data_resp.get("id", data["id"])),
-            name=feed_data_resp.get("mpName", data.get("mpName", "")),
-            intro=feed_data_resp.get("mpIntro", data.get("mpIntro", "")),
-            cover=feed_data_resp.get("mpCover", data.get("mpCover", "")),
+            name=feed_data_resp.get("mpName", feed_data_resp.get("name", data.get("mpName", data.get("name", "")))),
+            intro=feed_data_resp.get("mpIntro", feed_data_resp.get("intro", data.get("mpIntro", data.get("intro", "")))),
+            cover=feed_data_resp.get("mpCover", feed_data_resp.get("cover", data.get("mpCover", data.get("cover", "")))),
         )
 
     def delete_feed(self, feed_id: str) -> bool:
