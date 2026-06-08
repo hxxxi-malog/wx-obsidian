@@ -103,12 +103,16 @@ def insert_images_into_markdown(
     if not images:
         return md
 
-    # 构建 url -> vision 描述的映射
+    # 构建 url -> vision 描述的映射（仅 is_content=True）
     desc_map: dict[str, str] = {}
+    # 构建 Vision 判定为非内容图的 URL 集合
+    vision_non_content: set[str] = set()
     if image_descriptions:
         for d in image_descriptions:
             if d.is_content and d.status == "ok" and len(d.description) >= 10:
                 desc_map[d.url] = d.description
+            elif d.status == "ok" and not d.is_content:
+                vision_non_content.add(d.url)
 
     # 按 ## 标题拆分 markdown 为 section
     raw_sections = RE_SECTION_HEAD.split(md)
@@ -143,6 +147,10 @@ def insert_images_into_markdown(
         # 兜底过滤：跳过明显的非内容图（二维码、banner、推广图等）
         desc_for_check = desc_map.get(img["url"], "")
         if _is_non_content_image(desc_for_check, img["before"], img.get("after", "")):
+            continue
+
+        # Vision 已判定为非内容图时直接跳过
+        if img["url"] in vision_non_content:
             continue
 
         best_score = 0
