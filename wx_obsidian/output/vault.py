@@ -276,6 +276,35 @@ def _fix_concept_links(
             _atomic_write(concept_file, new_content)
 
 
+def _fix_archive_links(
+    articles_dir: Path,
+    article_title: str,
+    old_category: str,
+    new_category: str,
+) -> None:
+    """扫描所有归档文件，将指向 old_category 的链接更新为 new_category。
+
+    在 maybe_create_subcategory 迁移文章时调用，确保归档文件链接不会因
+    文章移入子目录而断裂。
+    """
+    escaped_title = re.escape(article_title)
+    old_pattern = re.compile(
+        r"(- \[\[)" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
+    )
+
+    archive_dir = articles_dir / "Z归档"
+    if not archive_dir.exists():
+        return
+
+    for archive_file in archive_dir.rglob("*.md"):
+        content = archive_file.read_text(encoding="utf-8")
+        if not old_pattern.search(content):
+            continue
+        new_content = old_pattern.sub(r"\g<1>" + new_category + r"/\2", content)
+        if new_content != content:
+            _atomic_write(archive_file, new_content)
+
+
 def _migrate_articles_to_subdir(
     processed: dict[str, Any],
     category: str,
@@ -314,10 +343,11 @@ def _migrate_articles_to_subdir(
         if old_cat in content:
             _atomic_write(new_path, content.replace(old_cat, new_cat))
 
-        # 更新概念页面中的链接路径
+        # 更新概念页面和归档文件中的链接路径
         if concept_dir and concept_dir.exists():
             article_title = record.get("title", old_path.stem)
             _fix_concept_links(concept_dir, article_title, category, f"{category}/{sub_topic}")
+            _fix_archive_links(articles_dir, article_title, category, f"{category}/{sub_topic}")
 
         # 累积子目录 MOC 条目
         safe_title = old_path.stem
