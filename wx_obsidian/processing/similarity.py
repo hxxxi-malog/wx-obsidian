@@ -340,7 +340,7 @@ class SimilarityEngine:
 
         if self._db_path.exists():
             try:
-                conn = sqlite3.connect(str(self._db_path))
+                conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
                 conn.execute("SELECT 1 FROM articles LIMIT 1")
                 self._conn = conn
                 self._insert_new_articles(conn, articles)
@@ -351,7 +351,7 @@ class SimilarityEngine:
                 self._db_path.unlink(missing_ok=True)
 
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._db_path))
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         try:
             self._build_fts_index(conn, articles)
         except Exception:
