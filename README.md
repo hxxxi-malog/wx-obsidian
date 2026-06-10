@@ -418,4 +418,4 @@ python validate_markdown.py --dir <directory>
 
 ## License
 
-MIT
+[MIT](LICENSE) © malog
