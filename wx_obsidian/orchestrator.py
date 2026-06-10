@@ -446,7 +446,10 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 
     concepts: list[dict[str, str]] = []
     for concept in summary_data.get("concepts") or []:
-        safe_name = re.sub(r'[<>:"/\\|?*]', "_", concept.get("name", "未知概念"))
+        raw_name = concept.get("name", "未知概念")
+        # LLM 可能在 name 中包含 [[...]] wiki-link 语法（模仿 SKILL.md 示例），需去除
+        clean_name = re.sub(r"[\[\]]", "", raw_name).strip()
+        safe_name = re.sub(r'[<>:"/\\|?*]', "_", clean_name)
         concepts.append(
             {
                 "name": safe_name,

@@ -22,6 +22,9 @@ def ensure_concept_page(
     article_category: str = "",
 ) -> None:
     """确保概念页面存在，不存在则创建；已存在则追加相关文章链接。"""
+    # 防御性清理：去除 LLM 可能添加的 [[...]] wiki-link 语法
+    concept_name = re.sub(r"[\[\]]", "", concept_name).strip()
+
     base = articles_dir or (vault_path / "公众号文章")
     concept_dir = base / "概念"
     concept_file = concept_dir / f"{concept_name}.md"
