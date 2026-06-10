@@ -52,7 +52,11 @@ if _ENV_FILE.exists():
 
 @functools.cache
 def load_config() -> dict[str, Any]:
-    """加载 config.yaml 配置。"""
+    """加载 config.yaml 配置（已废弃，主流程使用 ConfigManager）。
+
+    .. deprecated::
+        请使用 ``config_manager.ConfigManager`` 读取 ``~/.wx-obsidian/config.json``。
+    """
     config_path = SCRIPT_DIR / "config.yaml"
     if not config_path.exists():
         return {}

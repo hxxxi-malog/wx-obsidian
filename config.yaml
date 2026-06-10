@@ -1,20 +1,29 @@
+# DEPRECATED — 此文件已不再被主流程使用。
+# 实际配置位于 ~/.wx-obsidian/config.json，由 ConfigManager 管理。
+# 此文件仅作迁移参考保留，后续将移除。
+
 categories:
-- LLM基础
-- Agent
-- 多模态与视觉
-- 具身智能
-- 训练与微调
-- AI编程
-- 后端技术
-- Harness Engineering
-- AI产业生态
-- 其他
-- 后端技术deepseek:
-- 品牌营销  model: deepseek-chat
-- 后端技术max_workers: 5
-- 数据标注obsidian:
+  - LLM基础
+  - Agent
+  - 多模态与视觉
+  - 具身智能
+  - 训练与微调
+  - AI编程
+  - 后端技术
+  - Harness Engineering
+  - AI产业生态
+  - 品牌营销
+  - 数据标注
+  - 其他
+
+deepseek:
+  model: deepseek-chat
+  max_workers: 5
+
+obsidian:
   articles_dir: 公众号文章
   vault_path: /Users/malog/Downloads
+
 wewe_rss:
   auth_code: wxkb2026
   base_url: http://localhost:4000
