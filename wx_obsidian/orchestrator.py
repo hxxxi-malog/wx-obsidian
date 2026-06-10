@@ -62,7 +62,16 @@ def _extract_article_info(article: dict[str, Any]) -> dict[str, str]:
     """从原始文章数据中提取标准化字段。"""
     date = article.get("date_published", "") or ""
     if isinstance(date, str) and len(date) > 10:
-        date = date[:10]
+        # WeWe RSS 的 date_modified 是 UTC 时间，需转换为北京时间（UTC+8）
+        if date.endswith("Z"):
+            try:
+                dt = datetime.fromisoformat(date.replace("Z", "+00:00"))
+                dt = dt + timedelta(hours=8)
+                date = dt.strftime("%Y-%m-%d")
+            except ValueError:
+                date = date[:10]
+        else:
+            date = date[:10]
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
 

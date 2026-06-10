@@ -137,7 +137,7 @@ def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "title": item.get("title", "无标题"),
                 "url": item.get("url", item.get("external_url", "")),
                 "content": item.get("content_html", item.get("content_text", "")),
-                "date_published": item.get("date_modified", item.get("date_published", "")),
+                "date_published": item.get("date_published") or item.get("date_modified", ""),
                 "author": author_name,
                 "_account_name": author_name or "未知",
             }
