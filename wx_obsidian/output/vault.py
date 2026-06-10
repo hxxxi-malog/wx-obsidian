@@ -2,27 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from wx_obsidian.config import SCRIPT_DIR, SUB_TOPIC_THRESHOLD
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """原子写入文件：先写临时文件，再 os.replace。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=f".{path.stem}_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, path)
-    except BaseException:
-        os.unlink(tmp_path)
-        raise
-
+from wx_obsidian.config import SUB_TOPIC_THRESHOLD, atomic_write
 
 # ---------------------------------------------------------------------------
 # 概念页面
@@ -55,7 +39,7 @@ tags: [概念]
 ## 相关文章
 > 自动更新
 """
-        _atomic_write(concept_file, content)
+        atomic_write(concept_file, content)
 
     if article_title:
         _append_related_article(concept_file, article_title, article_category)
@@ -85,7 +69,7 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
             return  # 链接完全一致，无需操作
         # category 路径已变更（文章被移入子目录），更新链接
         content = content[: existing_match.start()] + wikilink + content[existing_match.end() :]
-        _atomic_write(concept_file, content)
+        atomic_write(concept_file, content)
         return
 
     if "## 相关文章" in content:
@@ -100,7 +84,7 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
     else:
         content = content.rstrip() + f"\n\n## 相关文章\n{wikilink}\n"
 
-    _atomic_write(concept_file, content)
+    atomic_write(concept_file, content)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +112,7 @@ def update_moc(
 
     moc_file = category_dir / "_MOC.md"
     if not moc_file.exists():
-        _atomic_write(moc_file, f"# {category}\n\n")
+        atomic_write(moc_file, f"# {category}\n\n")
 
     content = moc_file.read_text(encoding="utf-8")
     if original_title and original_title != title:
@@ -138,7 +122,7 @@ def update_moc(
     entry = f"- {date} {wikilink}"
     if entry not in content:
         content = content.rstrip() + f"\n{entry}"
-        _atomic_write(moc_file, content)
+        atomic_write(moc_file, content)
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +136,7 @@ def ensure_category(
     category: str,
     articles_dir: Path | None = None,
 ) -> None:
-    """确保分类存在：创建目录、MOC 文件，并追加到 config.yaml。"""
+    """确保分类存在：创建目录、MOC 文件，并在内存中追加到 config["categories"]。"""
     if category in config["categories"]:
         return
 
@@ -164,37 +148,16 @@ def ensure_category(
 
     moc_file = category_dir / "_MOC.md"
     if not moc_file.exists():
-        _atomic_write(moc_file, f"# {category}\n\n")
+        atomic_write(moc_file, f"# {category}\n\n")
 
     config["categories"].append(category)
-    _append_category_to_config(category)
 
     root_moc = base / "_MOC.md"
     if root_moc.exists():
         content = root_moc.read_text(encoding="utf-8")
         if f"[[{category}]]" not in content:
             content = content.rstrip() + f"\n- [[{category}]]"
-            _atomic_write(root_moc, content)
-
-
-def _append_category_to_config(category: str) -> None:
-    """向 config.yaml 的 categories 列表末尾追加新分类（保留原有注释和格式）。"""
-    config_path = SCRIPT_DIR / "config.yaml"
-    content = config_path.read_text(encoding="utf-8")
-
-    # 找到 categories 列表的最后一个条目，在其后追加
-    # 匹配 categories 块中最后一个以 "- " 开头的行
-    pattern = re.compile(r"(^categories:\n(?:\s*-\s+.+\n)*)", re.MULTILINE)
-    match = pattern.search(content)
-    if match:
-        categories_block = match.group(1)
-        # 在最后一个条目后追加
-        new_block = categories_block.rstrip() + f"\n- {category}"
-        content = content[: match.start()] + new_block + content[match.end() :]
-        _atomic_write(config_path, content)
-    else:
-        # fallback：如果解析失败，追加到文件末尾
-        _atomic_write(config_path, content.rstrip() + f"\n- {category}\n")
+            atomic_write(root_moc, content)
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +203,7 @@ def maybe_create_subcategory(
 
     moc_file = sub_dir / "_MOC.md"
     if not moc_file.exists():
-        _atomic_write(moc_file, f"# {sub_topic}\n\n")
+        atomic_write(moc_file, f"# {sub_topic}\n\n")
 
     concept_dir = articles_dir / "概念"
     _migrate_articles_to_subdir(
@@ -272,7 +235,7 @@ def _fix_concept_links(
             continue
         new_content = old_pattern.sub(r"\g<1>" + new_category + r"/\2", content)
         if new_content != content:
-            _atomic_write(concept_file, new_content)
+            atomic_write(concept_file, new_content)
 
 
 def _fix_archive_links(
@@ -301,7 +264,7 @@ def _fix_archive_links(
             continue
         new_content = old_pattern.sub(r"\g<1>" + new_category + r"/\2", content)
         if new_content != content:
-            _atomic_write(archive_file, new_content)
+            atomic_write(archive_file, new_content)
 
 
 def _migrate_articles_to_subdir(
@@ -340,7 +303,7 @@ def _migrate_articles_to_subdir(
         old_cat = f'category: "{category}"'
         new_cat = f'category: "{category}/{sub_topic}"'
         if old_cat in content:
-            _atomic_write(new_path, content.replace(old_cat, new_cat))
+            atomic_write(new_path, content.replace(old_cat, new_cat))
 
         # 更新概念页面和归档文件中的链接路径
         if concept_dir and concept_dir.exists():
@@ -355,7 +318,7 @@ def _migrate_articles_to_subdir(
             new_entries.append(entry)
 
     if new_entries:
-        _atomic_write(moc_file, moc_content.rstrip() + "\n" + "\n".join(new_entries) + "\n")
+        atomic_write(moc_file, moc_content.rstrip() + "\n" + "\n".join(new_entries) + "\n")
 
 
 def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> None:
@@ -367,7 +330,7 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
     content = parent_moc.read_text(encoding="utf-8")
     if f"[[{sub_topic}]]" not in content:
         content = content.rstrip() + f"\n- 📁 [[{sub_topic}]]"
-        _atomic_write(parent_moc, content)
+        atomic_write(parent_moc, content)
 
 
 # ---------------------------------------------------------------------------
@@ -441,16 +404,7 @@ def update_daily_archive(
     # 按分组重新生成文件
     content = _build_grouped_archive(date_str, entries)
 
-    # 原子写入
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=archive_dir, suffix=".tmp", prefix=".archive_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, archive_file)
-    except BaseException:
-        os.unlink(tmp_path)
-        raise
+    atomic_write(archive_file, content)
 
 
 def _parse_archive_entries(content: str) -> list[tuple[str, str]]:

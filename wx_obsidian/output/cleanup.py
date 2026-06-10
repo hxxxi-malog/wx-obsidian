@@ -3,28 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from wx_obsidian.config import save_processed
+from wx_obsidian.config import atomic_write, save_processed
 
 logger = logging.getLogger(__name__)
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """原子写入文件：先写临时文件，再 os.replace。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=f".{path.stem}_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, path)
-    except BaseException:
-        os.unlink(tmp_path)
-        raise
 
 
 def find_article(processed: dict[str, Any], query: str) -> str | None:
@@ -210,7 +195,7 @@ def _remove_moc_entry(moc_dir: Path, safe_title: str) -> list[str]:
     if len(new_lines) == len(lines):
         return [f"MOC 条目未找到: {safe_title}"]
 
-    _atomic_write(moc_file, "\n".join(new_lines))
+    atomic_write(moc_file, "\n".join(new_lines))
     return [f"已从 {moc_dir.name}/_MOC.md 移除条目"]
 
 
@@ -245,7 +230,7 @@ def _cleanup_concept_page(
 
     if not references_article:
         if content_changed:
-            _atomic_write(concept_file, new_content)
+            atomic_write(concept_file, new_content)
             actions.append(f"已从概念/{concept_name}.md 移除文章链接")
         return actions
 
@@ -262,7 +247,7 @@ def _cleanup_concept_page(
         return actions
 
     if content_changed:
-        _atomic_write(concept_file, new_content)
+        atomic_write(concept_file, new_content)
         actions.append(f"已从概念/{concept_name}.md 移除文章链接")
     return actions
 
@@ -341,5 +326,5 @@ def _remove_archive_entry(
         else:
             final_lines.append(line)
 
-    _atomic_write(archive_file, "\n".join(final_lines))
+    atomic_write(archive_file, "\n".join(final_lines))
     return [f"已从 Z归档/{yy}/{mm}/{dd}.md 移除条目"]

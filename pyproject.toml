@@ -45,5 +45,5 @@ module = ["wx_obsidian.tui.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["jieba.*"]
+module = ["jieba.*", "mistune.*"]
 ignore_missing_imports = true

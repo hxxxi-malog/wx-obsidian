@@ -85,18 +85,23 @@ def load_processed() -> dict[str, Any]:
     return {}
 
 
-def save_processed(processed: dict[str, Any]) -> None:
-    """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。"""
-    PROCESSED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(processed, ensure_ascii=False, indent=2)
-    fd, tmp_path = tempfile.mkstemp(dir=PROCESSED_FILE.parent, suffix=".tmp", prefix=".processed_")
+def atomic_write(path: Path, content: str) -> None:
+    """原子写入文件：先写临时文件，再 os.replace。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=f".{path.stem}_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-        os.replace(tmp_path, PROCESSED_FILE)
+            f.write(content)
+        os.replace(tmp_path, path)
     except BaseException:
         os.unlink(tmp_path)
         raise
+
+
+def save_processed(processed: dict[str, Any]) -> None:
+    """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。"""
+    data = json.dumps(processed, ensure_ascii=False, indent=2)
+    atomic_write(PROCESSED_FILE, data)
 
 
 def load_max_workers() -> int:

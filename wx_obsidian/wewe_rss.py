@@ -86,7 +86,14 @@ class WeWeRSSClient:
         """获取已添加的公众号列表。"""
         result = self._trpc_call("feed.list")
         data = self._extract_trpc_data(result)
-        items = data if isinstance(data, list) else data.get("items", data.get("list", [])) if isinstance(data, dict) else []
+        if not data:
+            return []
+        if isinstance(data, list):
+            items: list[Any] = data
+        elif isinstance(data, dict):
+            items = data.get("items") or data.get("list") or []
+        else:
+            items = []
         feeds: list[Feed] = []
         for item in items:
             feeds.append(
@@ -138,7 +145,9 @@ class WeWeRSSClient:
         if not isinstance(data, dict) or not data.get("id"):
             logger.warning(
                 "getMpInfo 返回无效数据 (link=%s): raw=%s, extracted=%s",
-                article_url, mp_info, data,
+                article_url,
+                mp_info,
+                data,
             )
             return None
 
@@ -160,9 +169,27 @@ class WeWeRSSClient:
             feed_data_resp = data
         return Feed(
             id=str(feed_data_resp.get("id", data["id"])),
-            name=feed_data_resp.get("mpName", feed_data_resp.get("name", data.get("mpName", data.get("name", "")))),
-            intro=feed_data_resp.get("mpIntro", feed_data_resp.get("intro", data.get("mpIntro", data.get("intro", "")))),
-            cover=feed_data_resp.get("mpCover", feed_data_resp.get("cover", data.get("mpCover", data.get("cover", "")))),
+            name=str(
+                feed_data_resp.get("mpName")
+                or feed_data_resp.get("name")
+                or data.get("mpName")
+                or data.get("name")
+                or ""
+            ),
+            intro=str(
+                feed_data_resp.get("mpIntro")
+                or feed_data_resp.get("intro")
+                or data.get("mpIntro")
+                or data.get("intro")
+                or ""
+            ),
+            cover=str(
+                feed_data_resp.get("mpCover")
+                or feed_data_resp.get("cover")
+                or data.get("mpCover")
+                or data.get("cover")
+                or ""
+            ),
         )
 
     def delete_feed(self, feed_id: str) -> bool:

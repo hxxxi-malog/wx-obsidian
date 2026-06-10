@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +15,7 @@ import requests
 
 from wx_obsidian.batch import ArchiveWriter, BatchProcessor
 from wx_obsidian.config import (
+    atomic_write,
     load_processed,
     load_similarity_db_path,
     load_vision_config,
@@ -34,7 +33,6 @@ from wx_obsidian.models import (
 )
 from wx_obsidian.output.validator import validate_and_fix
 from wx_obsidian.output.vault import (
-    _atomic_write,
     ensure_category,
     ensure_concept_page,
     maybe_create_subcategory,
@@ -58,20 +56,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _utc_to_beijing_date(raw: str) -> str:
+    """将 ISO 8601 时间字符串转为北京时间 YYYY-MM-DD。无时区信息直接截断。"""
+    if len(raw) <= 10:
+        return raw[:10]
+    try:
+        # Python 3.9 的 fromisoformat 不支持 Z 后缀，需手动替换
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # 无时区信息的字符串不做转换
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(_BEIJING_TZ)
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return raw[:10]
+
+
 def _extract_article_info(article: dict[str, Any]) -> dict[str, str]:
     """从原始文章数据中提取标准化字段。"""
     date = article.get("date_published", "") or ""
     if isinstance(date, str) and len(date) > 10:
-        # WeWe RSS 的 date_modified 是 UTC 时间，需转换为北京时间（UTC+8）
-        if date.endswith("Z"):
-            try:
-                dt = datetime.fromisoformat(date.replace("Z", "+00:00"))
-                dt = dt + timedelta(hours=8)
-                date = dt.strftime("%Y-%m-%d")
-            except ValueError:
-                date = date[:10]
-        else:
-            date = date[:10]
+        date = _utc_to_beijing_date(date)
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
 
@@ -435,7 +442,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
     category_dir.mkdir(parents=True, exist_ok=True)
     file_path = category_dir / f"{safe_title}.md"
 
-    _atomic_write(file_path, ctx.md_content)
+    atomic_write(file_path, ctx.md_content)
 
     concepts: list[dict[str, str]] = []
     for concept in summary_data.get("concepts") or []:
@@ -697,7 +704,7 @@ class Orchestrator:
                 if (
                     not force
                     and a.get("date_published")
-                    and a.get("date_published", "")[:10] < cutoff
+                    and _utc_to_beijing_date(a["date_published"]) < cutoff
                 ):
                     skipped_date += 1
                 else:
@@ -755,6 +762,7 @@ class Orchestrator:
             if result.get("status") in ("error", "skipped", "failed"):
                 prev = prev_retry_counts.get(article_id, 0)
                 result["retry_count"] = prev + 1
+                prev_retry_counts[article_id] = prev + 1
             processed[article_id] = result
             new_ids.add(article_id)
             completed_count += 1
@@ -818,6 +826,7 @@ class Orchestrator:
                 if result.get("status") in ("error", "skipped", "failed"):
                     prev = prev_retry_counts.get(article_id, 0)
                     result["retry_count"] = prev + 1
+                    prev_retry_counts[article_id] = prev + 1
                 processed[article_id] = result
                 new_ids.add(article_id)
                 retry_completed += 1
@@ -850,6 +859,10 @@ class Orchestrator:
 
         # 更新知识图谱（仅处理新文章）
         _update_knowledge_graph(config, vault_path, articles_dir, processed, new_ids, on_progress)
+
+        # 持久化可能新增的分类（ensure_category 仅修改内存 dict）
+        self._config_manager.set("categories", config["categories"])
+        self._config_manager.save()
 
         # 保存知识图谱更新（可能包含文件路径变更）
         save_processed(processed)
@@ -986,14 +999,7 @@ def _append_to_failed_json(failed_file: Path, entries: list[dict[str, Any]]) -> 
             existing = json.loads(failed_file.read_text(encoding="utf-8"))
     existing.extend(entries)
     data = json.dumps(existing, ensure_ascii=False, indent=2)
-    fd, tmp_path = tempfile.mkstemp(dir=failed_file.parent, suffix=".tmp", prefix=".failed_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-        os.replace(tmp_path, failed_file)
-    except BaseException:
-        os.unlink(tmp_path)
-        raise
+    atomic_write(failed_file, data)
 
 
 def _update_knowledge_graph(
@@ -1108,7 +1114,7 @@ def _update_related_topics(
             flags=re.DOTALL,
         )
         if count > 0 and new_md != md:
-            _atomic_write(file_path, new_md)
+            atomic_write(file_path, new_md)
             updated += 1
 
     if updated > 0:
