@@ -169,9 +169,7 @@ class ConfigManager:
         self._env_file.parent.mkdir(parents=True, exist_ok=True)
         lines = [f"{k}={v}" for k, v in env.items()]
         content = "\n".join(lines) + "\n"
-        fd, tmp_path = tempfile.mkstemp(
-            dir=self._env_file.parent, suffix=".tmp", prefix=".env_"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=self._env_file.parent, suffix=".tmp", prefix=".env_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
