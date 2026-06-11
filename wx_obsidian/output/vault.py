@@ -9,6 +9,16 @@ from typing import Any
 from wx_obsidian.config import SUB_TOPIC_THRESHOLD, atomic_write
 
 # ---------------------------------------------------------------------------
+# 工具函数
+# ---------------------------------------------------------------------------
+
+
+def _escape_display(text: str) -> str:
+    """清理显示文本中会破坏 wikilink 语法的字符。"""
+    return re.sub(r"[\[\]]", "", text)
+
+
+# ---------------------------------------------------------------------------
 # 概念页面
 # ---------------------------------------------------------------------------
 
@@ -57,7 +67,8 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
     content = concept_file.read_text(encoding="utf-8")
     safe_title = re.sub(r'[<>:"/\\|?*]', "_", article_title)[:100]
     if article_category:
-        wikilink = f"- [[{article_category}/{safe_title}|{article_title}]]"
+        display = _escape_display(article_title)
+        wikilink = f"- [[{article_category}/{safe_title}|{display}]]"
     else:
         wikilink = f"- [[{safe_title}]]"
 
@@ -222,7 +233,7 @@ def update_moc(
     content = moc_file.read_text(encoding="utf-8")
     # 使用完整路径（category/title）确保链接在子目录迁移后仍然有效
     full_path = f"{category}/{title}"
-    display = original_title if original_title else title
+    display = _escape_display(original_title if original_title else title)
     wikilink = f"[[{full_path}|{display}]]"
     entry = f"- {date} {wikilink}"
     if entry not in content:
@@ -274,7 +285,7 @@ def ensure_category(
     if root_moc.exists():
         content = root_moc.read_text(encoding="utf-8")
         if f"[[{category}/_MOC" not in content:
-            folder_entry = f"- 📁 [[{category}/_MOC|{category}]]"
+            folder_entry = f"- 📁 [[{category}/_MOC|{_escape_display(category)}]]"
             content = content.rstrip() + f"\n{folder_entry}"
             atomic_write(root_moc, content)
 
@@ -349,7 +360,10 @@ def _fix_concept_links(
     )
 
     for concept_file in concept_dir.glob("*.md"):
-        content = concept_file.read_text(encoding="utf-8")
+        try:
+            content = concept_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
         if not old_pattern.search(content):
             continue
         new_content = old_pattern.sub(r"\g<1>" + new_category + r"/\2", content)
@@ -357,50 +371,25 @@ def _fix_concept_links(
             atomic_write(concept_file, new_content)
 
 
-def _fix_archive_links(
+def _fix_links_batch(
     articles_dir: Path,
-    article_title: str,
+    article_titles: list[str],
     old_category: str,
     new_category: str,
 ) -> None:
-    """扫描所有归档文件，将指向 old_category 的链接更新为 new_category。
+    """单次遍历所有文章和归档文件，批量更新链接。
 
-    在 maybe_create_subcategory 迁移文章时调用，确保归档文件链接不会因
-    文章移入子目录而断裂。
+    合并了原 _fix_article_links 和 _fix_archive_links 的功能，
+    将 O(M*N) I/O 降为 O(N)，同时包含异常保护。
     """
-    escaped_title = re.escape(article_title)
-    old_pattern = re.compile(
-        r"(- \[\[)" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
-    )
-
-    archive_dir = articles_dir / "Z归档"
-    if not archive_dir.exists():
+    if not article_titles:
         return
 
-    for archive_file in archive_dir.rglob("*.md"):
-        content = archive_file.read_text(encoding="utf-8")
-        if not old_pattern.search(content):
-            continue
-        new_content = old_pattern.sub(r"\g<1>" + new_category + r"/\2", content)
-        if new_content != content:
-            atomic_write(archive_file, new_content)
-
-
-def _fix_article_links(
-    articles_dir: Path,
-    article_title: str,
-    old_category: str,
-    new_category: str,
-) -> None:
-    """扫描所有文章文件，将指向 old_category 的链接更新为 new_category。
-
-    在 maybe_create_subcategory 迁移文章时调用，确保其他文章中的相关链接
-    不会因文章移入子目录而断裂。
-    """
-    escaped_title = re.escape(article_title)
-    # 匹配旧路径的链接：[[旧category/safe_title|display]] 或 [[旧category/safe_title]]
+    escaped_category = re.escape(old_category)
+    escaped_titles = [re.escape(t) for t in article_titles]
+    title_alternation = "|".join(escaped_titles)
     old_pattern = re.compile(
-        r"\[\[" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
+        r"\[\[" + escaped_category + r"/([^\]]*?(?:" + title_alternation + r")[^\]]*?\]\])"
     )
 
     for category_dir in articles_dir.iterdir():
@@ -409,7 +398,10 @@ def _fix_article_links(
         for md_file in category_dir.rglob("*.md"):
             if md_file.name == "_MOC.md":
                 continue
-            content = md_file.read_text(encoding="utf-8")
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
             if not old_pattern.search(content):
                 continue
             new_content = old_pattern.sub("[[" + new_category + r"/\1", content)
@@ -430,6 +422,7 @@ def _migrate_articles_to_subdir(
     moc_content = moc_file.read_text(encoding="utf-8")
     new_entries: list[str] = []
     new_category = f"{category}/{sub_topic}"
+    migrated_titles: list[str] = []
 
     for _article_id, record in processed.items():
         if not isinstance(record, dict):
@@ -459,17 +452,13 @@ def _migrate_articles_to_subdir(
         if old_cat in content:
             atomic_write(new_path, content.replace(old_cat, new_cat))
 
-        # 更新概念页面、归档文件和其他文章中的链接路径
-        if concept_dir and concept_dir.exists():
-            article_title = record.get("title", old_path.stem)
-            _fix_concept_links(concept_dir, article_title, category, new_category)
-            _fix_archive_links(articles_dir, article_title, category, new_category)
-            _fix_article_links(articles_dir, article_title, category, new_category)
+        article_title = record.get("title", old_path.stem)
+        migrated_titles.append(article_title)
 
         # 累积子目录 MOC 条目（使用完整路径）
         safe_title = old_path.stem
         original_title = record.get("title", safe_title)
-        display = original_title if original_title else safe_title
+        display = _escape_display(original_title if original_title else safe_title)
         wikilink = f"[[{new_category}/{safe_title}|{display}]]"
         entry = f"- {record.get('processed_at', '')[:10]} {wikilink}"
         if entry not in moc_content:
@@ -477,6 +466,13 @@ def _migrate_articles_to_subdir(
 
     if new_entries:
         atomic_write(moc_file, moc_content.rstrip() + "\n" + "\n".join(new_entries) + "\n")
+
+    # 批量更新链接（概念页面 + 文章/归档文件），单次遍历替代逐篇调用
+    if migrated_titles:
+        if concept_dir and concept_dir.exists():
+            for title in migrated_titles:
+                _fix_concept_links(concept_dir, title, category, new_category)
+        _fix_links_batch(articles_dir, migrated_titles, category, new_category)
 
 
 def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> None:
@@ -495,7 +491,8 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
         child_entries.extend(sub_standalone)
 
     # 构建文件夹条目：链接到子目录 MOC
-    folder_entry = f"- 📁 [[{category}/{sub_topic}/_MOC|{sub_topic}]]"
+    folder_display = _escape_display(sub_topic)
+    folder_entry = f"- 📁 [[{category}/{sub_topic}/_MOC|{folder_display}]]"
 
     # 读取并更新父 MOC
     content = parent_moc.read_text(encoding="utf-8")
@@ -509,6 +506,16 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
     if not folder_exists:
         # 添加新文件夹及其子文章
         folder_groups.append((folder_entry, child_entries))
+
+        # 清理 standalone 中指向已迁移文章的旧条目，避免重复
+        if child_entries:
+            child_titles = set()
+            for entry in child_entries:
+                for m in re.finditer(r"\[\[[^\]]*?/([^\]|]+?)(?:\|[^\]]*?)?\]\]", entry):
+                    child_titles.add(m.group(1))
+            if child_titles:
+                standalone = [e for e in standalone if not any(t in e for t in child_titles)]
+
         new_content = _rebuild_moc(title_line, folder_groups, standalone)
         atomic_write(parent_moc, new_content)
 
