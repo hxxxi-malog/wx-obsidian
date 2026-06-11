@@ -347,6 +347,7 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
                 print(f"  结构性格式问题: {len(structural_issues)} 个，反馈 LLM 修正...")
                 fixed_md = _fix_format(md, structural_issues, config=full_config)
                 if fixed_md and fixed_md != md:
+                    fixed_md = remove_non_cdn_images(fixed_md)
                     md, re_fix_issues = validate_and_fix(fixed_md)
                     if re_fix_issues:
                         print(f"  LLM 修正后再校验: {len(re_fix_issues)} 个问题已修复")
