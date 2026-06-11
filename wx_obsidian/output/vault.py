@@ -154,7 +154,7 @@ def _insert_into_folder_group(
         True 表示插入成功，False 表示未找到匹配的文件夹。
     """
     for i, (folder_line, articles) in enumerate(folder_groups):
-        if folder_name in folder_line:
+        if f"/{folder_name}/" in folder_line or f"|{folder_name}]]" in folder_line:
             # 提取新条目日期
             new_date = ""
             date_match = re.match(r"- (\d{4}-\d{2}-\d{2})\s", entry)
@@ -222,10 +222,8 @@ def update_moc(
     content = moc_file.read_text(encoding="utf-8")
     # 使用完整路径（category/title）确保链接在子目录迁移后仍然有效
     full_path = f"{category}/{title}"
-    if original_title and original_title != title:
-        wikilink = f"[[{full_path}|{original_title}]]"
-    else:
-        wikilink = f"[[{full_path}]]"
+    display = original_title if original_title else title
+    wikilink = f"[[{full_path}|{display}]]"
     entry = f"- {date} {wikilink}"
     if entry not in content:
         content = content.rstrip() + f"\n{entry}"
@@ -471,10 +469,8 @@ def _migrate_articles_to_subdir(
         # 累积子目录 MOC 条目（使用完整路径）
         safe_title = old_path.stem
         original_title = record.get("title", safe_title)
-        if original_title and original_title != safe_title:
-            wikilink = f"[[{new_category}/{safe_title}|{original_title}]]"
-        else:
-            wikilink = f"[[{new_category}/{safe_title}]]"
+        display = original_title if original_title else safe_title
+        wikilink = f"[[{new_category}/{safe_title}|{display}]]"
         entry = f"- {record.get('processed_at', '')[:10]} {wikilink}"
         if entry not in moc_content:
             new_entries.append(entry)
@@ -506,7 +502,9 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
     title_line, folder_groups, standalone = _parse_moc_content(content)
 
     # 检查该文件夹是否已存在
-    folder_exists = any(sub_topic in fl for fl, _ in folder_groups)
+    folder_exists = any(
+        f"/{sub_topic}/" in fl or f"|{sub_topic}]]" in fl for fl, _ in folder_groups
+    )
 
     if not folder_exists:
         # 添加新文件夹及其子文章
