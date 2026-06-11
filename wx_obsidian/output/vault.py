@@ -106,6 +106,7 @@ def update_moc(
     """更新分类 MOC 文件，追加新文章链接。
 
     Args:
+        category: 文章分类路径（如 "Agent" 或 "Agent/RAG"）。
         title: safe_title（文件名），用作 wikilink 目标。
         original_title: 原始标题，用作 wikilink 显示文本。为空时直接用 title。
     """
@@ -118,10 +119,12 @@ def update_moc(
         atomic_write(moc_file, f"# {category}\n\n")
 
     content = moc_file.read_text(encoding="utf-8")
+    # 使用完整路径（category/title）确保链接在子目录迁移后仍然有效
+    full_path = f"{category}/{title}"
     if original_title and original_title != title:
-        wikilink = f"[[{title}|{original_title}]]"
+        wikilink = f"[[{full_path}|{original_title}]]"
     else:
-        wikilink = f"[[{title}]]"
+        wikilink = f"[[{full_path}]]"
     entry = f"- {date} {wikilink}"
     if entry not in content:
         content = content.rstrip() + f"\n{entry}"
@@ -270,6 +273,37 @@ def _fix_archive_links(
             atomic_write(archive_file, new_content)
 
 
+def _fix_article_links(
+    articles_dir: Path,
+    article_title: str,
+    old_category: str,
+    new_category: str,
+) -> None:
+    """扫描所有文章文件，将指向 old_category 的链接更新为 new_category。
+
+    在 maybe_create_subcategory 迁移文章时调用，确保其他文章中的相关链接
+    不会因文章移入子目录而断裂。
+    """
+    escaped_title = re.escape(article_title)
+    # 匹配旧路径的链接：[[旧category/safe_title|display]] 或 [[旧category/safe_title]]
+    old_pattern = re.compile(
+        r"\[\[" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
+    )
+
+    for category_dir in articles_dir.iterdir():
+        if not category_dir.is_dir() or category_dir.name.startswith("."):
+            continue
+        for md_file in category_dir.rglob("*.md"):
+            if md_file.name == "_MOC.md":
+                continue
+            content = md_file.read_text(encoding="utf-8")
+            if not old_pattern.search(content):
+                continue
+            new_content = old_pattern.sub("[[" + new_category + r"/\1", content)
+            if new_content != content:
+                atomic_write(md_file, new_content)
+
+
 def _migrate_articles_to_subdir(
     processed: dict[str, Any],
     category: str,
@@ -282,6 +316,7 @@ def _migrate_articles_to_subdir(
     """将已有文章迁移到子目录，同步更新概念页面中的链接。"""
     moc_content = moc_file.read_text(encoding="utf-8")
     new_entries: list[str] = []
+    new_category = f"{category}/{sub_topic}"
 
     for _article_id, record in processed.items():
         if not isinstance(record, dict):
@@ -301,22 +336,31 @@ def _migrate_articles_to_subdir(
         old_path.rename(new_path)
         record["file"] = str(new_path)
 
+        # 更新 processed.json 中的 category 字段
+        record["category"] = new_category
+
         # 更新文件内的 category 字段
         content = new_path.read_text(encoding="utf-8")
         old_cat = f'category: "{category}"'
-        new_cat = f'category: "{category}/{sub_topic}"'
+        new_cat = f'category: "{new_category}"'
         if old_cat in content:
             atomic_write(new_path, content.replace(old_cat, new_cat))
 
-        # 更新概念页面和归档文件中的链接路径
+        # 更新概念页面、归档文件和其他文章中的链接路径
         if concept_dir and concept_dir.exists():
             article_title = record.get("title", old_path.stem)
-            _fix_concept_links(concept_dir, article_title, category, f"{category}/{sub_topic}")
-            _fix_archive_links(articles_dir, article_title, category, f"{category}/{sub_topic}")
+            _fix_concept_links(concept_dir, article_title, category, new_category)
+            _fix_archive_links(articles_dir, article_title, category, new_category)
+            _fix_article_links(articles_dir, article_title, category, new_category)
 
-        # 累积子目录 MOC 条目
+        # 累积子目录 MOC 条目（使用完整路径）
         safe_title = old_path.stem
-        entry = f"- {record.get('processed_at', '')[:10]} [[{safe_title}]]"
+        original_title = record.get("title", safe_title)
+        if original_title and original_title != safe_title:
+            wikilink = f"[[{new_category}/{safe_title}|{original_title}]]"
+        else:
+            wikilink = f"[[{new_category}/{safe_title}]]"
+        entry = f"- {record.get('processed_at', '')[:10]} {wikilink}"
         if entry not in moc_content:
             new_entries.append(entry)
 
