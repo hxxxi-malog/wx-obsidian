@@ -438,7 +438,9 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
         else ""
     )
 
-    safe_title = re.sub(r'[<>:"/\\|?*]', "_", info["title"])[:100]
+    safe_title = (
+        re.sub(r'[<>:"/\\|?*]', "_", info["title"]).replace("“", '"').replace("”", '"')[:100]
+    )
     category_dir = articles_dir / category
     category_dir.mkdir(parents=True, exist_ok=True)
     file_path = category_dir / f"{safe_title}.md"
@@ -450,7 +452,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
         raw_name = concept.get("name", "未知概念")
         # LLM 可能在 name 中包含 [[...]] wiki-link 语法（模仿 SKILL.md 示例），需去除
         clean_name = re.sub(r"[\[\]]", "", raw_name).strip()
-        safe_name = re.sub(r'[<>:"/\\|?*]', "_", clean_name)
+        safe_name = re.sub(r'[<>:"/\\|?*]', "_", clean_name).replace("“", '"').replace("”", '"')
         concepts.append(
             {
                 "name": safe_name,

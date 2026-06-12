@@ -18,6 +18,32 @@ def _escape_display(text: str) -> str:
     return re.sub(r"[\[\]]", "", text)
 
 
+def _normalize_quotes(text: str) -> str:
+    """将弯引号统一为直引号，避免文件名与链接目标因引号类型不同而失配。
+
+    Obsidian 在解析 wikilink 时对引号类型敏感：文件名中的 “” (U+201C/U+201D)
+    与链接中的 "" (U+0022) 不会互相匹配。统一为直引号可防止此类断链。
+    """
+    return text.replace("“", '"').replace("”", '"')
+
+
+def _rename_file_normalize_quotes(file_path: Path) -> Path:
+    """如果文件名包含弯引号，重命名为直引号版本并返回新路径。
+
+    确保文件名与 MOC 链接目标一致，防止因引号类型不同导致 Obsidian 断链。
+    """
+    name = file_path.name
+    normalized = _normalize_quotes(name)
+    if normalized == name:
+        return file_path
+    new_path = file_path.parent / normalized
+    if not new_path.exists():
+        file_path.rename(new_path)
+        print(f"  规范化文件名引号: {name} -> {normalized}")
+        return new_path
+    return file_path
+
+
 # ---------------------------------------------------------------------------
 # 概念页面
 # ---------------------------------------------------------------------------
@@ -250,6 +276,8 @@ def update_moc(
             if entry not in parent_content and _insert_into_folder_group(
                 folder_groups, subfolder, entry
             ):
+                # 清理 standalone 中同名文章的旧条目（路径已过时）
+                standalone = [e for e in standalone if title not in e]
                 new_content = _rebuild_moc(title_line, folder_groups, standalone)
                 atomic_write(parent_moc, new_content)
 
@@ -388,16 +416,26 @@ def _fix_links_batch(
     escaped_category = re.escape(old_category)
     escaped_titles = [re.escape(t) for t in article_titles]
     title_alternation = "|".join(escaped_titles)
+    # 提取 new_category 中相对于 old_category 的新路径部分，用于负向前瞻
+    # 避免误伤已经正确迁移的链接（如 Agent/Agent架构/ 已正确的链接）
+    new_suffix = new_category[len(old_category) :]
+    lookahead = ""
+    if new_suffix.startswith("/"):
+        lookahead = r"(?!" + re.escape(new_suffix[1:]) + r"/)"
     old_pattern = re.compile(
-        r"\[\[" + escaped_category + r"/([^\]]*?(?:" + title_alternation + r")[^\]]*?\]\])"
+        r"\[\["
+        + escaped_category
+        + r"/"
+        + lookahead
+        + r"([^\]]*?(?:"
+        + title_alternation
+        + r")[^\]]*?\]\])"
     )
 
     for category_dir in articles_dir.iterdir():
         if not category_dir.is_dir() or category_dir.name.startswith("."):
             continue
         for md_file in category_dir.rglob("*.md"):
-            if md_file.name == "_MOC.md":
-                continue
             try:
                 content = md_file.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -507,16 +545,17 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
         # 添加新文件夹及其子文章
         folder_groups.append((folder_entry, child_entries))
 
-        # 清理 standalone 中指向已迁移文章的旧条目，避免重复
-        if child_entries:
-            child_titles = set()
-            for entry in child_entries:
-                for m in re.finditer(r"\[\[[^\]]*?/([^\]|]+?)(?:\|[^\]]*?)?\]\]", entry):
-                    child_titles.add(m.group(1))
-            if child_titles:
-                standalone = [e for e in standalone if not any(t in e for t in child_titles)]
+    # 始终清理 standalone 中已在文件夹组中的旧条目，避免重复
+    all_folder_titles: set[str] = set()
+    for _, articles in folder_groups:
+        for art_entry in articles:
+            for m in re.finditer(r"\[\[[^\]]*?/([^\]|]+?)(?:\|[^\]]*?)?\]\]", art_entry):
+                all_folder_titles.add(m.group(1))
+    if all_folder_titles:
+        standalone = [e for e in standalone if not any(t in e for t in all_folder_titles)]
 
-        new_content = _rebuild_moc(title_line, folder_groups, standalone)
+    new_content = _rebuild_moc(title_line, folder_groups, standalone)
+    if new_content != content:
         atomic_write(parent_moc, new_content)
 
 
