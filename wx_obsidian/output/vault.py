@@ -23,15 +23,6 @@ def escape_display(text: str) -> str:
     return re.sub(r"[\[\]]", "", text)
 
 
-def normalize_quotes(text: str) -> str:
-    """将弯引号统一为直引号，避免文件名与链接目标因引号类型不同而失配。
-
-    Obsidian 在解析 wikilink 时对引号类型敏感：文件名中的 “” (U+201C/U+201D)
-    与链接中的 "" (U+0022) 不会互相匹配。统一为直引号可防止此类断链。
-    """
-    return text.replace("“", '"').replace("”", '"')
-
-
 # ---------------------------------------------------------------------------
 # 概念页面
 # ---------------------------------------------------------------------------
@@ -621,8 +612,9 @@ def update_daily_archive(
             entries.append((cat, line))
 
     new_entry = f"- {wikilink}\n  {summary}"
-    # 去重：检查 wikilink 是否已存在
-    if any(wikilink in line for _, line in entries):
+    # 去重：按链接目标（路径部分）匹配，忽略 display 文本差异
+    link_target = f"[[{category}/{safe_title}"
+    if any(link_target in line for _, line in entries):
         return
 
     entries.append((category, new_entry))
