@@ -19,6 +19,7 @@ from wx_obsidian.config import (
     load_processed,
     load_similarity_db_path,
     load_vision_config,
+    sanitize_path_segment,
     save_processed,
 )
 from wx_obsidian.config_manager import ConfigManager
@@ -33,9 +34,11 @@ from wx_obsidian.models import (
 )
 from wx_obsidian.output.validator import validate_and_fix
 from wx_obsidian.output.vault import (
+    _escape_display,
     ensure_category,
     ensure_concept_page,
     maybe_create_subcategory,
+    normalize_quotes,
     scan_existing_content,
     update_moc,
 )
@@ -152,7 +155,7 @@ def _save_vision_log(ctx: PipelineContext) -> None:
     info = ctx.processed.get("__info", {})
     title = info.get("title", "unknown")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)[:50]
+    safe_title = sanitize_path_segment(title, 50)
     log_file = log_dir / f"{ts}_{safe_title}.json"
 
     entries = []
@@ -431,16 +434,16 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
 
     articles_dir = ctx.config["articles_dir"]
 
-    category = re.sub(r'[<>:"/\\|?*]', "_", summary_data.get("category", "其他"))
+    category = sanitize_path_segment(summary_data.get("category", "其他"))
     sub_topic = (
-        re.sub(r'[<>:"/\\|?*]', "_", summary_data.get("sub_topic", ""))
+        sanitize_path_segment(summary_data.get("sub_topic", ""))
         if summary_data.get("sub_topic")
         else ""
     )
 
-    safe_title = (
-        re.sub(r'[<>:"/\\|?*]', "_", info["title"]).replace("“", '"').replace("”", '"')[:100]
-    )
+    safe_title = normalize_quotes(
+        sanitize_path_segment(info["title"])
+    )[:100]
     category_dir = articles_dir / category
     category_dir.mkdir(parents=True, exist_ok=True)
     file_path = category_dir / f"{safe_title}.md"
@@ -451,8 +454,8 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
     for concept in summary_data.get("concepts") or []:
         raw_name = concept.get("name", "未知概念")
         # LLM 可能在 name 中包含 [[...]] wiki-link 语法（模仿 SKILL.md 示例），需去除
-        clean_name = re.sub(r"[\[\]]", "", raw_name).strip()
-        safe_name = re.sub(r'[<>:"/\\|?*]', "_", clean_name).replace("“", '"').replace("”", '"')
+        clean_name = _escape_display(raw_name).strip()
+        safe_name = normalize_quotes(sanitize_path_segment(clean_name))
         concepts.append(
             {
                 "name": safe_name,
@@ -1110,7 +1113,7 @@ def _update_related_topics(
 
         related_lines: list[str] = []
         for t in related_titles:
-            safe = re.sub(r'[<>:"/\\|?*]', "_", t)[:100]
+            safe = sanitize_path_segment(t)
             related_lines.append(f"- [[{safe}|{t}]]" if safe != t else f"- [[{t}]]")
         related_md = "\n".join(related_lines)
         new_md, count = re.subn(

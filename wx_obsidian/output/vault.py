@@ -6,7 +6,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from wx_obsidian.config import SUB_TOPIC_THRESHOLD, atomic_write
+from wx_obsidian.config import (
+    SUB_TOPIC_THRESHOLD,
+    atomic_write,
+    sanitize_path_segment,
+    save_processed,
+)
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -18,30 +23,13 @@ def _escape_display(text: str) -> str:
     return re.sub(r"[\[\]]", "", text)
 
 
-def _normalize_quotes(text: str) -> str:
+def normalize_quotes(text: str) -> str:
     """将弯引号统一为直引号，避免文件名与链接目标因引号类型不同而失配。
 
     Obsidian 在解析 wikilink 时对引号类型敏感：文件名中的 “” (U+201C/U+201D)
     与链接中的 "" (U+0022) 不会互相匹配。统一为直引号可防止此类断链。
     """
     return text.replace("“", '"').replace("”", '"')
-
-
-def _rename_file_normalize_quotes(file_path: Path) -> Path:
-    """如果文件名包含弯引号，重命名为直引号版本并返回新路径。
-
-    确保文件名与 MOC 链接目标一致，防止因引号类型不同导致 Obsidian 断链。
-    """
-    name = file_path.name
-    normalized = _normalize_quotes(name)
-    if normalized == name:
-        return file_path
-    new_path = file_path.parent / normalized
-    if not new_path.exists():
-        file_path.rename(new_path)
-        print(f"  规范化文件名引号: {name} -> {normalized}")
-        return new_path
-    return file_path
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +47,7 @@ def ensure_concept_page(
 ) -> None:
     """确保概念页面存在，不存在则创建；已存在则追加相关文章链接。"""
     # 防御性清理：去除 LLM 可能添加的 [[...]] wiki-link 语法
-    concept_name = re.sub(r"[\[\]]", "", concept_name).strip()
+    concept_name = _escape_display(concept_name).strip()
 
     base = articles_dir or (vault_path / "公众号文章")
     concept_dir = base / "概念"
@@ -91,7 +79,7 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
     （例如文章被 maybe_create_subcategory 移入子目录后），自动更新链接路径。
     """
     content = concept_file.read_text(encoding="utf-8")
-    safe_title = re.sub(r'[<>:"/\\|?*]', "_", article_title)[:100]
+    safe_title = sanitize_path_segment(article_title)
     if article_category:
         display = _escape_display(article_title)
         wikilink = f"- [[{article_category}/{safe_title}|{display}]]"
@@ -181,6 +169,8 @@ def _insert_into_folder_group(
     entry: str,
 ) -> bool:
     """在文件夹组中按日期顺序插入条目。
+
+    注意：此函数原地修改 folder_groups 列表（mutation），调用方需感知。
 
     Args:
         folder_groups: _parse_moc_content 返回的文件夹组。
@@ -277,7 +267,10 @@ def update_moc(
                 folder_groups, subfolder, entry
             ):
                 # 清理 standalone 中同名文章的旧条目（路径已过时）
-                standalone = [e for e in standalone if title not in e]
+                # 用正则精确匹配 wikilink 目标中的文件名段，避免子串误伤
+                # （如 title='AI' 不应误删 '[[Agent/AI Agent|AI Agent]]'）
+                title_pat = re.compile(r"\[\[[^\]]*?/" + re.escape(title) + r"(?:\||\]\])")
+                standalone = [e for e in standalone if not title_pat.search(e)]
                 new_content = _rebuild_moc(title_line, folder_groups, standalone)
                 atomic_write(parent_moc, new_content)
 
@@ -323,7 +316,7 @@ def ensure_category(
 # ---------------------------------------------------------------------------
 
 
-def count_sub_topic_articles(processed: dict[str, Any], category: str, sub_topic: str) -> int:
+def _count_sub_topic_articles(processed: dict[str, Any], category: str, sub_topic: str) -> int:
     """统计同一分类下同一子主题的文章数量。"""
     return sum(
         1
@@ -346,7 +339,7 @@ def maybe_create_subcategory(
     if not sub_topic:
         return
 
-    count = count_sub_topic_articles(processed, category, sub_topic)
+    count = _count_sub_topic_articles(processed, category, sub_topic)
     if count < SUB_TOPIC_THRESHOLD:
         return
 
@@ -367,6 +360,9 @@ def maybe_create_subcategory(
     _migrate_articles_to_subdir(
         processed, category, sub_topic, articles_dir, sub_dir, moc_file, concept_dir
     )
+    # 立即持久化，防止后续 _fix_links_batch / _update_parent_moc 失败导致
+    # 文件已移走但 processed.json 仍指向旧路径
+    save_processed(processed)
     _update_parent_moc(articles_dir, category, sub_topic)
 
 
@@ -409,40 +405,36 @@ def _fix_links_batch(
 
     合并了原 _fix_article_links 和 _fix_archive_links 的功能，
     将 O(M*N) I/O 降为 O(N)，同时包含异常保护。
+
+    使用逐链接提取 + 精确文件名匹配，避免正则 alternation 的子串匹配问题
+    （如 article_titles=['AI'] 误伤 [[Agent/AI Agent|AI Agent]]）。
     """
     if not article_titles:
         return
 
+    title_set = set(article_titles)
     escaped_category = re.escape(old_category)
-    escaped_titles = [re.escape(t) for t in article_titles]
-    title_alternation = "|".join(escaped_titles)
-    # 提取 new_category 中相对于 old_category 的新路径部分，用于负向前瞻
-    # 避免误伤已经正确迁移的链接（如 Agent/Agent架构/ 已正确的链接）
-    new_suffix = new_category[len(old_category) :]
-    lookahead = ""
-    if new_suffix.startswith("/"):
-        lookahead = r"(?!" + re.escape(new_suffix[1:]) + r"/)"
-    old_pattern = re.compile(
-        r"\[\["
-        + escaped_category
-        + r"/"
-        + lookahead
-        + r"([^\]]*?(?:"
-        + title_alternation
-        + r")[^\]]*?\]\])"
-    )
+    # 匹配 old_category 下的所有 wikilink，提取 link_target 和可选的 display 部分
+    link_pattern = re.compile(r"\[\[" + escaped_category + r"/([^\]|]+?)(\|[^\]]*?)?\]\]")
+
+    def _replace_link(re_match: re.Match[str]) -> str:
+        link_target = re_match.group(1)
+        rest = re_match.group(2) or ""
+        if link_target in title_set:
+            return f"[[{new_category}/{link_target}{rest}]]"
+        return re_match.group(0)
 
     for category_dir in articles_dir.iterdir():
         if not category_dir.is_dir() or category_dir.name.startswith("."):
             continue
         for md_file in category_dir.rglob("*.md"):
+            if md_file.name == "_MOC.md":
+                continue
             try:
                 content = md_file.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if not old_pattern.search(content):
-                continue
-            new_content = old_pattern.sub("[[" + new_category + r"/\1", content)
+            new_content = link_pattern.sub(_replace_link, content)
             if new_content != content:
                 atomic_write(md_file, new_content)
 
@@ -477,6 +469,9 @@ def _migrate_articles_to_subdir(
             continue
 
         new_path = sub_dir / old_path.name
+        if new_path.exists():
+            print(f"  警告: 目标文件已存在，跳过迁移: {new_path}")
+            continue
         old_path.rename(new_path)
         record["file"] = str(new_path)
 
@@ -552,7 +547,10 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
             for m in re.finditer(r"\[\[[^\]]*?/([^\]|]+?)(?:\|[^\]]*?)?\]\]", art_entry):
                 all_folder_titles.add(m.group(1))
     if all_folder_titles:
-        standalone = [e for e in standalone if not any(t in e for t in all_folder_titles)]
+        # 用正则精确匹配 wikilink 目标中的文件名段，避免子串误伤
+        alternation = "|".join(re.escape(t) for t in all_folder_titles)
+        folder_pat = re.compile(r"\[\[[^\]]*?/(?:" + alternation + r")(?:\||\]\])")
+        standalone = [e for e in standalone if not folder_pat.search(e)]
 
     new_content = _rebuild_moc(title_line, folder_groups, standalone)
     if new_content != content:
@@ -611,7 +609,7 @@ def update_daily_archive(
     archive_dir = articles_dir / "Z归档" / yy / mm
     archive_file = archive_dir / f"{dd}.md"
 
-    safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)[:100]
+    safe_title = sanitize_path_segment(title)
     wikilink = f"[[{category}/{safe_title}|{safe_title}]]"
 
     # 读取已有条目，追加新条目，去重

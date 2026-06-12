@@ -87,6 +87,11 @@ def generate_markdown(
 """
 
 
+def _sanitize_yaml_quotes(value: str) -> str:
+    """将各类引号替换为单引号，防止 Obsidian YAML 解析器将弯引号视为字符串分隔符。"""
+    return value.replace('"', "'").replace("“", "'").replace("”", "'")
+
+
 def _build_frontmatter(
     title: str,
     account_name: str,
@@ -99,13 +104,13 @@ def _build_frontmatter(
 ) -> str:
     """构建 YAML frontmatter。"""
     tags_str = ", ".join(t.replace(" ", "_") for t in tags)
-    sub_topic_line = f'\nsub_topic: "{sub_topic}"' if sub_topic else ""
+    sub_topic_line = f'\nsub_topic: "{_sanitize_yaml_quotes(sub_topic)}"' if sub_topic else ""
     return f"""---
-title: "{title.replace('"', "'")}"
-source: "{account_name}"
-author: "{author or account_name}"
+title: "{_sanitize_yaml_quotes(title)}"
+source: "{_sanitize_yaml_quotes(account_name)}"
+author: "{_sanitize_yaml_quotes(author or account_name)}"
 date: {date}
 tags: [{tags_str}]
-category: "{category}"{sub_topic_line}
+category: "{_sanitize_yaml_quotes(category)}"{sub_topic_line}
 url: "{url}"
 ---"""

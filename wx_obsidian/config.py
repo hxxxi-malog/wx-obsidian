@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,15 @@ VISION_DEFAULT_MODEL = "qwen-vl-plus"
 VISION_DEFAULT_CONCURRENCY = 10
 VISION_DEFAULT_TIMEOUT = 120
 VISION_DEFAULT_MAX_RETRIES = 2
+
+
+def sanitize_path_segment(text: str, max_len: int = 100) -> str:
+    """清理文本中不能用于文件路径的字符，按 CLAUDE.md 编码红线第 2 条。
+
+    将 ``<>:"/\\|?*`` 替换为下划线，并截断到 max_len。
+    """
+    return re.sub(r'[<>:"/\\|?*]', "_", text)[:max_len]
+
 
 # ---------------------------------------------------------------------------
 # .env 加载（不覆盖已有的环境变量）
