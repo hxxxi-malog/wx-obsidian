@@ -34,9 +34,11 @@ VISION_DEFAULT_MAX_RETRIES = 2
 def sanitize_path_segment(text: str, max_len: int = 100) -> str:
     """清理文本中不能用于文件路径的字符，按 CLAUDE.md 编码红线第 2 条。
 
-    将 ``<>:"/\\|?*`` 替换为下划线，并截断到 max_len。
+    先将弯引号归一化为直引号（防止 Obsidian 断链），再将 ``<>:"/\\|?*``
+    替换为下划线，最后截断到 max_len。
     """
-    return re.sub(r'[<>:"/\\|?*]', "_", text)[:max_len]
+    normalized = text.replace("“", '"').replace("”", '"')
+    return re.sub(r'[<>:"/\\|?*]', "_", normalized)[:max_len]
 
 
 # ---------------------------------------------------------------------------

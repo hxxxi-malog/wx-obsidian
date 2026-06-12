@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from wx_obsidian.config import atomic_write, save_processed
+from wx_obsidian.config import atomic_write, sanitize_path_segment, save_processed
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def cascade_delete(
     errors: list[str] = []
     title = record.get("title", "未知")
     category = record.get("category", "")
-    safe_title = Path(record.get("file", "")).stem or re.sub(r'[<>:"/\\|?*]', "_", title)[:100]
+    safe_title = Path(record.get("file", "")).stem or sanitize_path_segment(title)
     date = record.get("date", "")
     concepts: list[dict[str, str]] = record.get("concepts") or []
 

@@ -34,11 +34,10 @@ from wx_obsidian.models import (
 )
 from wx_obsidian.output.validator import validate_and_fix
 from wx_obsidian.output.vault import (
-    _escape_display,
     ensure_category,
     ensure_concept_page,
+    escape_display,
     maybe_create_subcategory,
-    normalize_quotes,
     scan_existing_content,
     update_moc,
 )
@@ -441,9 +440,7 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
         else ""
     )
 
-    safe_title = normalize_quotes(
-        sanitize_path_segment(info["title"])
-    )[:100]
+    safe_title = sanitize_path_segment(info["title"])
     category_dir = articles_dir / category
     category_dir.mkdir(parents=True, exist_ok=True)
     file_path = category_dir / f"{safe_title}.md"
@@ -454,8 +451,8 @@ def _write_stage(ctx: PipelineContext) -> PipelineContext:
     for concept in summary_data.get("concepts") or []:
         raw_name = concept.get("name", "未知概念")
         # LLM 可能在 name 中包含 [[...]] wiki-link 语法（模仿 SKILL.md 示例），需去除
-        clean_name = _escape_display(raw_name).strip()
-        safe_name = normalize_quotes(sanitize_path_segment(clean_name))
+        clean_name = escape_display(raw_name).strip()
+        safe_name = sanitize_path_segment(clean_name)
         concepts.append(
             {
                 "name": safe_name,

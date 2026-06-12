@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from wx_obsidian.config import sanitize_path_segment
+
 # 预编译正则：匹配非微信 CDN 的 markdown 图片链接
 RE_NON_CDN_IMAGE = re.compile(r"!\[[^\]]*\]\((?!https?://mmbiz)[^)]+\)")
 
@@ -59,7 +61,7 @@ def generate_markdown(
     related_lines: list[str] = []
     for r in related:
         clean_r = re.sub(r"[\[\]]", "", r).strip()
-        safe = re.sub(r'[<>:"/\\|?*]', "_", clean_r)[:100]
+        safe = sanitize_path_segment(clean_r)
         related_lines.append(f"- [[{safe}|{clean_r}]]" if safe != clean_r else f"- [[{clean_r}]]")
     related_md = "\n".join(related_lines)
 

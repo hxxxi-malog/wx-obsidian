@@ -18,7 +18,7 @@ from wx_obsidian.config import (
 # ---------------------------------------------------------------------------
 
 
-def _escape_display(text: str) -> str:
+def escape_display(text: str) -> str:
     """清理显示文本中会破坏 wikilink 语法的字符。"""
     return re.sub(r"[\[\]]", "", text)
 
@@ -47,7 +47,7 @@ def ensure_concept_page(
 ) -> None:
     """确保概念页面存在，不存在则创建；已存在则追加相关文章链接。"""
     # 防御性清理：去除 LLM 可能添加的 [[...]] wiki-link 语法
-    concept_name = _escape_display(concept_name).strip()
+    concept_name = escape_display(concept_name).strip()
 
     base = articles_dir or (vault_path / "公众号文章")
     concept_dir = base / "概念"
@@ -81,7 +81,7 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
     content = concept_file.read_text(encoding="utf-8")
     safe_title = sanitize_path_segment(article_title)
     if article_category:
-        display = _escape_display(article_title)
+        display = escape_display(article_title)
         wikilink = f"- [[{article_category}/{safe_title}|{display}]]"
     else:
         wikilink = f"- [[{safe_title}]]"
@@ -249,7 +249,7 @@ def update_moc(
     content = moc_file.read_text(encoding="utf-8")
     # 使用完整路径（category/title）确保链接在子目录迁移后仍然有效
     full_path = f"{category}/{title}"
-    display = _escape_display(original_title if original_title else title)
+    display = escape_display(original_title if original_title else title)
     wikilink = f"[[{full_path}|{display}]]"
     entry = f"- {date} {wikilink}"
     if entry not in content:
@@ -306,7 +306,7 @@ def ensure_category(
     if root_moc.exists():
         content = root_moc.read_text(encoding="utf-8")
         if f"[[{category}/_MOC" not in content:
-            folder_entry = f"- 📁 [[{category}/_MOC|{_escape_display(category)}]]"
+            folder_entry = f"- 📁 [[{category}/_MOC|{escape_display(category)}]]"
             content = content.rstrip() + f"\n{folder_entry}"
             atomic_write(root_moc, content)
 
@@ -491,7 +491,7 @@ def _migrate_articles_to_subdir(
         # 累积子目录 MOC 条目（使用完整路径）
         safe_title = old_path.stem
         original_title = record.get("title", safe_title)
-        display = _escape_display(original_title if original_title else safe_title)
+        display = escape_display(original_title if original_title else safe_title)
         wikilink = f"[[{new_category}/{safe_title}|{display}]]"
         entry = f"- {record.get('processed_at', '')[:10]} {wikilink}"
         if entry not in moc_content:
@@ -524,7 +524,7 @@ def _update_parent_moc(articles_dir: Path, category: str, sub_topic: str) -> Non
         child_entries.extend(sub_standalone)
 
     # 构建文件夹条目：链接到子目录 MOC
-    folder_display = _escape_display(sub_topic)
+    folder_display = escape_display(sub_topic)
     folder_entry = f"- 📁 [[{category}/{sub_topic}/_MOC|{folder_display}]]"
 
     # 读取并更新父 MOC
@@ -609,8 +609,10 @@ def update_daily_archive(
     archive_dir = articles_dir / "Z归档" / yy / mm
     archive_file = archive_dir / f"{dd}.md"
 
+    category = sanitize_path_segment(category)
     safe_title = sanitize_path_segment(title)
-    wikilink = f"[[{category}/{safe_title}|{safe_title}]]"
+    display = escape_display(title)
+    wikilink = f"[[{category}/{safe_title}|{display}]]"
 
     # 读取已有条目，追加新条目，去重
     entries: list[tuple[str, str]] = []  # (category, entry_line)
