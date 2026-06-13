@@ -34,10 +34,11 @@ VISION_DEFAULT_MAX_RETRIES = 2
 def sanitize_path_segment(text: str, max_len: int = 100) -> str:
     """清理文本中不能用于文件路径的字符，按 CLAUDE.md 编码红线第 2 条。
 
-    先将弯引号归一化为直引号（防止 Obsidian 断链），再将 Unicode 空格字符
-    （U+00A0 等）归一化为普通空格，最后将 ``<>:"/\\|?*[]`` 替换为下划线。
+    先将弯引号归一化为直引号（防止 Obsidian 断链），全角冒号归一化为 ASCII 冒号，
+    再将 Unicode 空格字符（U+00A0 等）归一化为普通空格，
+    最后将 ``<>:"/\\|?*[]`` 替换为下划线。
     """
-    normalized = text.replace("“", '"').replace("”", '"')
+    normalized = text.replace("“", '"').replace("”", '"').replace("：", ":")
     # Unicode 空格归一化：U+00A0, U+2000-U+200A, U+202F, U+205F, U+3000 → 空格
     # Obsidian 解析 wikilink 时会做此归一化，但 macOS APFS 区分这些字符，
     # 因此必须在文件名层面统一，否则链接无法解析。

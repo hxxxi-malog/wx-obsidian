@@ -149,7 +149,8 @@ def _save_vision_log(ctx: PipelineContext) -> None:
     """将 Vision 阶段结果持久化到日志文件，供事后排查。"""
     if not ctx.image_descriptions:
         return
-    log_dir = Path(__file__).resolve().parent.parent / "logs" / "vision"
+    vault_path = ctx.config.get("vault_path")
+    log_dir = (vault_path / ".logs" / "vision") if vault_path else Path("logs/vision")
     log_dir.mkdir(parents=True, exist_ok=True)
     info = ctx.processed.get("__info", {})
     title = info.get("title", "unknown")

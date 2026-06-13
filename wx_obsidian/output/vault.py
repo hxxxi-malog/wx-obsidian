@@ -78,7 +78,7 @@ def _append_related_article(concept_file: Path, article_title: str, article_cate
         wikilink = f"- [[{safe_title}]]"
 
     # 按文章标题（显示文本）检查是否已存在
-    escaped_title = re.escape(article_title)
+    escaped_title = re.escape(escape_display(article_title))
     existing_pattern = re.compile(r"- \[\[[^\]]*?" + escaped_title + r"\]\]")
     existing_match = existing_pattern.search(content)
 
@@ -359,20 +359,21 @@ def maybe_create_subcategory(
 
 def _fix_concept_links(
     concept_dir: Path,
-    article_title: str,
+    article_titles: list[str],
     old_category: str,
     new_category: str,
 ) -> None:
     """扫描所有概念页面，将指向 old_category 的链接更新为 new_category。
 
-    在 maybe_create_subcategory 迁移文章时调用，确保概念页面链接不会因
-    文章移入子目录而断裂。
+    批量版本：编译所有标题的 alternation 模式，单次扫描概念目录。
     """
-    safe_title = sanitize_path_segment(article_title)
-    escaped_title = re.escape(safe_title)
-    # 匹配旧路径的链接：- [[旧category/safe_title|display]]
+    if not article_titles:
+        return
+    safe_titles = [sanitize_path_segment(t) for t in article_titles]
+    escaped_titles = [re.escape(t) for t in safe_titles]
+    alternation = "|".join(escaped_titles)
     old_pattern = re.compile(
-        r"(- \[\[)" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
+        r"(- \[\[)" + re.escape(old_category) + r"/([^\]]*?(?:" + alternation + r")[^\]]*?\]\])"
     )
 
     for concept_file in concept_dir.glob("*.md"):
@@ -495,8 +496,7 @@ def _migrate_articles_to_subdir(
     # 批量更新链接（概念页面 + 文章/归档文件），单次遍历替代逐篇调用
     if migrated_titles:
         if concept_dir and concept_dir.exists():
-            for title in migrated_titles:
-                _fix_concept_links(concept_dir, title, category, new_category)
+            _fix_concept_links(concept_dir, migrated_titles, category, new_category)
         _fix_links_batch(articles_dir, migrated_titles, category, new_category)
 
 
