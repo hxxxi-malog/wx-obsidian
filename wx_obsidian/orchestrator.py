@@ -698,7 +698,17 @@ class Orchestrator:
                 ):
                     skipped_existing += 1
                 else:
-                    # error/skipped/failed 记录，未超过重试上限，绕过日期过滤重试
+                    # error/skipped/failed 记录，retry_count < 3
+                    # 先检查文件是否已存在（之前处理成功但记录被覆盖的情况）
+                    existing_file = record.get("file", "") if isinstance(record, dict) else ""
+                    if existing_file and Path(existing_file).exists():
+                        logger.info("文件已存在，修复记录为 done: %s", a.get("title", "")[:40])
+                        record["status"] = "done"
+                        record.pop("reason", None)
+                        record.pop("retry_count", None)
+                        skipped_existing += 1
+                        continue
+                    # 绕过日期过滤重试
                     prev_retry_counts[aid] = (
                         record.get("retry_count", 0) if isinstance(record, dict) else 0
                     )
@@ -769,6 +779,19 @@ class Orchestrator:
                 prev = prev_retry_counts.get(article_id, 0)
                 result["retry_count"] = prev + 1
                 prev_retry_counts[article_id] = prev + 1
+                # 防御：如果文件已存在（之前成功处理过），不要用失败结果覆盖
+                existing = processed.get(article_id)
+                if isinstance(existing, dict):
+                    existing_file = existing.get("file", "")
+                    if existing_file and Path(existing_file).exists():
+                        # 保留 file 字段，供后续 run 的 dedup 逻辑使用
+                        result.setdefault("file", existing_file)
+                        if existing.get("status") == "done":
+                            logger.info(
+                                "跳过失败结果覆盖（文件已存在）: %s", result.get("title", "")[:40]
+                            )
+                            completed_count += 1
+                            return
             processed[article_id] = result
             new_ids.add(article_id)
             completed_count += 1
