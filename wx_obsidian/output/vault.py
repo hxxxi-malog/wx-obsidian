@@ -368,7 +368,8 @@ def _fix_concept_links(
     在 maybe_create_subcategory 迁移文章时调用，确保概念页面链接不会因
     文章移入子目录而断裂。
     """
-    escaped_title = re.escape(article_title)
+    safe_title = sanitize_path_segment(article_title)
+    escaped_title = re.escape(safe_title)
     # 匹配旧路径的链接：- [[旧category/safe_title|display]]
     old_pattern = re.compile(
         r"(- \[\[)" + re.escape(old_category) + r"/([^\]]*?" + escaped_title + r"[^\]]*?\]\])"
@@ -403,7 +404,7 @@ def _fix_links_batch(
     if not article_titles:
         return
 
-    title_set = set(article_titles)
+    title_set = {sanitize_path_segment(t) for t in article_titles}
     escaped_category = re.escape(old_category)
     # 匹配 old_category 下的所有 wikilink，提取 link_target 和可选的 display 部分
     link_pattern = re.compile(r"\[\[" + escaped_category + r"/([^\]|]+?)(\|[^\]]*?)?\]\]")

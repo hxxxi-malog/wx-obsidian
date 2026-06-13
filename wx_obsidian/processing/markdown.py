@@ -11,6 +11,22 @@ from wx_obsidian.config import sanitize_path_segment
 RE_NON_CDN_IMAGE = re.compile(r"!\[[^\]]*\]\((?!https?://mmbiz)[^)]+\)")
 
 
+def _sanitize_wikilinks(md: str) -> str:
+    """清理 markdown 中 wikilink 的链接目标，确保路径安全。
+
+    LLM 在 body_sections 中可能生成含 /、:、U+00A0 等字符的 wikilink 目标，
+    此函数对 [[target|display]] 和 [[target]] 中的 target 应用 sanitize_path_segment。
+    """
+
+    def _replace(m: re.Match[str]) -> str:
+        target = m.group(1)
+        rest = m.group(2) or ""
+        safe = sanitize_path_segment(target)
+        return f"[[{safe}{rest}]]"
+
+    return re.sub(r"\[\[([^\]|]+?)(\|[^\]]*?)?\]\]", _replace, md)
+
+
 def remove_non_cdn_images(md: str) -> str:
     """清除 markdown 中非微信 CDN 的图片链接（LLM 幻觉生成的假图片）。"""
     return RE_NON_CDN_IMAGE.sub("", md)
@@ -70,6 +86,7 @@ def generate_markdown(
         heading = section.get("heading", "")
         body_content = section.get("content", "")
         body_content = body_content.replace("\\n", "\n")
+        body_content = _sanitize_wikilinks(body_content)
         body_parts.append(f"\n## {heading}\n\n{body_content}\n")
     body_md = "".join(body_parts)
 
