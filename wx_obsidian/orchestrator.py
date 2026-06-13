@@ -1134,7 +1134,8 @@ def _update_related_topics(
         related_lines: list[str] = []
         for t in related_titles:
             safe = sanitize_path_segment(t)
-            related_lines.append(f"- [[{safe}|{t}]]" if safe != t else f"- [[{t}]]")
+            display = escape_display(t)
+            related_lines.append(f"- [[{safe}|{display}]]")
         related_md = "\n".join(related_lines)
         new_md, count = re.subn(
             r"(## 相关主题\n).*?(?=\n## |\Z)",

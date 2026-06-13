@@ -78,7 +78,7 @@ def generate_markdown(
     for r in related:
         clean_r = re.sub(r"[\[\]]", "", r).strip()
         safe = sanitize_path_segment(clean_r)
-        related_lines.append(f"- [[{safe}|{clean_r}]]" if safe != clean_r else f"- [[{clean_r}]]")
+        related_lines.append(f"- [[{safe}|{clean_r}]]")
     related_md = "\n".join(related_lines)
 
     body_parts: list[str] = []
