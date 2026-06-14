@@ -53,7 +53,7 @@ pip install -e .
 docker compose up -d
 ```
 
-访问 http://localhost:4000，用微信扫码登录，添加要订阅的公众号。
+访问 `http://localhost:4000`，用微信扫码登录，添加要订阅的公众号。
 
 ### 3. 配置
 
