@@ -57,8 +57,8 @@ def generate_markdown(
     body_sections: list[dict[str, str]] = summary_data.get("body_sections", [])
 
     if valid_topics is not None:
-        valid_set = set(valid_topics)
-        related = [r for r in related if r in valid_set]
+        valid_set = {sanitize_path_segment(v) for v in valid_topics}
+        related = [r for r in related if sanitize_path_segment(r) in valid_set]
 
     frontmatter = _build_frontmatter(
         title, account_name, author, date, url, category, sub_topic, tags

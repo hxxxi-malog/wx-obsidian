@@ -761,6 +761,9 @@ class Orchestrator:
             "公众号文章",
         )
         existing_articles, existing_concepts = scan_existing_content(vault_path, articles_dir_name)
+        # 归一化概念名，确保与 sanitize_path_segment 生成的链接目标一致
+        # （概念页面文件名可能包含全角冒号等字符，但链接目标会将其转为下划线）
+        existing_concepts = list({sanitize_path_segment(c) for c in existing_concepts})
 
         # 创建归档写入器
         archive_writer = ArchiveWriter()
