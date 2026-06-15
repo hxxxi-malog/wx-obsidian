@@ -70,10 +70,16 @@ def generate_markdown(
         """去除概念名中可能由 LLM 添加的双向链接标记。"""
         return re.sub(r"[\[\]]", "", raw).strip()
 
-    concepts_md = "\n".join(
-        f"- [[{_clean_concept_name(c.get('name', '未知概念'))}]]：{c.get('description', '')}"
-        for c in concepts
-    )
+    concepts_md_parts: list[str] = []
+    for c in concepts:
+        clean_name = _clean_concept_name(c.get("name", "未知概念"))
+        safe_name = sanitize_path_segment(clean_name)
+        desc = c.get("description", "")
+        if safe_name != clean_name:
+            concepts_md_parts.append(f"- [[{safe_name}|{clean_name}]]：{desc}")
+        else:
+            concepts_md_parts.append(f"- [[{safe_name}]]：{desc}")
+    concepts_md = "\n".join(concepts_md_parts)
     related_lines: list[str] = []
     for r in related:
         clean_r = re.sub(r"[\[\]]", "", r).strip()

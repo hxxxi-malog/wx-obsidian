@@ -1116,6 +1116,17 @@ def _update_related_topics(
 
     related_map = compute_related(processed, new_ids, db_path=load_similarity_db_path())
 
+    # 构建标题 → (category, safe_title) 映射，用于生成带路径的 wikilink
+    title_to_path: dict[str, tuple[str, str]] = {}
+    for _aid, rec in processed.items():
+        if not isinstance(rec, dict) or rec.get("status") != "done":
+            continue
+        t = rec.get("title", "")
+        cat = rec.get("category", "")
+        file_p = rec.get("file", "")
+        if t and file_p:
+            title_to_path[t] = (cat, Path(file_p).stem)
+
     updated = 0
     for article_id, related_titles in related_map.items():
         if not related_titles:
@@ -1139,7 +1150,12 @@ def _update_related_topics(
         for t in related_titles:
             safe = sanitize_path_segment(t)
             display = escape_display(t)
-            related_lines.append(f"- [[{safe}|{display}]]")
+            # 使用带分类路径的链接，确保文章移入子目录后链接仍然有效
+            cat, file_stem = title_to_path.get(t, ("", ""))
+            if cat and file_stem:
+                related_lines.append(f"- [[{cat}/{file_stem}|{display}]]")
+            else:
+                related_lines.append(f"- [[{safe}|{display}]]")
         related_md = "\n".join(related_lines)
         new_md, count = re.subn(
             r"(## 相关主题\n).*?(?=\n## |\Z)",
