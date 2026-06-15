@@ -362,10 +362,11 @@ class ConfigManager:
                     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                         value = value[1:-1]
                     env[key.strip()] = value
-        # 同步到 os.environ，确保依赖 os.environ 的模块（如 load_vision_config）正常工作
+        # 同步到 os.environ，确保依赖 os.environ 的模块（如 load_vision_config）正常工作。
+        # 无条件写入：合并后的 env 已按优先级排列（新位置覆盖旧位置），
+        # 若用 k not in os.environ 守卫，旧 .env 先加载的值会阻止新位置的值生效。
         for k, v in env.items():
-            if k not in os.environ:
-                os.environ[k] = v
+            os.environ[k] = v
         return env
 
     def _merge_with_defaults(self, old: dict[str, Any]) -> dict[str, Any]:
