@@ -22,6 +22,10 @@ _fetch_last_time = 0.0
 _fetch_time_lock = threading.Lock()
 _FETCH_MIN_INTERVAL = 0.5
 
+# WeWe RSS /feeds/all.json 默认 limit=30，会导致文章被截断。
+# 显式请求足够大的 limit 以获取全部文章。
+_FEED_LIMIT = 1000
+
 # 预编译正则
 RE_BODY_HTML = re.compile(r'id="js_content"[^>]*>(.*?)</div>\s*<script', re.DOTALL)
 
@@ -115,9 +119,16 @@ def fetch_article_content_and_images(
 
 
 def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """从 WeWe RSS JSON Feed 获取文章列表。"""
+    """从 WeWe RSS JSON Feed 获取文章列表。
+
+    显式传入 limit 参数，避免 WeWe RSS 默认的 30 篇限制导致文章被截断。
+    """
     base_url = config["wewe_rss"]["base_url"]
-    resp = requests.get(f"{base_url}/feeds/all.json", timeout=15)
+    resp = requests.get(
+        f"{base_url}/feeds/all.json",
+        params={"limit": _FEED_LIMIT},
+        timeout=15,
+    )
     resp.raise_for_status()
     try:
         feed = resp.json()
