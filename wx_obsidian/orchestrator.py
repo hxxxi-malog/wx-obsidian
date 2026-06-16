@@ -657,7 +657,7 @@ class Orchestrator:
 
         # 获取文章列表
         try:
-            articles = fetch_articles(config)
+            articles = fetch_articles(config, wewe_rss=self._wewe_rss)
         except requests.RequestException as e:
             logger.error("获取文章失败: %s", e)
             return []
@@ -685,36 +685,29 @@ class Orchestrator:
             if aid in processed and not force:
                 record = processed[aid]
                 if isinstance(record, dict) and record.get("status") == "done":
-                    file_path = record.get("file", "")
-                    if file_path and Path(file_path).exists():
-                        skipped_existing += 1
-                        continue
-                    # done 记录但文件被删除，绕过日期过滤重新处理
-                    logger.info("文章文件缺失，重新处理: %s", a.get("title", "")[:40])
-                    ids_to_reprocess.append(aid)
-                    new_articles.append(a)
-                elif (
+                    # 去重以文章 ID 为准，不检查文件是否存在
+                    skipped_existing += 1
+                    continue
+                if (
                     isinstance(record, dict)
                     and record.get("retry_count", 0) >= MAX_CROSS_RUN_RETRIES
                 ):
                     skipped_existing += 1
                 else:
                     # error/skipped/failed 记录，retry_count < 3
-                    # 先检查文件是否已存在（之前处理成功但记录被覆盖的情况）
-                    existing_file = record.get("file", "") if isinstance(record, dict) else ""
-                    if existing_file and Path(existing_file).exists():
-                        logger.info("文件已存在，修复记录为 done: %s", a.get("title", "")[:40])
-                        record["status"] = "done"
-                        record.pop("reason", None)
-                        record.pop("retry_count", None)
-                        skipped_existing += 1
-                        continue
-                    # 绕过日期过滤重试
-                    prev_retry_counts[aid] = (
-                        record.get("retry_count", 0) if isinstance(record, dict) else 0
-                    )
-                    ids_to_reprocess.append(aid)
-                    new_articles.append(a)
+                    # 也受日期过滤约束，防止无限重试旧文章
+                    if (
+                        not force
+                        and a.get("date_published")
+                        and _utc_to_beijing_date(a["date_published"]) < cutoff
+                    ):
+                        skipped_date += 1
+                    else:
+                        prev_retry_counts[aid] = (
+                            record.get("retry_count", 0) if isinstance(record, dict) else 0
+                        )
+                        ids_to_reprocess.append(aid)
+                        new_articles.append(a)
             else:
                 if aid in processed and force:
                     ids_to_reprocess.append(aid)
@@ -1102,6 +1095,22 @@ def _update_knowledge_graph(
         on_progress("_kg_done", total, total)
 
 
+def _fuzzy_match_title(
+    title: str, title_to_path: dict[str, tuple[str, str]]
+) -> tuple[str, str]:
+    """模糊匹配标题，处理全角/半角冒号等字符差异。
+
+    Returns:
+        (category, file_stem) 或 ("", "") 匹配失败。
+    """
+    # 尝试将全角冒号替换为下划线后再匹配（sanitize_path_segment 的行为）
+    normalized = title.replace("：", "_")
+    for known_title, (cat, stem) in title_to_path.items():
+        if known_title == normalized or known_title.replace("：", "_") == title:
+            return (cat, stem)
+    return ("", "")
+
+
 def _update_related_topics(
     processed: dict[str, Any],
     new_ids: set[str] | None,
@@ -1117,18 +1126,40 @@ def _update_related_topics(
     related_map = compute_related(processed, new_ids, db_path=load_similarity_db_path())
 
     # 构建标题 → (category, safe_title) 映射，用于生成带路径的 wikilink
+    # 使用实际文件路径推导 category，防止子目录迁移后 processed.json 的 category 滞后
     title_to_path: dict[str, tuple[str, str]] = {}
     for _aid, rec in processed.items():
         if not isinstance(rec, dict) or rec.get("status") != "done":
             continue
         t = rec.get("title", "")
-        cat = rec.get("category", "")
         file_p = rec.get("file", "")
         if t and file_p:
-            title_to_path[t] = (cat, Path(file_p).stem)
+            fp = Path(file_p)
+            # 从实际文件路径推导 category（articles_dir 下的相对路径去掉文件名）
+            # 例如: .../公众号文章/Agent/上下文工程/xxx.md → Agent/上下文工程
+            parts = fp.parts
+            try:
+                # 找到 articles_dir 的位置，取其后的目录部分
+                articles_idx = next(i for i, p in enumerate(parts) if p == "公众号文章")
+                cat_parts = parts[articles_idx + 1 : -1]  # 去掉 articles_dir 和文件名
+                actual_cat = "/".join(cat_parts) if cat_parts else rec.get("category", "")
+            except StopIteration:
+                actual_cat = rec.get("category", "")
+            title_to_path[t] = (actual_cat, fp.stem)
+
+    # 处理所有有关联的文章（包括反向关联的旧文章）
+    target_ids = set(related_map.keys())
+    logger.info(
+        "相关主题回填：批次 %d 篇，有关联 %d 篇，待处理 %d 篇",
+        len(new_ids),
+        len(related_map),
+        len(target_ids),
+    )
 
     updated = 0
-    for article_id, related_titles in related_map.items():
+    skipped = 0
+    for article_id in target_ids:
+        related_titles = related_map.get(article_id, [])
         if not related_titles:
             continue
         record = processed.get(article_id)
@@ -1139,22 +1170,29 @@ def _update_related_topics(
             continue
         file_path = Path(file_path_str)
         if not file_path.exists():
+            logger.warning("相关主题跳过：文件不存在 %s", file_path_str)
+            skipped += 1
             continue
 
         try:
             md = file_path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as e:
+            logger.warning("相关主题跳过：读取失败 %s — %s", file_path_str, e)
+            skipped += 1
             continue
 
         related_lines: list[str] = []
         for t in related_titles:
-            safe = sanitize_path_segment(t)
             display = escape_display(t)
             # 使用带分类路径的链接，确保文章移入子目录后链接仍然有效
             cat, file_stem = title_to_path.get(t, ("", ""))
+            if not cat or not file_stem:
+                # 模糊匹配：处理全角/半角冒号等字符差异
+                cat, file_stem = _fuzzy_match_title(t, title_to_path)
             if cat and file_stem:
                 related_lines.append(f"- [[{cat}/{file_stem}|{display}]]")
             else:
+                safe = sanitize_path_segment(t)
                 related_lines.append(f"- [[{safe}|{display}]]")
         related_md = "\n".join(related_lines)
         new_md, count = re.subn(
@@ -1164,11 +1202,16 @@ def _update_related_topics(
             flags=re.DOTALL,
         )
         if count > 0 and new_md != md:
-            atomic_write(file_path, new_md)
-            updated += 1
+            try:
+                atomic_write(file_path, new_md)
+                updated += 1
+                logger.debug("相关主题已更新: %s (%d 条)", record.get("title", "")[:40], len(related_titles))
+            except OSError as e:
+                logger.warning("相关主题写入失败: %s — %s", file_path_str, e)
+                skipped += 1
 
-    if updated > 0:
-        logger.info("相关主题回填完成：%d 篇文章", updated)
+    if updated > 0 or skipped > 0:
+        logger.info("相关主题回填完成：%d 篇更新，%d 篇跳过", updated, skipped)
 
     if on_progress:
         on_progress("_related_done", 1, 1)

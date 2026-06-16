@@ -8,11 +8,14 @@ import re
 import threading
 import time
 from html.parser import HTMLParser
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
 from wx_obsidian.config import MAX_ARTICLE_LENGTH
+
+if TYPE_CHECKING:
+    from wx_obsidian.wewe_rss import WeWeRSSClient
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +121,29 @@ def fetch_article_content_and_images(
         return "", ""
 
 
-def fetch_articles(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """从 WeWe RSS JSON Feed 获取文章列表。
+def fetch_articles(
+    config: dict[str, Any],
+    wewe_rss: WeWeRSSClient | None = None,
+) -> list[dict[str, Any]]:
+    """从 WeWe RSS 获取文章列表。
 
-    显式传入 limit 参数，避免 WeWe RSS 默认的 30 篇限制导致文章被截断。
+    优先使用 tRPC API（通过 wewe_rss 参数），获取含真实 publishTime 的文章。
+    回退到 JSON Feed API。
+
+    Args:
+        config: 配置字典，需包含 wewe_rss.base_url。
+        wewe_rss: WeWeRSSClient 实例（可选）。提供时使用 tRPC API。
     """
+    if wewe_rss is not None:
+        try:
+            articles = wewe_rss.get_articles(limit=_FEED_LIMIT)
+            if articles:
+                logger.info("通过 tRPC API 获取 %d 篇文章", len(articles))
+                return articles
+            logger.warning("tRPC API 返回空列表，回退到 JSON Feed")
+        except (requests.RequestException, ValueError) as e:
+            logger.warning("tRPC API 获取失败，回退到 JSON Feed: %s", e)
+
     base_url = config["wewe_rss"]["base_url"]
     resp = requests.get(
         f"{base_url}/feeds/all.json",

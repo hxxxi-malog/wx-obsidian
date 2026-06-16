@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -91,17 +92,22 @@ class WeWeRSSClient:
         if isinstance(data, list):
             items: list[Any] = data
         elif isinstance(data, dict):
-            items = data.get("items") or data.get("list") or []
+            items = data.get("items") or data.get("list") or data.get("feeds") or []
+            # 如果 dict 本身看起来像单个 feed（有 mpName），包装成 list
+            if not items and (data.get("mpName") or data.get("name")):
+                items = [data]
         else:
             items = []
         feeds: list[Feed] = []
         for item in items:
+            if not isinstance(item, dict):
+                continue
             feeds.append(
                 Feed(
-                    id=str(item.get("id", "")),
-                    name=item.get("mpName", item.get("name", "")),
-                    intro=item.get("mpIntro", item.get("intro", "")),
-                    cover=item.get("mpCover", item.get("cover", "")),
+                    id=str(item.get("id") or item.get("mpId") or ""),
+                    name=str(item.get("mpName") or item.get("name") or item.get("mp_name") or ""),
+                    intro=str(item.get("mpIntro") or item.get("intro") or ""),
+                    cover=str(item.get("mpCover") or item.get("cover") or ""),
                 )
             )
         return feeds
@@ -112,7 +118,7 @@ class WeWeRSSClient:
         WeWe RSS tRPC 响应结构示例:
           [{"result": {"data": {...}}}]          — mutation batch
           {"result": {"data": [...]}}             — query
-          {"result": {"data": [{"id": ...}]}}     — getMpInfo (data 本身是 list)
+          {"result": {"data": {"id": ...}}}]      — getMpInfo (data 是 dict)
         """
         if isinstance(raw, list):
             raw = raw[0] if raw else {}
@@ -120,9 +126,6 @@ class WeWeRSSClient:
             result = raw.get("result", raw)
             if isinstance(result, dict):
                 data = result.get("data", result)
-                # data 可能是单元素 list（如 getMpInfo 响应）
-                if isinstance(data, list) and len(data) == 1:
-                    return data[0]
                 return data
         return raw
 
@@ -201,6 +204,98 @@ class WeWeRSSClient:
             return False
 
     # -- 登录保活 ------------------------------------------------------------
+
+    # -- 文章列表 ------------------------------------------------------------
+
+    def get_articles(self, limit: int = 0) -> list[dict[str, Any]]:
+        """通过 tRPC article.list 获取文章列表（含真实 publishTime）。
+
+        Args:
+            limit: 最大获取篇数，0 表示不限制（获取全部）。
+
+        Returns:
+            与 sources.rss.fetch_articles() 兼容的文章 dict 列表。
+        """
+        all_articles: list[dict[str, Any]] = []
+        cursor: str | None = None
+        page_size = 200
+
+        while True:
+            data: dict[str, Any] = {"limit": page_size}
+            if cursor:
+                data["cursor"] = cursor
+
+            try:
+                result = self._trpc_call("article.list", data)
+            except requests.RequestException as e:
+                logger.error("tRPC article.list 失败: %s", e)
+                break
+
+            raw = self._extract_trpc_data(result)
+            if not isinstance(raw, dict):
+                break
+
+            items = raw.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                publish_ts = item.get("publishTime", 0)
+                if publish_ts:
+                    dt = datetime.fromtimestamp(publish_ts, tz=timezone.utc)
+                    date_published = dt.isoformat().replace("+00:00", "Z")
+                else:
+                    date_published = ""
+
+                article_id = item.get("id", "")
+                mp_id = item.get("mpId") or item.get("mp_id") or item.get("feedId") or ""
+
+                all_articles.append(
+                    {
+                        "id": article_id,
+                        "title": item.get("title", "无标题"),
+                        "url": f"https://mp.weixin.qq.com/s/{article_id}",
+                        "content": "",
+                        "date_published": date_published,
+                        "author": "",
+                        "_account_name": "",
+                        "_mp_id": mp_id,
+                    }
+                )
+
+            cursor = raw.get("nextCursor")
+            if not cursor:
+                break
+
+            if limit > 0 and len(all_articles) >= limit:
+                all_articles = all_articles[:limit]
+                break
+
+        # 通过 mpId 关联 feed 列表，填充 author 和 _account_name
+        mp_name_map: dict[str, str] = {}
+        try:
+            feeds = self.get_feeds()
+            for feed in feeds:
+                mp_name_map[feed.id] = feed.name
+            if not mp_name_map:
+                logger.warning("feed 列表为空，所有文章的 source/author 将为空")
+            else:
+                matched = sum(1 for a in all_articles if mp_name_map.get(a.get("_mp_id", "")))
+                logger.info(
+                    "feed 映射: %d 个 feed, %d/%d 篇文章匹配到作者",
+                    len(mp_name_map),
+                    matched,
+                    len(all_articles),
+                )
+        except (requests.RequestException, ValueError):
+            logger.warning("获取 feed 列表失败，source/author 将为空")
+
+        for article in all_articles:
+            name = mp_name_map.get(article.get("_mp_id", ""), "")
+            article["author"] = name
+            article["_account_name"] = name
+
+        return all_articles
 
     def refresh_cookie(self) -> bool:
         """刷新微信读书 cookie（访问 weread.qq.com 续期）。"""

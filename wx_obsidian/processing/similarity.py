@@ -361,13 +361,17 @@ class SimilarityEngine:
         return conn
 
     def _insert_one_article(self, conn: sqlite3.Connection, aid: str, rec: dict[str, Any]) -> None:
-        """将一篇文章插入 articles 表和 articles_fts 表（BM25F 分字段）。"""
+        """将一篇文章插入或更新 articles 表和 articles_fts 表（BM25F 分字段）。"""
         concepts = [c.get("name", "") for c in (rec.get("concepts") or []) if isinstance(c, dict)]
         tags = rec.get("tags") or []
         conn.execute(
-            "INSERT OR IGNORE INTO articles "
+            "INSERT INTO articles "
             "(article_id, title, category, sub_topic, source, concepts, tags) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(article_id) DO UPDATE SET "
+            "title=excluded.title, category=excluded.category, "
+            "sub_topic=excluded.sub_topic, source=excluded.source, "
+            "concepts=excluded.concepts, tags=excluded.tags",
             (
                 aid,
                 rec.get("title", ""),
@@ -379,7 +383,8 @@ class SimilarityEngine:
             ),
         )
 
-        # BM25F: 每个字段独立分词后插入
+        # BM25F: FTS5 虚拟表不支持 UPSERT，先删后插
+        conn.execute("DELETE FROM articles_fts WHERE article_id = ?", (aid,))
         conn.execute(
             "INSERT INTO articles_fts "
             "(article_id, title, tags, concepts, key_points, summary) "
@@ -436,22 +441,38 @@ class SimilarityEngine:
         )
 
     def _insert_new_articles(self, conn: sqlite3.Connection, articles: dict[str, Any]) -> None:
-        """增量插入新文章到已有数据库。"""
+        """增量插入新文章并更新已有文章的元数据。"""
         existing = {r[0] for r in conn.execute("SELECT article_id FROM articles").fetchall()}
         inserted = 0
+        updated = 0
         for aid, rec in articles.items():
-            if aid in existing:
-                continue
             if not isinstance(rec, dict) or rec.get("status") != "done":
                 continue
             if not rec.get("title"):
                 continue
-            self._insert_one_article(conn, aid, rec)
-            inserted += 1
+            if aid in existing:
+                # 检查元数据是否需要更新
+                row = conn.execute(
+                    "SELECT category, sub_topic, source FROM articles WHERE article_id = ?",
+                    (aid,),
+                ).fetchone()
+                if row and (
+                    row[0] != rec.get("category", "")
+                    or row[1] != rec.get("sub_topic", "")
+                    or row[2] != rec.get("source", "")
+                ):
+                    self._insert_one_article(conn, aid, rec)
+                    updated += 1
+            else:
+                self._insert_one_article(conn, aid, rec)
+                inserted += 1
 
-        if inserted > 0:
+        if inserted > 0 or updated > 0:
             conn.commit()
-            logger.info("增量插入 %d 篇新文章", inserted)
+            if inserted:
+                logger.info("增量插入 %d 篇新文章", inserted)
+            if updated:
+                logger.info("更新 %d 篇文章元数据", updated)
 
     def _sync_deletions(self, conn: sqlite3.Connection, articles: dict[str, Any]) -> None:
         """删除 SQLite 中已被 processed.json 移除的文章。"""
@@ -651,7 +672,7 @@ class SimilarityEngine:
         articles: dict[str, Any],
         new_ids: set[str] | None = None,
         top_n: int = 3,
-        threshold: float = 0.1,
+        threshold: float = 0.05,
     ) -> dict[str, list[str]]:
         """计算文章间的关联，返回 {article_id: [related_article_title, ...]}。
 
@@ -715,7 +736,7 @@ def compute_related(
     articles: dict[str, Any],
     new_ids: set[str] | None = None,
     top_n: int = 3,
-    threshold: float = 0.1,
+    threshold: float = 0.05,
     db_path: Path | None = None,
 ) -> dict[str, list[str]]:
     """计算文章间的关联。模块级函数，内部委托给 SimilarityEngine 实例。"""
