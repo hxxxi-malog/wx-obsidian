@@ -200,14 +200,14 @@ def _insert_into_folder_group(
 def _rebuild_moc(
     title: str, folder_groups: list[tuple[str, list[str]]], standalone: list[str]
 ) -> str:
-    """从结构化数据重建 MOC 文件内容。"""
+    """从结构化数据重建 MOC 文件内容。独立条目在前，文件夹组在后。"""
     parts = [title, ""]
+    for entry in standalone:
+        parts.append(entry)
     for folder_line, articles in folder_groups:
         parts.append(folder_line)
         for article in articles:
             parts.append(f"  {article}")
-    for entry in standalone:
-        parts.append(entry)
     return "\n".join(parts) + "\n"
 
 
@@ -244,7 +244,15 @@ def update_moc(
     wikilink = f"[[{full_path}|{display}]]"
     entry = f"- {date} {wikilink}"
     if entry not in content:
-        content = content.rstrip() + f"\n{entry}"
+        # 插入到第一个文件夹组之前，避免被 MOC 解析器归入最后一个文件夹组
+        lines = content.rstrip().split("\n")
+        insert_idx = len(lines)
+        for i, line in enumerate(lines):
+            if line.strip().startswith("- 📁 "):
+                insert_idx = i
+                break
+        lines.insert(insert_idx, entry)
+        content = "\n".join(lines) + "\n"
         atomic_write(moc_file, content)
 
     # 如果是子目录文章，同时更新父 MOC 的文件夹组
@@ -308,14 +316,15 @@ def ensure_category(
 
 
 def _count_sub_topic_articles(processed: dict[str, Any], category: str, sub_topic: str) -> int:
-    """统计同一分类下同一子主题的文章数量。"""
+    """统计同一分类下同一子主题的文章数量（含已迁移到子目录的）。"""
+    migrated_category = f"{category}/{sub_topic}"
     return sum(
         1
         for record in processed.values()
         if isinstance(record, dict)
         and record.get("status") == "done"
-        and record.get("category") == category
         and record.get("sub_topic") == sub_topic
+        and record.get("category") in (category, migrated_category)
     )
 
 
@@ -337,11 +346,9 @@ def maybe_create_subcategory(
     articles_dir = vault_path / config["obsidian"]["articles_dir"]
     sub_dir = articles_dir / category / sub_topic
 
-    if sub_dir.exists():
-        return
-
-    print(f"  子主题「{sub_topic}」已有 {count} 篇文章，创建子目录 {category}/{sub_topic}/")
-    sub_dir.mkdir(parents=True, exist_ok=True)
+    if not sub_dir.exists():
+        print(f"  子主题「{sub_topic}」已有 {count} 篇文章，创建子目录 {category}/{sub_topic}/")
+        sub_dir.mkdir(parents=True, exist_ok=True)
 
     moc_file = sub_dir / "_MOC.md"
     if not moc_file.exists():

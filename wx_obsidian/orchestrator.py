@@ -1095,9 +1095,7 @@ def _update_knowledge_graph(
         on_progress("_kg_done", total, total)
 
 
-def _fuzzy_match_title(
-    title: str, title_to_path: dict[str, tuple[str, str]]
-) -> tuple[str, str]:
+def _fuzzy_match_title(title: str, title_to_path: dict[str, tuple[str, str]]) -> tuple[str, str]:
     """模糊匹配标题，处理全角/半角冒号等字符差异。
 
     Returns:
@@ -1205,7 +1203,9 @@ def _update_related_topics(
             try:
                 atomic_write(file_path, new_md)
                 updated += 1
-                logger.debug("相关主题已更新: %s (%d 条)", record.get("title", "")[:40], len(related_titles))
+                logger.debug(
+                    "相关主题已更新: %s (%d 条)", record.get("title", "")[:40], len(related_titles)
+                )
             except OSError as e:
                 logger.warning("相关主题写入失败: %s — %s", file_path_str, e)
                 skipped += 1
