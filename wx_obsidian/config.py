@@ -20,8 +20,8 @@ SCRIPT_DIR = Path(__file__).parent.parent
 SKILLS_DIR = SCRIPT_DIR / "skills"
 PROMPTS_DIR = SCRIPT_DIR / "prompts"
 PROCESSED_FILE = Path.home() / ".wx-obsidian" / "processed.json"
-MAX_ARTICLE_LENGTH = 15000
-MAX_PROMPT_CONTENT = 10000
+MAX_ARTICLE_LENGTH = 100000
+MAX_PROMPT_CONTENT = 100000
 SUB_TOPIC_THRESHOLD = 3
 
 VISION_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"

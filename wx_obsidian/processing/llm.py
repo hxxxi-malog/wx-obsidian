@@ -23,10 +23,28 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def load_prompt_template() -> Template:
-    """加载 prompt 模板文件。"""
-    template_file = PROMPTS_DIR / "summarize_article.txt"
-    return Template(template_file.read_text(encoding="utf-8"))
+def _cached_system_prompt() -> str:
+    """构建并缓存 summarize system prompt（静态，所有文章请求共享）。
+
+    缓存整个进程生命周期内有效；修改 skill 文件后需重启进程才能生效。
+    """
+    body_style = load_skill("article-body")
+    metadata_style = load_skill("note-metadata")
+    classification_style = load_skill("classification")
+    template = Template((PROMPTS_DIR / "summarize_system.txt").read_text(encoding="utf-8"))
+    try:
+        return template.substitute(
+            body_style=body_style,
+            classification_style=classification_style,
+            metadata_style=metadata_style,
+        )
+    except (KeyError, ValueError) as e:
+        raise RuntimeError(f"summarize_system.txt 模板变量错误: {e}") from e
+
+
+@functools.cache
+def _load_summarize_user_template() -> Template:
+    return Template((PROMPTS_DIR / "summarize_user.txt").read_text(encoding="utf-8"))
 
 
 def _build_images_context(
@@ -81,12 +99,8 @@ def build_prompt(
     existing_concepts: list[str],
     image_descriptions: list[ImageDescription] | None = None,
     images_with_context: list[dict[str, str]] | None = None,
-) -> str:
-    """构建 prompt，包含图片上下文（如果有）。"""
-    body_style = load_skill("article-body")
-    metadata_style = load_skill("note-metadata")
-    classification_style = load_skill("classification")
-
+) -> tuple[str, str]:
+    """构建 system + user prompt，静态部分可被 KV cache 复用。"""
     articles_str = "、".join(existing_articles[:100]) if existing_articles else "（暂无）"
     concepts_str = "、".join(existing_concepts[:100]) if existing_concepts else "（暂无）"
 
@@ -94,25 +108,33 @@ def build_prompt(
     if image_descriptions:
         images_context = _build_images_context(image_descriptions, images_with_context)
 
-    template = load_prompt_template()
-    return template.substitute(
-        title=title,
-        account_name=account_name,
-        content=content[:MAX_PROMPT_CONTENT],
-        body_style=body_style,
-        classification_style=classification_style,
-        metadata_style=metadata_style,
-        articles_str=articles_str,
-        concepts_str=concepts_str,
-        images_context=images_context,
-    )
+    system_prompt = _cached_system_prompt()
+    try:
+        user_prompt = _load_summarize_user_template().substitute(
+            title=title,
+            account_name=account_name,
+            content=content[:MAX_PROMPT_CONTENT],
+            articles_str=articles_str,
+            concepts_str=concepts_str,
+            images_context=images_context,
+        )
+    except (KeyError, ValueError) as e:
+        raise RuntimeError(f"summarize_user.txt 模板变量错误: {e}") from e
+    return system_prompt, user_prompt
 
 
 @functools.cache
-def load_refine_prompt_template() -> Template:
-    """加载 Pass 2 的 prompt 模板文件。"""
-    template_file = PROMPTS_DIR / "refine_with_images.txt"
-    return Template(template_file.read_text(encoding="utf-8"))
+def _cached_refine_system_prompt() -> str:
+    """构建并缓存 refine system prompt（静态）。
+
+    缓存整个进程生命周期内有效；修改 refine_system.txt 后需重启进程才能生效。
+    """
+    return (PROMPTS_DIR / "refine_system.txt").read_text(encoding="utf-8")
+
+
+@functools.cache
+def _load_refine_user_template() -> Template:
+    return Template((PROMPTS_DIR / "refine_user.txt").read_text(encoding="utf-8"))
 
 
 def _format_body_sections_as_markdown(body_sections: list[dict[str, Any]]) -> str:
@@ -133,17 +155,21 @@ def build_refine_prompt(
     body_sections: list[dict[str, Any]],
     image_descriptions: list[ImageDescription],
     images_with_context: list[dict[str, str]] | None = None,
-) -> str:
-    """构建 Pass 2 的 prompt（结合原文和图片描述修订正文）。"""
+) -> tuple[str, str]:
+    """构建 Pass 2 的 system + user prompt。"""
     images_context = _build_images_context(image_descriptions, images_with_context)
     body_md = _format_body_sections_as_markdown(body_sections)
 
-    template = load_refine_prompt_template()
-    return template.substitute(
-        article_content=article_content[:MAX_PROMPT_CONTENT],
-        body_sections=body_md,
-        images_context=images_context,
-    )
+    system_prompt = _cached_refine_system_prompt()
+    try:
+        user_prompt = _load_refine_user_template().substitute(
+            article_content=article_content[:MAX_PROMPT_CONTENT],
+            body_sections=body_md,
+            images_context=images_context,
+        )
+    except (KeyError, ValueError) as e:
+        raise RuntimeError(f"refine_user.txt 模板变量错误: {e}") from e
+    return system_prompt, user_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -357,17 +383,12 @@ def validate_images_field(images: list[Any]) -> list[dict[str, Any]]:
 
 
 def _call_llm(
-    prompt: str,
+    system_prompt: str,
+    user_prompt: str,
     config: dict[str, Any] | None = None,
     article_id: str = "",
 ) -> dict[str, Any] | None:
-    """调用 LLM API 并解析 JSON 响应。
-
-    Args:
-        config: 配置字典，优先从中读取 llm.model、llm.base_url。
-            API key 始终从 os.environ 读取（由 .env 管理）。
-        article_id: 文章 ID，用于调试日志保存。
-    """
+    """调用 LLM API 并解析 JSON 响应。"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     llm_cfg = config.get("llm", {}) if config else {}
     base_url = llm_cfg.get(
@@ -378,9 +399,10 @@ def _call_llm(
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY 未设置")
 
+    base_max = llm_cfg.get("max_tokens", 16384)
     # 动态 max_tokens：长 prompt 需要更多 output token
-    base_max = llm_cfg.get("max_tokens", 8192)
-    dynamic_max = min(16384, max(base_max, len(prompt) // 2))
+    max_tokens = min(16384, max(base_max, (len(system_prompt) + len(user_prompt)) // 2))
+    logger.info("_call_llm: model=%s max_tokens=%d prompt_len=%d", model, max_tokens, len(system_prompt) + len(user_prompt))
 
     resp = requests.post(
         f"{base_url}/chat/completions",
@@ -390,16 +412,30 @@ def _call_llm(
         },
         json={
             "model": model,
-            "max_tokens": dynamic_max,
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
         },
         timeout=120,
     )
     resp.raise_for_status()
     data = resp.json()
     try:
-        text = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        text = choice["message"]["content"]
+        finish_reason = choice.get("finish_reason", "unknown")
+        usage = data.get("usage", {})
+        logger.info(
+            "_call_llm: finish_reason=%s tokens(prompt=%s completion=%s)",
+            finish_reason,
+            usage.get("prompt_tokens", "?"),
+            usage.get("completion_tokens", "?"),
+        )
+        if finish_reason == "length":
+            logger.warning("响应被 max_tokens 截断！completion_tokens=%s", usage.get("completion_tokens", "?"))
     except (KeyError, IndexError, TypeError) as e:
         print(f"  API 响应格式异常: {e}")
         return None
@@ -422,7 +458,7 @@ def summarize_article(
     article_id: str = "",
 ) -> dict[str, Any] | None:
     """生成结构化笔记，包含图片上下文（如果有）。"""
-    prompt = build_prompt(
+    system_prompt, user_prompt = build_prompt(
         title,
         account_name,
         content,
@@ -431,7 +467,7 @@ def summarize_article(
         image_descriptions=image_descriptions,
         images_with_context=images_with_context,
     )
-    return _call_llm(prompt, config=config, article_id=article_id)
+    return _call_llm(system_prompt, user_prompt, config=config, article_id=article_id)
 
 
 def fix_format_issues(
@@ -501,10 +537,10 @@ def refine_with_images(
     article_id: str = "",
 ) -> dict[str, Any] | None:
     """Pass 2：结合原文和图片描述修订正文，返回含 [IMG:N] 占位符的 body_sections + images 数组。"""
-    prompt = build_refine_prompt(
+    system_prompt, user_prompt = build_refine_prompt(
         article_content, body_sections, image_descriptions, images_with_context
     )
-    result = _call_llm(prompt, config=config, article_id=article_id)
+    result = _call_llm(system_prompt, user_prompt, config=config, article_id=article_id)
     if result and "images" in result:
         result["images"] = validate_images_field(result["images"])
     return result
