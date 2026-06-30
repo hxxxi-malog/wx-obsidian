@@ -1,0 +1,11 @@
+## 原文内容
+
+$article_content
+
+## 初稿正文
+
+$body_sections
+
+## 文章中的图片描述
+
+$images_context
