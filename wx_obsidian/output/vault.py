@@ -338,6 +338,9 @@ def maybe_create_subcategory(
     """当同一子主题积累足够文章时，创建子目录并迁移文件。"""
     if not sub_topic:
         return
+    # 已迁移：category 末段已是 sub_topic，防止无限嵌套
+    if category == sub_topic or category.endswith(f"/{sub_topic}"):
+        return
 
     count = _count_sub_topic_articles(processed, category, sub_topic)
     if count < SUB_TOPIC_THRESHOLD:
