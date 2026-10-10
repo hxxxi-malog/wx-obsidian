@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import os
 import re
 import tempfile
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -24,11 +27,14 @@ MAX_ARTICLE_LENGTH = 100000
 MAX_PROMPT_CONTENT = 100000
 SUB_TOPIC_THRESHOLD = 3
 
-VISION_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-VISION_DEFAULT_MODEL = "qwen-vl-plus"
+VISION_DEFAULT_BASE_URL = "https://api.deepseek.com"
+# deepseek-flash 支持图像输入；deepseek-v4-pro 不支持（实测会回答「看不到图片」）
+VISION_DEFAULT_MODEL = "deepseek-flash"
 VISION_DEFAULT_CONCURRENCY = 10
 VISION_DEFAULT_TIMEOUT = 120
 VISION_DEFAULT_MAX_RETRIES = 2
+# 推理型多模态模型需要更大的输出预算，1024 会让正文 JSON 被截断
+VISION_DEFAULT_MAX_TOKENS = 3072
 
 
 def sanitize_path_segment(text: str, max_len: int = 100) -> str:
@@ -163,32 +169,42 @@ def load_skill(name: str) -> str:
 
 
 def load_vision_config(config: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """加载多模态 Vision API 配置。VISION_API_KEY 未设置时返回 None。
+    """加载多模态 Vision 配置。
+
+    取值优先级：`config["vision"]`（ConfigManager.resolve_vision_channel() 的产物）
+    > os.environ。`vision.enabled=False` 或拿不到 api_key 时返回 None（跳过视觉环节）。
 
     Args:
-        config: 配置字典（来自 ConfigManager），优先从中读取 vision.base_url、
-            vision.model 等。未提供时回退到 os.environ。
+        config: 配置字典（来自 ConfigManager / orchestrator）。
     """
-    api_key = os.environ.get("VISION_API_KEY", "")
+    raw = config.get("vision") if config else None
+    vision_cfg: dict[str, Any] = raw if isinstance(raw, dict) else {}
+
+    if vision_cfg.get("enabled") is False:
+        logger.info("Vision 已按配置禁用，跳过")
+        return None
+
+    api_key = str(vision_cfg.get("api_key") or os.environ.get("VISION_API_KEY", ""))
     if not api_key:
         return None
 
-    vision_cfg = config.get("vision", {}) if config else {}
-
     return {
         "api_key": api_key,
-        "base_url": vision_cfg.get(
-            "base_url", os.environ.get("VISION_BASE_URL", VISION_DEFAULT_BASE_URL)
+        "base_url": str(
+            vision_cfg.get("base_url") or os.environ.get("VISION_BASE_URL", VISION_DEFAULT_BASE_URL)
         ),
-        "model": vision_cfg.get("model", os.environ.get("VISION_MODEL_NAME", VISION_DEFAULT_MODEL)),
+        "model": str(
+            vision_cfg.get("model") or os.environ.get("VISION_MODEL_NAME", VISION_DEFAULT_MODEL)
+        ),
         "max_concurrency": int(
-            vision_cfg.get(
-                "max_concurrency",
-                os.environ.get("MAX_VISION_CONCURRENCY", VISION_DEFAULT_CONCURRENCY),
-            )
+            vision_cfg.get("max_concurrency")
+            or os.environ.get("MAX_VISION_CONCURRENCY", str(VISION_DEFAULT_CONCURRENCY))
         ),
         "timeout": int(
-            vision_cfg.get("timeout", os.environ.get("VISION_TIMEOUT", VISION_DEFAULT_TIMEOUT))
+            vision_cfg.get("timeout")
+            or os.environ.get("VISION_TIMEOUT", str(VISION_DEFAULT_TIMEOUT))
         ),
         "max_retries": int(os.environ.get("VISION_MAX_RETRIES", VISION_DEFAULT_MAX_RETRIES)),
+        "max_tokens": int(vision_cfg.get("max_tokens") or VISION_DEFAULT_MAX_TOKENS),
+        "inline_images": bool(vision_cfg.get("inline_images", True)),
     }

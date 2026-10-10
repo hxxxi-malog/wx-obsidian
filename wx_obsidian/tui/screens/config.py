@@ -12,6 +12,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, DirectoryTree, Footer, Header, Input, Static
 
+from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.models import ConnectionTestResult
 from wx_obsidian.tui.widgets.status import StatusIndicator
 
@@ -86,26 +87,29 @@ class ConfigScreen(Screen[None]):
         with VerticalScroll():
             yield Static("\n  配置管理\n", id="page-title")
 
-            yield Static("\n  LLM API (DeepSeek)", id="llm-label")
+            yield Static("\n  LLM API（语言模型渠道）", id="llm-label")
+            yield Static("  生效渠道:", id="llm-active-label")
+            yield Input(placeholder="deepseek", id="llm-active-input")
             yield Static("  API Key:", id="llm-key-label")
             yield Input(placeholder="sk-...", id="llm-key-input", password=True)
-            yield Static("  Base URL:", id="llm-url-label")
+            yield Static("  Base URL (当前渠道):", id="llm-url-label")
             yield Input(placeholder="https://api.deepseek.com", id="llm-url-input")
-            yield Static("  模型:", id="llm-model-label")
-            yield Input(placeholder="deepseek-chat", id="llm-model-input")
-            yield StatusIndicator("DeepSeek", id="llm-status")
+            yield Static("  模型 (当前渠道):", id="llm-model-label")
+            yield Input(placeholder="deepseek-v4-pro", id="llm-model-input")
+            yield StatusIndicator("LLM", id="llm-status")
             yield Button("测试连通性", id="test-llm-btn", variant="primary")
 
-            yield Static("\n  Vision API (可选)", id="vision-label")
-            yield Static("  API Key:", id="vision-key-label")
-            yield Input(placeholder="留空则禁用多模态", id="vision-key-input", password=True)
-            yield Static("  Base URL:", id="vision-url-label")
+            yield Static("\n  Vision API（视觉模型渠道）", id="vision-label")
+            yield Static("  生效渠道:", id="vision-active-label")
+            yield Input(placeholder="deepseek", id="vision-active-input")
+            yield Static("  API Key (留空则用渠道声明的环境变量):", id="vision-key-label")
             yield Input(
-                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                id="vision-url-input",
+                placeholder="留空则用 DEEPSEEK_API_KEY", id="vision-key-input", password=True
             )
-            yield Static("  模型:", id="vision-model-label")
-            yield Input(placeholder="qwen-vl-plus", id="vision-model-input")
+            yield Static("  Base URL (当前渠道):", id="vision-url-label")
+            yield Input(placeholder="https://api.deepseek.com", id="vision-url-input")
+            yield Static("  模型 (当前渠道，deepseek-flash 支持图像):", id="vision-model-label")
+            yield Input(placeholder="deepseek-flash", id="vision-model-input")
             yield StatusIndicator("Vision", id="vision-status")
             yield Button("测试连通性", id="test-vision-btn", variant="primary")
 
@@ -140,15 +144,19 @@ class ConfigScreen(Screen[None]):
         app = cast(WxObsidianApp, self.app)
         cm = app.config_manager
 
-        # LLM
+        # LLM（url/model 展示的是当前生效渠道的值）
+        llm = cm.resolve_llm_channel()
+        self.query_one("#llm-active-input", Input).value = str(cm.get("llm.active", ""))
         self.query_one("#llm-key-input", Input).value = cm.get_env("DEEPSEEK_API_KEY")
-        self.query_one("#llm-url-input", Input).value = cm.get("llm.base_url", "")
-        self.query_one("#llm-model-input", Input).value = cm.get("llm.model", "")
+        self.query_one("#llm-url-input", Input).value = llm["base_url"]
+        self.query_one("#llm-model-input", Input).value = llm["model"]
 
         # Vision
+        vis = cm.resolve_vision_channel()
+        self.query_one("#vision-active-input", Input).value = str(cm.get("vision.active", ""))
         self.query_one("#vision-key-input", Input).value = cm.get_env("VISION_API_KEY")
-        self.query_one("#vision-url-input", Input).value = cm.get("vision.base_url", "")
-        self.query_one("#vision-model-input", Input).value = cm.get("vision.model", "")
+        self.query_one("#vision-url-input", Input).value = vis["base_url"]
+        self.query_one("#vision-model-input", Input).value = vis["model"]
 
         # 文章数据源
         self.query_one("#source-type-input", Input).value = cm.get("source.type", "")
@@ -160,6 +168,41 @@ class ConfigScreen(Screen[None]):
         self.query_one("#vault-input", Input).value = cm.get("obsidian.vault_path", "")
         self.query_one("#max-days-input", Input).value = str(cm.get("fetch.max_days", 7))
         self.query_one("#max-workers-input", Input).value = str(cm.get("fetch.max_workers", 5))
+
+    def _apply_channel(
+        self,
+        cm: ConfigManager,
+        section: str,
+        active_selector: str,
+        url_selector: str,
+        model_selector: str,
+    ) -> str | None:
+        """切换某段落的生效渠道，并把 url/model 写回该渠道。
+
+        Returns:
+            生效渠道名；渠道不存在时返回 None（调用方应中止保存）。
+        """
+        from wx_obsidian.tui.app import WxObsidianApp
+
+        app = cast(WxObsidianApp, self.app)
+        name = self.query_one(active_selector, Input).value.strip()
+        if not name:
+            return ""
+
+        if not cm.set_active_channel(section, name):
+            available = ", ".join(cm.channel_names(section)) or "无"
+            app.show_notification(
+                f"{section} 渠道「{name}」不存在（可用：{available}）", severity="error"
+            )
+            return None
+
+        url = self.query_one(url_selector, Input).value.strip()
+        if url:
+            cm.set(f"{section}.providers.{name}.base_url", url)
+        model = self.query_one(model_selector, Input).value.strip()
+        if model:
+            cm.set(f"{section}.providers.{name}.model", model)
+        return name
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         from wx_obsidian.tui.app import WxObsidianApp
@@ -194,26 +237,26 @@ class ConfigScreen(Screen[None]):
         elif btn_id == "save-btn":
             cm = app.config_manager
 
-            # LLM
+            # LLM：切换生效渠道；url/model 写回「该渠道」的配置
             llm_key = self.query_one("#llm-key-input", Input).value.strip()
             if llm_key:
                 cm.set_env("DEEPSEEK_API_KEY", llm_key)
-            llm_url = self.query_one("#llm-url-input", Input).value.strip()
-            if llm_url:
-                cm.set("llm.base_url", llm_url)
-            llm_model = self.query_one("#llm-model-input", Input).value.strip()
-            if llm_model:
-                cm.set("llm.model", llm_model)
+            llm_active = self._apply_channel(
+                cm, "llm", "#llm-active-input", "#llm-url-input", "#llm-model-input"
+            )
+            if llm_active is None:
+                return
 
             # Vision
             vision_key = self.query_one("#vision-key-input", Input).value.strip()
             cm.set_env("VISION_API_KEY", vision_key)
-            vision_url = self.query_one("#vision-url-input", Input).value.strip()
-            if vision_url:
-                cm.set("vision.base_url", vision_url)
-            vision_model = self.query_one("#vision-model-input", Input).value.strip()
-            if vision_model:
-                cm.set("vision.model", vision_model)
+            if (
+                self._apply_channel(
+                    cm, "vision", "#vision-active-input", "#vision-url-input", "#vision-model-input"
+                )
+                is None
+            ):
+                return
 
             # 文章数据源
             source_type = self.query_one("#source-type-input", Input).value.strip()

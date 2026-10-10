@@ -31,22 +31,50 @@ FAILED_FILE = CONFIG_DIR / "failed.json"
 _OLD_CONFIG_YAML = Path(__file__).parent.parent / "config.yaml"
 _OLD_ENV_FILE = Path(__file__).parent.parent / ".env"
 
+# 内置渠道模板：只要在对应段落的 active 里写上名字即可切换。
+# 用户也可以在 config.json 的 providers 下自行新增任意兼容 OpenAI 协议的渠道。
+_BUILTIN_CHANNELS: dict[str, dict[str, dict[str, Any]]] = {
+    "llm": {
+        "deepseek": {
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-pro",
+            "api_key_env": "DEEPSEEK_API_KEY",
+        },
+    },
+    "vision": {
+        "deepseek": {
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-flash",
+            "api_key_env": "DEEPSEEK_API_KEY",
+        },
+        "dashscope": {
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "model": "qwen-vl-plus",
+            "api_key_env": "VISION_API_KEY",
+        },
+    },
+}
+
 _DEFAULT_CONFIG: dict[str, Any] = {
     "version": "1.0",
     "llm": {
-        "provider": "deepseek",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-chat",
+        # active 指向 providers 里的渠道名；切换渠道只改这一个字段
+        "active": "deepseek",
+        "providers": {},
         "max_tokens": 4096,
         "temperature": 0.7,
     },
     "vision": {
-        "enabled": False,
-        "provider": "dashscope",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen-vl-plus",
+        "enabled": True,
+        # 默认走 DeepSeek 的多模态模型（deepseek-flash 支持图像输入；deepseek-v4-pro 不支持）
+        "active": "deepseek",
+        "providers": {},
         "max_concurrency": 10,
         "timeout": 120,
+        # 推理型多模态模型需要更大的输出预算，1024 会导致正文 JSON 被截断
+        "max_tokens": 3072,
+        # 微信图有防盗链，服务端抓不到，改为本地下载后内联成 data URL
+        "inline_images": True,
     },
     "obsidian": {
         "vault_path": "",
@@ -105,6 +133,7 @@ class ConfigManager:
             try:
                 loaded = json.loads(self._config_file.read_text(encoding="utf-8"))
                 self._config = self._merge_with_defaults(loaded)
+                self._migrate_channel_config()
                 self._loaded = True
                 return self._config
             except json.JSONDecodeError:
@@ -116,14 +145,72 @@ class ConfigManager:
                 with open(_OLD_CONFIG_YAML, encoding="utf-8") as f:
                     old = yaml.safe_load(f) or {}
                 self._config = self._merge_with_defaults(old)
+                self._migrate_channel_config()
                 self._loaded = True
                 return self._config
             except (yaml.YAMLError, OSError):
                 pass
 
         self._config = json.loads(json.dumps(_DEFAULT_CONFIG))
+        self._migrate_channel_config()
         self._loaded = True
         return self._config
+
+    def _migrate_channel_config(self) -> None:
+        """把旧的扁平 provider 配置整理为 `active` + `providers` 渠道结构（幂等）。
+
+        兼容两种旧写法：
+        - `llm.provider` / `llm.base_url` / `llm.model`（扁平）
+        - 缺少 `active`
+
+        迁移后扁平字段会被移除，避免与新结构并存造成歧义；
+        旧值会保留到以 `provider` 命名的渠道里，随时可切回去。
+        """
+        for section, builtin in _BUILTIN_CHANNELS.items():
+            cfg = self._config.get(section)
+            if not isinstance(cfg, dict):
+                cfg = {}
+                self._config[section] = cfg
+
+            existing = cfg.get("providers")
+            providers: dict[str, dict[str, Any]] = (
+                dict(existing) if isinstance(existing, dict) else {}
+            )
+
+            # 1) 铺内置模板，保证常见渠道开箱可切换（用户已写的字段优先）
+            for name, template in builtin.items():
+                merged = dict(template)
+                current = providers.get(name)
+                if isinstance(current, dict):
+                    merged.update(current)
+                providers[name] = merged
+
+            # 2) 旧扁平字段归入以其 provider 命名的渠道
+            legacy_provider = str(cfg.get("provider") or "").strip()
+            flat = {
+                key: cfg[key]
+                for key in ("base_url", "model", "api_key_env")
+                if isinstance(cfg.get(key), str) and cfg.get(key)
+            }
+            if flat:
+                name = legacy_provider or "legacy"
+                merged = dict(builtin.get(name, {}))
+                current = providers.get(name)
+                if isinstance(current, dict):
+                    merged.update(current)
+                merged.update(flat)
+                providers[name] = merged
+
+            # 3) 确定 active：显式指定 > 旧 provider > 内置第一个
+            active = str(cfg.get("active") or "").strip()
+            if not active or active not in providers:
+                active = legacy_provider if legacy_provider in providers else next(iter(builtin))
+            cfg["active"] = active
+            cfg["providers"] = providers
+
+            # 4) 清理扁平字段
+            for key in ("provider", "base_url", "model", "api_key_env"):
+                cfg.pop(key, None)
 
     def save(self, config: dict[str, Any] | None = None) -> None:
         """原子写入 config.json。"""
@@ -389,6 +476,97 @@ class ConfigManager:
             "llm": self.test_llm_connection(),
             "vision": self.test_vision_connection(),
             "source": self.test_source_connection(),
+        }
+
+    # -- 模型渠道（LLM / Vision） -------------------------------------------
+
+    def _channel_api_key(self, channel: dict[str, Any], default_env: str = "") -> str:
+        """取渠道 API Key：优先渠道内联的 api_key，其次其声明的 api_key_env。
+
+        api_key_env 同时支持 `.env` 文件与已导出的 shell 环境变量
+        （`.env` 优先，与 ConfigManager 一贯的覆盖顺序一致）。
+        """
+        inline = channel.get("api_key")
+        if isinstance(inline, str) and inline.strip():
+            return inline.strip()
+        env_name = str(channel.get("api_key_env") or default_env or "").strip()
+        if not env_name:
+            return ""
+        # _load_env() 会把 .env 同步进 os.environ，故统一从 os.environ 取
+        self._load_env()
+        return os.environ.get(env_name, "")
+
+    def channel_names(self, section: str) -> list[str]:
+        """列出某段落（llm / vision）已配置的渠道名。"""
+        if not self._loaded:
+            self.load()
+        providers = self.get(f"{section}.providers", {})
+        return sorted(providers) if isinstance(providers, dict) else []
+
+    def set_active_channel(self, section: str, name: str) -> bool:
+        """切换某段落的生效渠道。渠道不存在时返回 False，不改动配置。"""
+        if name not in self.channel_names(section):
+            return False
+        self.set(f"{section}.active", name)
+        return True
+
+    def resolve_llm_channel(self) -> dict[str, Any]:
+        """解析当前生效的语言模型渠道（已含 api_key），供 llm.py 直接使用。"""
+        if not self._loaded:
+            self.load()
+        cfg = self.get("llm", {})
+        cfg = cfg if isinstance(cfg, dict) else {}
+        active = str(cfg.get("active") or "deepseek")
+        providers = cfg.get("providers")
+        channel = providers.get(active) if isinstance(providers, dict) else None
+        channel = channel if isinstance(channel, dict) else {}
+
+        return {
+            "provider": active,
+            "base_url": str(
+                channel.get("base_url")
+                or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+            ),
+            "model": str(channel.get("model") or os.environ.get("MODEL_NAME", "deepseek-v4-pro")),
+            "api_key": self._channel_api_key(channel, "DEEPSEEK_API_KEY"),
+            "max_tokens": int(cfg.get("max_tokens", 4096) or 4096),
+            "temperature": float(cfg.get("temperature", 0.7) or 0.7),
+        }
+
+    def resolve_vision_channel(self) -> dict[str, Any]:
+        """解析当前生效的视觉模型渠道（已含 api_key）。
+
+        deepseek 渠道通常复用语言模型的 Key，因此该渠道未显式配置 key 时
+        回退到 DEEPSEEK_API_KEY。
+        """
+        if not self._loaded:
+            self.load()
+        cfg = self.get("vision", {})
+        cfg = cfg if isinstance(cfg, dict) else {}
+        active = str(cfg.get("active") or "deepseek")
+        providers = cfg.get("providers")
+        channel = providers.get(active) if isinstance(providers, dict) else None
+        channel = channel if isinstance(channel, dict) else {}
+
+        api_key = self._channel_api_key(channel, "VISION_API_KEY")
+        if not api_key and active == "deepseek":
+            api_key = self._channel_api_key({}, "DEEPSEEK_API_KEY")
+
+        return {
+            "provider": active,
+            "enabled": bool(cfg.get("enabled", True)),
+            "base_url": str(
+                channel.get("base_url")
+                or os.environ.get("VISION_BASE_URL", "https://api.deepseek.com")
+            ),
+            "model": str(
+                channel.get("model") or os.environ.get("VISION_MODEL_NAME", "deepseek-flash")
+            ),
+            "api_key": api_key,
+            "max_concurrency": int(cfg.get("max_concurrency", 10) or 10),
+            "timeout": int(cfg.get("timeout", 120) or 120),
+            "max_tokens": int(cfg.get("max_tokens", 3072) or 3072),
+            "inline_images": bool(cfg.get("inline_images", True)),
         }
 
     # -- 内部方法 -----------------------------------------------------------

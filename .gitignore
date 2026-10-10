@@ -1,5 +1,8 @@
 # 环境变量（含密钥）
+# .env 的精确匹配盖不住备份文件，而备份里同样有密钥，故一并忽略
 .env
+.env.bak.*
+.env.*.bak
 
 # 运行时数据
 processed.json

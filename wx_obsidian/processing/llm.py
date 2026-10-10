@@ -389,8 +389,9 @@ def _call_llm(
     article_id: str = "",
 ) -> dict[str, Any] | None:
     """调用 LLM API 并解析 JSON 响应。"""
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     llm_cfg = config.get("llm", {}) if config else {}
+    # api_key 优先取已解析的渠道值（支持多渠道路由），其次回退环境变量
+    api_key = str(llm_cfg.get("api_key") or os.environ.get("DEEPSEEK_API_KEY", ""))
     base_url = llm_cfg.get(
         "base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
@@ -402,7 +403,12 @@ def _call_llm(
     base_max = llm_cfg.get("max_tokens", 16384)
     # 动态 max_tokens：长 prompt 需要更多 output token
     max_tokens = min(16384, max(base_max, (len(system_prompt) + len(user_prompt)) // 2))
-    logger.info("_call_llm: model=%s max_tokens=%d prompt_len=%d", model, max_tokens, len(system_prompt) + len(user_prompt))
+    logger.info(
+        "_call_llm: model=%s max_tokens=%d prompt_len=%d",
+        model,
+        max_tokens,
+        len(system_prompt) + len(user_prompt),
+    )
 
     resp = requests.post(
         f"{base_url}/chat/completions",
@@ -435,7 +441,9 @@ def _call_llm(
             usage.get("completion_tokens", "?"),
         )
         if finish_reason == "length":
-            logger.warning("响应被 max_tokens 截断！completion_tokens=%s", usage.get("completion_tokens", "?"))
+            logger.warning(
+                "响应被 max_tokens 截断！completion_tokens=%s", usage.get("completion_tokens", "?")
+            )
     except (KeyError, IndexError, TypeError) as e:
         print(f"  API 响应格式异常: {e}")
         return None
@@ -492,8 +500,9 @@ def fix_format_issues(
         "--- 结束 ---"
     )
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     llm_cfg = config.get("llm", {}) if config else {}
+    # api_key 优先取已解析的渠道值（支持多渠道路由），其次回退环境变量
+    api_key = str(llm_cfg.get("api_key") or os.environ.get("DEEPSEEK_API_KEY", ""))
     base_url = llm_cfg.get(
         "base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )

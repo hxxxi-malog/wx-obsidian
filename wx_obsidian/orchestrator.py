@@ -655,8 +655,9 @@ class Orchestrator:
             "fetch": self._config_manager.get("fetch", {}),
             "obsidian": {"vault_path": str(vault_path), "articles_dir": articles_dir_name},
             "categories": self._config_manager.get("categories", []),
-            "llm": self._config_manager.get("llm", {}),
-            "vision": self._config_manager.get("vision", {}),
+            # 解析出生效渠道（含 api_key），下游 llm.py / vision.py 直接消费
+            "llm": self._config_manager.resolve_llm_channel(),
+            "vision": self._config_manager.resolve_vision_channel(),
         }
 
         # 获取文章列表

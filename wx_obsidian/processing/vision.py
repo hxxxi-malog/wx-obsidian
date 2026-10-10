@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -14,6 +15,25 @@ import requests
 from wx_obsidian.processing.models import ImageDescription
 
 logger = logging.getLogger(__name__)
+
+# 内联图片时使用的浏览器 UA：mmbiz.qpic.cn 有防盗链，裸请求会 400
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+)
+
+# 内联图片的体积上限（字节）。超过则不下载，退回让服务端自行抓取。
+_MAX_INLINE_BYTES = 8 * 1024 * 1024
+
+# Vision 输出 token 上限。
+#
+# 不能用 1024：推理型多模态模型（如 deepseek-flash）会先消耗大量 reasoning token，
+# 预算不足时正文 JSON 会被截断（finish_reason=length、content 为空）。
+# 实测同一张图：max_tokens=1024 时 4 次里 2 次拿不到 JSON，3072 时 4/4 正常。
+_DEFAULT_MAX_TOKENS = 3072
+
+# 允许内联的图片 MIME（DeepSeek 支持 webp/png/jpeg/gif）
+_INLINE_MIME = ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif")
 
 # ---------------------------------------------------------------------------
 # 预过滤：已知广告 URL 模式
@@ -113,6 +133,55 @@ def _parse_vision_response(text: str, url: str) -> ImageDescription:
 
 
 # ---------------------------------------------------------------------------
+# 图片内联：把图片下载后编码为 data URL
+# ---------------------------------------------------------------------------
+
+
+def load_image_as_data_url(url: str, timeout: int = 30) -> str:
+    """下载图片并编码为 data URL；失败时返回空串。
+
+    为什么需要内联：部分多模态服务（如 DeepSeek）由服务端抓取图片 URL，
+    而微信 CDN `mmbiz.qpic.cn` 有防盗链，服务端会拿到 400/失败
+    （实测报错 `Failed to download image from https://mmbiz.qpic.cn/...`）。
+    本机带浏览器 UA 直连则正常，因此改为本地下载后内联发送。
+
+    Args:
+        url: 图片地址。
+        timeout: 下载超时（秒）。
+
+    Returns:
+        `data:image/png;base64,...` 形式的字符串；任何失败返回空串，
+        由调用方决定是否退回原 URL。
+    """
+    if not url.startswith("http"):
+        return ""
+    try:
+        resp = requests.get(url, headers={"User-Agent": _BROWSER_UA}, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("图片下载失败，将退回原 URL: %s — %s", url[:80], exc)
+        return ""
+
+    content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if content_type not in _INLINE_MIME:
+        logger.warning("图片类型不支持内联 (%s)，退回原 URL: %s", content_type or "未知", url[:80])
+        return ""
+    if not resp.content:
+        return ""
+    if len(resp.content) > _MAX_INLINE_BYTES:
+        logger.warning(
+            "图片过大 (%d bytes > %d)，退回原 URL: %s",
+            len(resp.content),
+            _MAX_INLINE_BYTES,
+            url[:80],
+        )
+        return ""
+
+    encoded = base64.b64encode(resp.content).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+# ---------------------------------------------------------------------------
 # 单图 API 调用（含重试）
 # ---------------------------------------------------------------------------
 
@@ -130,12 +199,19 @@ def _describe_single(img: dict[str, str], vision_config: dict[str, Any]) -> Imag
     after = img.get("after", "")[:200]
     prompt_text = _VISION_PROMPT.format(before=before, after=after)
 
+    # 默认内联；可用 vision.inline_images=False 退回「让服务端自己抓 URL」的旧行为
+    image_ref = url
+    if vision_config.get("inline_images", True):
+        inlined = load_image_as_data_url(url, timeout=min(timeout, 60))
+        if inlined:
+            image_ref = inlined
+
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "text", "text": prompt_text},
-                {"type": "image_url", "image_url": {"url": url}},
+                {"type": "image_url", "image_url": {"url": image_ref}},
             ],
         }
     ]
@@ -149,7 +225,11 @@ def _describe_single(img: dict[str, str], vision_config: dict[str, Any]) -> Imag
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={"model": model, "max_tokens": 1024, "messages": messages},
+                json={
+                    "model": model,
+                    "max_tokens": int(vision_config.get("max_tokens", _DEFAULT_MAX_TOKENS)),
+                    "messages": messages,
+                },
                 timeout=timeout,
             )
             resp.raise_for_status()
