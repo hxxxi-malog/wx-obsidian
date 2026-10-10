@@ -114,14 +114,12 @@ class ConfigScreen(Screen[None]):
             yield Button("测试连通性", id="test-vision-btn", variant="primary")
 
             yield Static("\n  文章数据源", id="source-label")
-            yield Static("  类型 (we_mp_rss / wewe):", id="source-type-label")
+            yield Static("  类型 (we_mp_rss):", id="source-type-label")
             yield Input(placeholder="we_mp_rss", id="source-type-input")
             yield Static("  服务地址:", id="source-url-label")
             yield Input(placeholder="http://localhost:8001", id="source-url-input")
             yield Static("  访问令牌 (we-mp-rss 管理接口, 可选):", id="source-token-label")
             yield Input(placeholder="Bearer token", id="source-token-input")
-            yield Static("  旧源授权码 (wewe 回退用):", id="wewe-auth-label")
-            yield Input(placeholder="auth code", id="wewe-auth-input")
             yield StatusIndicator("数据源", id="source-status")
             yield Button("测试连通性", id="test-source-btn", variant="primary")
 
@@ -162,7 +160,6 @@ class ConfigScreen(Screen[None]):
         self.query_one("#source-type-input", Input).value = cm.get("source.type", "")
         self.query_one("#source-url-input", Input).value = cm.get("source.base_url", "")
         self.query_one("#source-token-input", Input).value = cm.get("source.token", "")
-        self.query_one("#wewe-auth-input", Input).value = cm.get("wewe_rss.auth_code", "")
 
         # 其他
         self.query_one("#vault-input", Input).value = cm.get("obsidian.vault_path", "")
@@ -268,9 +265,6 @@ class ConfigScreen(Screen[None]):
             source_token = self.query_one("#source-token-input", Input).value.strip()
             if source_token:
                 cm.set("source.token", source_token)
-            wewe_auth = self.query_one("#wewe-auth-input", Input).value.strip()
-            if wewe_auth:
-                cm.set("wewe_rss.auth_code", wewe_auth)
 
             # 其他
             path = self.query_one("#vault-input", Input).value.strip()

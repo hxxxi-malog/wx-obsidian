@@ -1,0 +1,64 @@
+# we-mp-rss 本地部署（wx-obsidian 迁移的数据源）
+#
+#   docker compose up -d
+#   Web UI: http://localhost:8001
+#
+# 关键配置说明：
+#   GATHER.MODEL=weread_mp  —— 必须显式指定。默认的 `web` 模式走微信公众平台后台
+#     接口（cgi-bin/appmsgpublish），极易触发 ret=200013，且上游 main 分支在
+#     遇 200013 时会提前 break，导致降级逻辑成为死代码（issue #469，修复 PR #470 未合并）。
+#   GATHER.CONTENT=True     —— 抓取正文全文
+#   RSS_FULL_CONTEXT=True   —— RSS/JSON Feed 的 content:encoded 带全文
+#   读取方式（wx_obsidian/sources/we_mp_rss.py）：
+#     GET /feed/all.json?limit=100&offset=0&is_update=false   # 只读库，不触发采集
+#     GET /feed/{MP_WXS_xxx}.json                             # 单号
+#     GET /api/v1/wx/mps                                      # 订阅列表（需登录态/AK）
+
+services:
+  we-mp-rss:
+    # 派生镜像：FROM 上游 ghcr.io/rachelos/we-mp-rss:latest + 覆盖
+    # core/wx/model/weread_mp.py，修正「发布时间 = 抓取时间」的上游缺陷。
+    # 补丁说明见 Dockerfile；重新构建：docker compose up -d --build
+    build:
+      context: .
+    image: we-mp-rss-patched:local
+    container_name: we-mp-rss
+    restart: unless-stopped
+    ports:
+      # 只绑定回环地址：本项目仅本机消费，避免管理后台暴露到局域网
+      # （上游默认 0.0.0.0:8001，而管理 API 是全权限的）
+      - "127.0.0.1:8001:8001"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - PORT=8001
+      - DB=sqlite:///data/we_mp_rss.db
+      # 管理后台账号（init_sys.py 读取；注意：仅当用户不存在时才写入口令）
+      - USERNAME=${WERSS_USER:-admin}
+      - PASSWORD=${WERSS_PASS:?请在 .env 中设置 WERSS_PASS}
+      - WERSS_AUTH_WEB=False
+      - RSS_BASE_URL=http://localhost:8001
+      # 采集通道：微信读书 Web（绕开被风控的公众平台后台接口）
+      #
+      # ⚠️ GATHER.MODEL / GATHER.CONTENT 这两个「带点的环境变量」**不要**在这里设置：
+      #    实测（2026-10-10）docker inspect 里能看到，但容器内进程 os.getenv() 取不到，
+      #    生效值仍是 config.yaml 的默认 model='web' / content=False —— 而 web 模式
+      #    正是会 ret=200013 且有降级死代码的那个（issue #469）。
+      #    正确做法是在下方挂载的 config.yaml 里直接写死（本目录 config.yaml 已改好）。
+      - RSS_FULL_CONTEXT=True
+      # 微信读书登录态（见 .env），无点号，环境变量方式生效正常
+      - WEREAD_COOKIE=${WEREAD_COOKIE:-}
+      # 正文请求间隔（秒），降低风控概率
+      - WEREAD_CONTENT_INTERVAL=2
+      - WEREAD_PAGE_INTERVAL=1
+    volumes:
+      - ./data:/app/data
+      # 覆盖镜像内置的 config.yaml（镜像由 config.example.yaml 拷贝而来）。
+      # 必须可写：Web UI 保存微信读书 Cookie 时会回写此文件。
+      - ./config.yaml:/app/config.yaml
+    healthcheck:
+      # 注意：镜像内没有 curl（实测 /bin/sh: curl: not found），用 wget
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://localhost:8001/feed/all.json?limit=1' || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 90s

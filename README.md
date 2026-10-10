@@ -3,8 +3,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.9+-blue" alt="Python">
   <img src="https://img.shields.io/badge/DeepSeek_API-Compatible-orange" alt="DeepSeek">
-  <img src="https://img.shields.io/badge/DashScope_Vision-Multimodal-red" alt="DashScope Vision">
-  <img src="https://img.shields.io/badge/WeWe_RSS-Docker-green" alt="WeWe RSS">
+  <img src="https://img.shields.io/badge/DeepSeek_Vision-Multimodal-red" alt="DeepSeek Vision">
+  <img src="https://img.shields.io/badge/we--mp--rss-Docker-green" alt="we-mp-rss">
   <img src="https://img.shields.io/badge/Obsidian-Compatible-purple" alt="Obsidian">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
 </p>
@@ -14,9 +14,9 @@
 ## 核心特性
 
 - **CLI + TUI 双模式**：命令行批量处理 + [Textual](https://textual.textualize.io/) 终端图形界面
-- **全自动抓取**：通过 WeWe RSS 定时拉取公众号文章，增量处理不重复
+- **全自动抓取**：通过 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 定时拉取公众号文章，增量处理不重复
 - **批量并行处理**：ThreadPoolExecutor 并行处理多篇文章，指数退避重试（最多 3 次，覆盖 429/5xx/网络错误）
-- **多模态 Vision**：DashScope 视觉模型识别文章图片，为 LLM 提供语义描述，无 Vision 时自动降级到纯文本 + 关键词匹配
+- **多模态 Vision**：DeepSeek 视觉模型（`deepseek-flash`）识别文章图片，为 LLM 提供语义描述，无 Vision 时自动降级到纯文本 + 关键词匹配
 - **3-Skill 系统**：模块化控制输出风格，写作风格、分类规则、元数据格式独立配置，改 Skill 即改笔记风格
 - **智能分类**：15 个预设分类 + 动态新增，同一子主题积累 3 篇后自动创建子目录
 - **知识图谱**：`[[双向链接]]` 关联已有文章和概念页面，Obsidian Graph View 自动成图
@@ -24,15 +24,15 @@
 - **级联删除**：一键删除文章及其所有关联数据（MOC 条目、概念页面、归档、processed.json）
 - **格式保障**：自动校验修复 + mistune 结构性检测 + LLM 反馈修正，三层格式保障
 - **定时调度**：APScheduler 集成，支持 cron 定时抓取和处理
+- **可切换模型渠道**：`llm.active` / `vision.active` 指向任意 OpenAI 兼容渠道，加一个 provider 即可换模型，无需改代码
 
 ## Quick Start
 
 ### 前置条件
 
 - Python 3.9+
-- Docker（用于部署 WeWe RSS）
-- [DeepSeek API Key](https://platform.deepseek.com/)（必填）
-- [DashScope API Key](https://dashscope.console.aliyun.com/)（可选，用于多模态图片识别）
+- Docker（用于部署 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 数据源）
+- [DeepSeek API Key](https://platform.deepseek.com/)（必填；语言模型与视觉模型默认共用，`deepseek-flash` 支持图像输入）
 
 ### 1. 安装
 
@@ -47,13 +47,20 @@ uv sync
 pip install -e .
 ```
 
-### 2. 启动 WeWe RSS
+### 2. 启动 we-mp-rss 数据源
+
+原 WeWe RSS 已归档、其闭源中转下线，本项目改用 [we-mp-rss](https://github.com/rachelos/we-mp-rss)。
+部署配置见 `docker-compose.yml`：采集通道固定为 `weread_mp`（微信读书 Web），
+绕开公众平台后台接口的 `ret=200013` 风控；并附带修复「发布时间 = 抓取时间」的派生镜像。
 
 ```bash
-docker compose up -d
+cd deploy/we-mp-rss
+cp .env.example .env          # 填写 WERSS_PASS / WEREAD_COOKIE
+docker compose up -d --build
 ```
 
-访问 `http://localhost:4000`，用微信扫码登录，添加要订阅的公众号。
+访问 `http://localhost:8001` 完成初始化并登录微信读书，然后添加要订阅的公众号。
+细节（为什么用派生镜像、如何升级上游补丁）见 [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
 
 ### 3. 配置
 
@@ -68,16 +75,16 @@ python process_articles.py tui
 | 配置项 | 必填 | 说明 |
 |--------|------|------|
 | DeepSeek API Key | 是 | [获取地址](https://platform.deepseek.com/) |
-| Vision API Key | 否 | DashScope API Key，留空禁用多模态 |
+| Vision API Key | 否 | 独立视觉渠道 Key；留空则与 DeepSeek Key 共用 |
 | 知识库路径 | 是 | Obsidian Vault 路径（支持目录选择器） |
-| WeWe RSS 服务地址 | 否 | 默认 `http://localhost:4000` |
+| we-mp-rss 服务地址 | 否 | 默认 `http://localhost:8001` |
 
 **方式二：手动编辑配置文件**
 
 ```bash
-cp .env.example .env
-# 编辑 .env 填写 API Key
-# 编辑 config.yaml 设置 vault_path 等
+cp .env.example ~/.wx-obsidian/.env
+# 编辑 ~/.wx-obsidian/.env 填写 API Key
+# 编辑 ~/.wx-obsidian/config.json 设置 obsidian.vault_path 等
 ```
 
 ### 4. 抓取并处理文章
@@ -115,7 +122,7 @@ python process_articles.py tui
 | 界面 | 功能 |
 |------|------|
 | Home | 状态概览、快速操作入口 |
-| Container | WeWe RSS 容器状态监控、启停控制 |
+| Container | we-mp-rss 服务状态监控、启停控制 |
 | Account | 微信登录状态、扫码保活 |
 | Feeds | 公众号订阅管理 |
 | Config | LLM / Vision / Obsidian 配置编辑、连通性测试 |
@@ -141,8 +148,8 @@ process_articles.py
 
 Orchestrator（核心编排器）
     │
-    ├─ Stage 1: Fetch       <- WeWe RSS 拉取文章 + 正文提取
-    ├─ Stage 2: Vision      <- DashScope 视觉模型识别图片（可选，失败自动降级）
+    ├─ Stage 1: Fetch       <- we-mp-rss 拉取文章 + 正文提取
+    ├─ Stage 2: Vision      <- DeepSeek 视觉模型识别图片（可选，失败自动降级）
     ├─ Stage 3: LLM         <- DeepSeek 生成结构化笔记（有 Vision 时含图片上下文）
     ├─ Stage 4: Markdown     <- 生成 Obsidian Markdown + 三层格式校验
     ├─ Stage 5: Image        <- 替换 [IMG:N] 占位符 / 关键词匹配插入图片
@@ -215,11 +222,10 @@ Obsidian Vault/
 wx-obsidian/
 ├── process_articles.py          # 统一入口（CLI / TUI / delete 子命令）
 ├── validate_markdown.py         # Markdown 格式校验（向后兼容入口）
-├── config.yaml                  # 项目配置（Vault 路径、分类列表、WeWe RSS 地址）
-├── docker-compose.yml           # WeWe RSS + MySQL 部署
+├── deploy/we-mp-rss/            # 数据源部署（派生镜像 + 发布时间回填补丁 + 配置）
 ├── pyproject.toml               # Python 项目配置 + ruff/mypy 配置
 ├── .env.example                 # 环境变量模板
-├── run.sh                       # 定时任务启动脚本（加载 .env + 覆盖模型）
+├── run.sh                       # 定时任务启动脚本（launchd 每日调用）
 │
 ├── prompts/
 │   ├── summarize_article.txt    # 主 prompt（string.Template, $variable 占位符）
@@ -238,10 +244,11 @@ wx-obsidian/
     ├── models.py                # 全局数据模型（ProcessingResult, HealthStatus, Feed 等）
     ├── batch.py                 # 批量并行处理 + 指数退避重试
     ├── scheduler.py             # 定时任务调度（APScheduler AsyncIOScheduler）
-    ├── wewe_rss.py              # WeWe RSS tRPC API 客户端
-    │
     ├── sources/
-    │   └── rss.py               # RSS Feed 解析 + 文章正文抓取
+    │   ├── base.py              # ArticleSource 协议（编排层只依赖此抽象）
+    │   ├── factory.py           # 数据源工厂（按 WX_SOURCE / source.type 选择）
+    │   ├── we_mp_rss.py         # we-mp-rss API 客户端
+    │   └── rss.py               # 取文契约 + 微信文章正文提取
     │
     ├── processing/
     │   ├── pipeline.py          # Pipeline 引擎（函数组合式 stage）
@@ -356,38 +363,33 @@ Claude Code 采用了"胖核心"设计，query.ts 刻意保持 785KB 单文件..
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `DEEPSEEK_API_KEY` | 是 | DeepSeek API Key |
+| `DEEPSEEK_API_KEY` | 是 | DeepSeek API Key（语言模型与视觉模型默认共用） |
 | `DEEPSEEK_BASE_URL` | 否 | API 地址，默认 `https://api.deepseek.com` |
-| `MODEL_NAME` | 否 | 模型名，默认 `deepseek-chat` |
-| `AUTH_CODE` | 否 | WeWe RSS 认证码 |
-| `CRON_EXPRESSION` | 否 | 抓取定时，默认 `0 */2 * * *`（每 2 小时） |
+| `MODEL_NAME` | 否 | 模型名，默认 `deepseek-flash` |
+| `WX_SOURCE` | 否 | 数据源类型，当前仅 `we_mp_rss`（临时覆盖 `source.type`） |
 | `DEBUG` | 否 | 设为 `1` 开启调试（保存 API 原始响应到 `last_response.txt`） |
-| `VISION_API_KEY` | 否 | DashScope API Key，留空禁用多模态 |
-| `VISION_BASE_URL` | 否 | Vision API 地址，默认 DashScope 兼容模式 |
-| `VISION_MODEL_NAME` | 否 | Vision 模型名，默认 `qwen-vl-plus` |
+| `VISION_API_KEY` | 否 | 独立视觉渠道 Key，留空则与 LLM 共用 |
+| `VISION_BASE_URL` | 否 | Vision API 地址，默认 `https://api.deepseek.com` |
+| `VISION_MODEL_NAME` | 否 | Vision 模型名，默认 `deepseek-flash` |
 | `MAX_VISION_CONCURRENCY` | 否 | Vision 并发数，默认 `10` |
 
-### 项目配置（config.yaml）
+> 模型渠道也可完全绕开 `.env`：在 `config.json` 的 `llm.providers` / `vision.providers`
+> 下新增任意 OpenAI 兼容渠道，再把 `llm.active` / `vision.active` 指过去即可切换。
 
-```yaml
-obsidian:
-  vault_path: /path/to/obsidian/vault    # Obsidian Vault 路径
-  articles_dir: 公众号文章                # 文章目录名
-wewe_rss:
-  base_url: http://localhost:4000        # WeWe RSS 地址
-  auth_code: your-auth-code              # 认证码
-deepseek:
-  model: deepseek-chat                   # LLM 模型
-max_workers: 5                           # 并行处理线程数
-categories:                              # 分类列表（运行时自动追加新分类）
-  - LLM基础
-  - Agent
-  - ...
+### 项目配置（`~/.wx-obsidian/config.json`）
+
+由 `ConfigManager` 管理，TUI 的 Config 界面可直接编辑。关键字段：
+
+```jsonc
+{
+  "source":   { "type": "we_mp_rss", "base_url": "http://localhost:8001", "timeout": 15 },
+  "fetch":    { "max_days": 7, "max_workers": 5, "feed_limit": 300 },
+  "llm":      { "active": "deepseek", "providers": { "deepseek": { "base_url": "https://api.deepseek.com", "model": "deepseek-flash", "api_key_env": "DEEPSEEK_API_KEY" } } },
+  "vision":   { "active": "deepseek", "providers": { "deepseek": { "model": "deepseek-flash" } }, "inline_images": true },
+  "obsidian": { "vault_path": "/path/to/vault", "articles_dir": "公众号文章" },
+  "categories": ["LLM基础", "Agent", "..."]
+}
 ```
-
-### 用户级配置（~/.wx-obsidian/config.json）
-
-TUI Config 界面保存的配置，优先级高于 `.env` 和 `config.yaml`。
 
 ## 开发
 

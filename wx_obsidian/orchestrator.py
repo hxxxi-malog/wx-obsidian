@@ -371,6 +371,21 @@ def _markdown_stage(ctx: PipelineContext) -> PipelineContext:
     return ctx
 
 
+def _append_missing_images(md: str, images: list[dict[str, Any]], labels: dict[str, str]) -> str:
+    """兜底：把关键词匹配未命中的图片追加到文末。
+
+    宁可位置不完美，也不能静默丢图。
+    """
+    missing = [im for im in images if str(im.get("url") or "") not in md]
+    if not missing:
+        return md
+    logger.warning("关键词匹配未命中，改为追加 %d 张图片到文末", len(missing))
+    blocks = [
+        f"![{labels.get(str(im.get('url')), '图片')[:80]}]({im.get('url')})" for im in missing
+    ]
+    return md.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
+
+
 def _image_stage(ctx: PipelineContext) -> PipelineContext:
     """Stage 5: 替换 [IMG:N] 占位符为图片 markdown，清除残留占位符。"""
     if ctx.processed.get("__skip") or not ctx.md_content:
@@ -413,17 +428,7 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
             selected_urls = set(purpose_by_url)
             chosen = [im for im in ctx.images if im.get("url") in selected_urls] or ctx.images
             md = insert_images_into_markdown(md, chosen, ctx.image_descriptions)
-
-            # 关键词匹配也可能一无所获（图片上下文与正文无共同关键词），
-            # 此时直接追加到文末——宁可位置不完美，也不能静默丢图。
-            missing = [im for im in chosen if str(im.get("url") or "") not in md]
-            if missing:
-                logger.warning("关键词匹配未命中，改为追加 %d 张图片到文末", len(missing))
-                blocks = [
-                    f"![{purpose_by_url.get(str(im.get('url')), '图片')[:80]}]({im.get('url')})"
-                    for im in missing
-                ]
-                md = md.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
+            md = _append_missing_images(md, chosen, purpose_by_url)
 
     # 清除所有未替换的 [IMG:N] 占位符
     leftover = re.findall(r"\[IMG:\d+\]", md)
@@ -434,6 +439,13 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
     # 未配视觉模型时，LLM 没有图片上下文，降级到关键词匹配
     if not llm_images and ctx.images:
         md = insert_images_into_markdown(md, ctx.images, ctx.image_descriptions)
+        # 关键词匹配同样可能一无所获，走同一条兜底，避免视觉关闭时静默丢图
+        labels = {
+            d.url: d.description
+            for d in (ctx.image_descriptions or [])
+            if d.status == "ok" and d.is_content
+        }
+        md = _append_missing_images(md, ctx.images, labels)
 
     ctx.md_content = md
     return ctx
@@ -627,7 +639,7 @@ class Orchestrator:
         return self._source.get_feeds()
 
     def add_feed(self, article_url: str) -> Feed | None:
-        """通过文章链接添加公众号（仅旧源 WeWe RSS 支持）。"""
+        """通过文章链接添加公众号（we-mp-rss 不支持，返回 None）。"""
         return self._source.add_feed(article_url)
 
     def delete_feed(self, feed_id: str) -> bool:
@@ -680,9 +692,6 @@ class Orchestrator:
         # 构建 config dict（兼容需要 config 参数的旧函数）
         config: dict[str, Any] = {
             "source": self._config_manager.get("source", {}),
-            "wewe_rss": {
-                "base_url": self._config_manager.get("wewe_rss.base_url", "http://localhost:4000")
-            },
             "fetch": self._config_manager.get("fetch", {}),
             "obsidian": {"vault_path": str(vault_path), "articles_dir": articles_dir_name},
             "categories": self._config_manager.get("categories", []),

@@ -13,11 +13,7 @@ from textual.screen import Screen
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.orchestrator import Orchestrator
 from wx_obsidian.scheduler import TaskScheduler
-from wx_obsidian.sources.factory import (
-    SOURCE_WE_MP_RSS,
-    create_article_source,
-    resolve_source_type,
-)
+from wx_obsidian.sources.factory import create_article_source, resolve_source_type
 from wx_obsidian.tui.screens.account import AccountScreen
 from wx_obsidian.tui.screens.articles import ArticlesScreen
 from wx_obsidian.tui.screens.config import ConfigScreen
@@ -77,7 +73,6 @@ class WxObsidianApp(App[None]):
             base_url=self.config_manager.get("source.base_url", ""),
             timeout=int(self.config_manager.get("source.timeout", 15) or 15),
             token=self.config_manager.get("source.token", ""),
-            wewe_auth_code=self.config_manager.get("wewe_rss.auth_code", ""),
         )
         self.orchestrator = Orchestrator(self.config_manager, self.source)
         self.scheduler = TaskScheduler()
@@ -85,7 +80,7 @@ class WxObsidianApp(App[None]):
     @property
     def source_label(self) -> str:
         """数据源的展示名（用于状态栏/健康检查文案）。"""
-        return "we-mp-rss" if self.source_type == SOURCE_WE_MP_RSS else "WeWe RSS"
+        return "we-mp-rss"
 
     def on_mount(self) -> None:
         """注册屏幕并显示主页。"""
@@ -113,7 +108,7 @@ class WxObsidianApp(App[None]):
         self.notify(message, severity=severity)
 
     def show_login_url(self) -> None:
-        """打开 WeWe RSS 登录页面。"""
+        """打开数据源的登录/授权页面（we-mp-rss 为微信读书页）。"""
         url = self.orchestrator.get_login_url()
         try:
             webbrowser.open(url)

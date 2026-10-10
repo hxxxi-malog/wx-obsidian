@@ -2,8 +2,8 @@
 
 迁移背景见 docs/design-docs/wewe-rss-replacement/spec.md：
 WeWe RSS 已归档且其闭源中转下线，改用 we-mp-rss 作为文章源。
-为了让「双源开关」可回退，编排层（orchestrator / cli / tui）统一面向
-`ArticleSource` 编程，具体实现由 `create_article_source()` 按配置选择。
+编排层（orchestrator / cli / tui）统一面向 `ArticleSource` 编程，
+具体实现由 `create_article_source()` 按配置选择。
 
 依赖隔离：本模块只依赖 models，不依赖 processing/ output/。
 """
@@ -19,7 +19,7 @@ from wx_obsidian.models import AccountStatus, Feed
 class ArticleSource(Protocol):
     """文章数据源需要提供的能力。
 
-    实现方：`WeMpRssClient`（we-mp-rss，当前默认）、`WeWeRSSClient`（旧源，回退用）。
+    实现方：`WeMpRssClient`（we-mp-rss）。
     """
 
     def get_articles(self, limit: int = 0) -> list[dict[str, Any]]:

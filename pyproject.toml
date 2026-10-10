@@ -22,6 +22,9 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+# 上游 we-mp-rss 的整文件副本（仅改了发布时间回填一处）。
+# 保持与上游可 diff 是维护前提，因此不参与本项目的 lint / format。
+extend-exclude = ["deploy/we-mp-rss/patch"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]

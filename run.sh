@@ -1,9 +1,10 @@
 #!/bin/bash
-# 加载 DeepSeek API 配置
-source ~/.zshrc 2>/dev/null || source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null
-# 加载 MalogBot 的 .env（包含 DEEPSEEK_API_KEY）
-set -a; source ~/Downloads/pyProj/MalogBot/.env 2>/dev/null; set +a
-# 覆盖模型为 deepseek-flash（支持视觉，且与 vision 渠道统一）
-export MODEL_NAME=deepseek-flash
+# 定时抓取入口（launchd: com.malog.wx-knowledge-base）。
+#
+# 配置与密钥统一由 ~/.wx-obsidian/ 提供（config.json + .env），
+# 应用启动时会自行加载，这里不再从其它项目 source 环境变量。
+set -euo pipefail
+
 cd "$(dirname "$0")"
-/usr/bin/python3 process_articles.py >> logs/run.log 2>&1
+mkdir -p logs
+exec .venv/bin/python process_articles.py >> logs/run.log 2>&1

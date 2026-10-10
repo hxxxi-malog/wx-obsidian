@@ -38,7 +38,6 @@ def main() -> None:
         base_url=config_manager.get("source.base_url", ""),
         timeout=int(config_manager.get("source.timeout", 15) or 15),
         token=config_manager.get("source.token", ""),
-        wewe_auth_code=config_manager.get("wewe_rss.auth_code", ""),
     )
     orchestrator = Orchestrator(config_manager, source)
 

@@ -172,11 +172,14 @@ def _check_unclosed_code_block(lines: list[str]) -> tuple[list[str], list[str]]:
 
     # 奇数个 ``` → 必定有一个孤立
     # 判断是"开启未闭合"还是"闭合无开启"：
-    # 检查第一个 ``` 之前是否有内容行（JSON/代码等），若有则是孤立闭合
+    # 只有"裸围栏"（``` 后面没有 info string）才可能是孤立闭合围栏；
+    # 带 info string 的围栏（如 ```python）按 CommonMark 只能开启代码块，
+    # 不能闭合，因此前面有正文也只是"开启未闭合"，应在末尾补全。
     first_fence = next(i for i, line in enumerate(lines) if line.strip().startswith("```"))
+    is_bare_fence = lines[first_fence].strip().strip("`").strip() == ""
     has_content_before = any(lines[j].strip() for j in range(first_fence))
 
-    if has_content_before:
+    if is_bare_fence and has_content_before:
         # 孤立的闭合 ``` → 在其前面的非空行前插入 ```
         insert_at = first_fence
         for j in range(first_fence - 1, -1, -1):

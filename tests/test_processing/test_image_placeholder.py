@@ -93,6 +93,45 @@ class TestImageStagePlaceholders:
         assert not result.processed
 
 
+class TestNoVisionImageFallback:
+    """关掉视觉模型时同样不能丢图（走与 LLM 选图路径相同的兜底）。"""
+
+    @staticmethod
+    def _ctx_no_vision(md: str, images: list[dict[str, Any]]) -> PipelineContext:
+        return PipelineContext(
+            article={"id": "x"},
+            content="正文",
+            images=images,
+            image_descriptions=None,
+            summary_data={"images": []},
+            md_content=md,
+        )
+
+    def test_appends_image_when_keyword_match_fails(self) -> None:
+        """回归：视觉关闭时关键词匹配未命中，图片仍须落到笔记里。"""
+        images = [{"url": IMG_A, "before": "zzz qqq vvv", "after": "www eee rrr"}]
+        md = "# 标题\n\n## 一、背景\n\n完全无关的正文内容，不含任何可匹配的关键词。"
+        result = _image_stage(self._ctx_no_vision(md, images))
+
+        assert result.md_content is not None
+        assert IMG_A in result.md_content, "视觉关闭且关键词未命中时图片被静默丢弃"
+
+    def test_keeps_image_in_body_when_keyword_match_succeeds(self) -> None:
+        """关键词能匹配时图片应插到章节里，而不是一路追加到文末。"""
+        ctx_words = "Transformer 注意力机制 自注意力 多头"
+        images = [{"url": IMG_A, "before": ctx_words, "after": ctx_words}]
+        md = (
+            "# 标题\n\n## 一、背景\n\n"
+            "Transformer 注意力机制 自注意力 多头 的正文内容足够长以承载匹配。\n\n"
+            "## 二、结论\n\n收尾段落。"
+        )
+        result = _image_stage(self._ctx_no_vision(md, images))
+
+        assert result.md_content is not None
+        assert IMG_A in result.md_content
+        assert not result.md_content.rstrip().endswith(")")
+
+
 class TestOutputTokenBudget:
     """输出预算必须给 reasoning 留足空间，否则 JSON 会从尾部被截断。"""
 

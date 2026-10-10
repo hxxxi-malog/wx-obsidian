@@ -1,0 +1,4 @@
+# 构建上下文瘦身：补丁只需 patch/ 与 Dockerfile
+data/
+.env
+config.yaml

@@ -44,7 +44,7 @@ class VisionConfig:
 
 @dataclass
 class AccountStatus:
-    """WeWe RSS 账号状态（含登录信息）。"""
+    """数据源账号状态（登录信息与续期标记）。"""
 
     is_logged_in: bool
     username: str | None = None
@@ -54,7 +54,7 @@ class AccountStatus:
 
 @dataclass
 class ContainerStatus:
-    """WeWe RSS 容器状态。"""
+    """数据源服务/容器状态。"""
 
     is_running: bool
     container_id: str | None = None
@@ -64,7 +64,7 @@ class ContainerStatus:
 
 @dataclass
 class Feed:
-    """WeWe RSS 订阅公众号。"""
+    """数据源订阅的公众号。"""
 
     id: str
     name: str

@@ -31,6 +31,10 @@ FAILED_FILE = CONFIG_DIR / "failed.json"
 _OLD_CONFIG_YAML = Path(__file__).parent.parent / "config.yaml"
 _OLD_ENV_FILE = Path(__file__).parent.parent / ".env"
 
+# 合法的数据源类型。schema 由本模块定义；具体实现与解析见 sources/factory.py
+# （此处不 import sources，保持配置层不依赖上层模块）。
+_VALID_SOURCE_TYPES = ("we_mp_rss",)
+
 # 内置渠道模板：只要在对应段落的 active 里写上名字即可切换。
 # 用户也可以在 config.json 的 providers 下自行新增任意兼容 OpenAI 协议的渠道。
 _BUILTIN_CHANNELS: dict[str, dict[str, dict[str, Any]]] = {
@@ -80,17 +84,12 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "vault_path": "",
         "articles_dir": "公众号文章",
     },
-    # 文章数据源。type 可用 we_mp_rss（默认）或 wewe（旧源，回退用）；
-    # 也可用环境变量 WX_SOURCE 临时覆盖，无需改配置。
+    # 文章数据源：we-mp-rss。也可用环境变量 WX_SOURCE 临时覆盖，无需改配置。
     "source": {
         "type": "we_mp_rss",
         "base_url": "http://localhost:8001",
         "timeout": 15,
         "token": "",
-    },
-    # 旧 WeWe RSS 配置：已归档，仅在新源失败时作为回退保留。
-    "wewe_rss": {
-        "base_url": "http://localhost:4000",
     },
     "fetch": {
         "max_days": 7,
@@ -304,14 +303,12 @@ class ConfigManager:
         source_url = self.get("source.base_url", "")
         if not source_type:
             errors.append("source.type 未设置")
-        elif source_type not in ("we_mp_rss", "wewe"):
-            errors.append(f"source.type 取值非法: {source_type}（应为 we_mp_rss 或 wewe）")
+        elif source_type not in _VALID_SOURCE_TYPES:
+            errors.append(
+                f"source.type 取值非法: {source_type}（应为 {' 或 '.join(_VALID_SOURCE_TYPES)}）"
+            )
         if not source_url:
             errors.append("source.base_url 未设置")
-
-        # 回退源：仅在选择旧源时需要
-        if source_type == "wewe" and not self.get("wewe_rss.base_url", ""):
-            errors.append("source.type=wewe 但 wewe_rss.base_url 未设置")
 
         # .env 必须字段
         env = self._load_env()
@@ -389,60 +386,47 @@ class ConfigManager:
     # -- 连通性测试 ----------------------------------------------------------
 
     def test_llm_connection(self) -> ConnectionTestResult:
-        """测试 LLM API 连通性。"""
-        env = self._load_env()
-        api_key = env.get("DEEPSEEK_API_KEY", "")
+        """测试当前生效 LLM 渠道的连通性。"""
+        channel = self.resolve_llm_channel()
+        api_key = str(channel.get("api_key") or "")
         if not api_key:
             return ConnectionTestResult(
-                success=False, latency_ms=0, message="DEEPSEEK_API_KEY 未设置"
+                success=False,
+                latency_ms=0,
+                message=f"渠道 {channel['provider']} 的 API Key 未设置",
             )
 
-        base_url = self.get("llm.base_url", "https://api.deepseek.com")
-        model = self.get("llm.model", "deepseek-chat")
         return self._test_openai_compat_api(
-            base_url=base_url,
+            base_url=str(channel["base_url"]),
             api_key=api_key,
-            model=model,
+            model=str(channel["model"]),
             label="LLM",
         )
 
     def test_vision_connection(self) -> ConnectionTestResult:
-        """测试 Vision API 连通性。"""
-        env = self._load_env()
-        api_key = env.get("VISION_API_KEY", "")
+        """测试当前生效 Vision 渠道的连通性。"""
+        channel = self.resolve_vision_channel()
+        api_key = str(channel.get("api_key") or "")
         if not api_key:
             return ConnectionTestResult(
-                success=False, latency_ms=0, message="VISION_API_KEY 未设置"
+                success=False,
+                latency_ms=0,
+                message=f"渠道 {channel['provider']} 的 API Key 未设置",
             )
 
-        base_url = self.get("vision.base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        model = self.get("vision.model", "qwen-vl-plus")
         return self._test_openai_compat_api(
-            base_url=base_url,
+            base_url=str(channel["base_url"]),
             api_key=api_key,
-            model=model,
+            model=str(channel["model"]),
             label="Vision",
         )
 
     def test_source_connection(self) -> ConnectionTestResult:
-        """测试当前文章数据源的连通性（按 source.type 分派）。"""
-        source_type = self.get("source.type", "we_mp_rss")
-        if source_type == "wewe":
-            return self._test_endpoint(
-                self.get("wewe_rss.base_url", "http://localhost:4000") + "/feeds/all.json",
-                "WeWe RSS",
-            )
-        # we-mp-rss：/feed/all.json 是无需鉴权的只读接口，适合做探活
+        """测试文章数据源（we-mp-rss）的连通性。"""
+        # /feed/all.json 是无需鉴权的只读接口，适合做探活
         return self._test_endpoint(
             self.get("source.base_url", "http://localhost:8001") + "/feed/all.json?limit=1",
             "we-mp-rss",
-        )
-
-    def test_wewe_rss_connection(self) -> ConnectionTestResult:
-        """旧接口保留：直接测 WeWe RSS 连通性（回退排查用）。"""
-        return self._test_endpoint(
-            self.get("wewe_rss.base_url", "http://localhost:4000") + "/feeds/all.json",
-            "WeWe RSS",
         )
 
     def _test_endpoint(self, url: str, label: str) -> ConnectionTestResult:
@@ -596,9 +580,14 @@ class ConfigManager:
         """将旧配置合并到默认配置模板（新配置优先，补充旧配置中有而新配置中没有的字段）。"""
         result: dict[str, Any] = json.loads(json.dumps(_DEFAULT_CONFIG))  # deep copy
         for key, value in old.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = {**result[key], **value}
-            elif key not in result:
+            default = result.get(key)
+            if isinstance(default, dict) and isinstance(value, dict):
+                result[key] = {**default, **value}
+            elif isinstance(default, dict):
+                # 默认值是段落而用户给的不是 dict：保留默认段落，避免下游 .get() 崩溃
+                continue
+            else:
+                # 默认值是标量（或默认模板中没有该键）：新配置优先
                 result[key] = value
         return result
 

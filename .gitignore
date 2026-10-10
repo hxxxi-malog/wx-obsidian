@@ -31,6 +31,11 @@ config.yaml.bak.*
 # Docker 数据卷
 data/
 
+# we-mp-rss 部署：凭据与运行时数据不入库
+# （config.yaml 只含 ${VAR} 引用，可以入库）
+deploy/we-mp-rss/.env
+deploy/we-mp-rss/data/
+
 # macOS
 .DS_Store
 

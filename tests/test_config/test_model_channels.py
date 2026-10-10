@@ -153,6 +153,63 @@ class TestModelChannels:
         assert cm.resolve_vision_channel()["inline_images"] is True
 
 
+class TestChannelConnectionProbe:
+    """连通性自检必须探测当前生效渠道，而不是硬编码的默认服务。"""
+
+    @staticmethod
+    def _ok() -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 200
+        return resp
+
+    def test_llm_probe_uses_active_channel(self, cm: ConfigManager, monkeypatch: Any) -> None:
+        cm.set(
+            "llm.providers.corp", {"base_url": "https://llm.corp.example/v1", "model": "corp-model"}
+        )
+        cm.set("llm.providers.corp.api_key", "corp-key")
+        assert cm.set_active_channel("llm", "corp") is True
+
+        with patch("wx_obsidian.config_manager.requests.get", return_value=self._ok()) as mock_get:
+            result = cm.test_llm_connection()
+
+        assert result.success is True
+        assert mock_get.call_args.args[0] == "https://llm.corp.example/v1/models"
+        assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer corp-key"
+
+    def test_vision_probe_uses_active_channel(self, cm: ConfigManager) -> None:
+        cm.set(
+            "vision.providers.corp",
+            {"base_url": "https://vlm.corp.example/v1", "model": "corp-vlm"},
+        )
+        cm.set("vision.providers.corp.api_key", "vlm-key")
+        assert cm.set_active_channel("vision", "corp") is True
+
+        with patch("wx_obsidian.config_manager.requests.get", return_value=self._ok()) as mock_get:
+            result = cm.test_vision_connection()
+
+        assert result.success is True
+        assert mock_get.call_args.args[0] == "https://vlm.corp.example/v1/models"
+        assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer vlm-key"
+
+    def test_missing_key_names_the_active_channel(self, cm: ConfigManager) -> None:
+        # 显式声明一个不存在的 api_key_env，避免回退到 DEEPSEEK_API_KEY（会被 _load_env 重新填充）
+        cm.set(
+            "llm.providers.corp",
+            {
+                "base_url": "https://llm.corp.example/v1",
+                "model": "corp-model",
+                "api_key_env": "CORP_API_KEY_DEFINITELY_UNSET",
+            },
+        )
+        assert cm.set_active_channel("llm", "corp") is True
+
+        result = cm.test_llm_connection()
+
+        assert result.success is False
+        assert "corp" in result.message
+        assert "未设置" in result.message
+
+
 # ---------------------------------------------------------------------------
 # 图片内联
 # ---------------------------------------------------------------------------

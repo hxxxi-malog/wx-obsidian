@@ -1,4 +1,4 @@
-"""数据源状态屏幕：文章数据源服务（we-mp-rss / WeWe RSS）探活。"""
+"""数据源状态屏幕：we-mp-rss 服务探活。"""
 
 from __future__ import annotations
 
