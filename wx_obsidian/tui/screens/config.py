@@ -95,7 +95,7 @@ class ConfigScreen(Screen[None]):
             yield Static("  Base URL (当前渠道):", id="llm-url-label")
             yield Input(placeholder="https://api.deepseek.com", id="llm-url-input")
             yield Static("  模型 (当前渠道):", id="llm-model-label")
-            yield Input(placeholder="deepseek-v4-pro", id="llm-model-input")
+            yield Input(placeholder="deepseek-flash", id="llm-model-input")
             yield StatusIndicator("LLM", id="llm-status")
             yield Button("测试连通性", id="test-llm-btn", variant="primary")
 

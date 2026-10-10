@@ -45,9 +45,20 @@ class TestModelChannels:
         assert "api.deepseek.com" in vision["base_url"]
 
     def test_defaults_route_llm_to_deepseek(self, cm: ConfigManager) -> None:
+        """语言模型默认也走 deepseek-flash，与视觉渠道统一。
+
+        用户明确要求两个渠道都不再使用 deepseek-v4-pro。
+        """
         llm = cm.resolve_llm_channel()
         assert llm["provider"] == "deepseek"
-        assert llm["model"] == "deepseek-v4-pro"
+        assert llm["model"] == "deepseek-flash"
+
+    def test_no_channel_defaults_to_v4_pro(self, cm: ConfigManager) -> None:
+        """任何内置渠道的默认模型都不应再是 deepseek-v4-pro。"""
+        for section in ("llm", "vision"):
+            for name in cm.channel_names(section):
+                model = cm.get(f"{section}.providers.{name}.model")
+                assert model != "deepseek-v4-pro", f"{section}.{name} 仍在使用 deepseek-v4-pro"
 
     def test_builtin_channels_are_switchable(self, cm: ConfigManager) -> None:
         """内置渠道开箱可切换，切换后 model/base_url 随之改变。"""

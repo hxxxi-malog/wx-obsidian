@@ -37,7 +37,7 @@ _BUILTIN_CHANNELS: dict[str, dict[str, dict[str, Any]]] = {
     "llm": {
         "deepseek": {
             "base_url": "https://api.deepseek.com",
-            "model": "deepseek-v4-pro",
+            "model": "deepseek-flash",
             "api_key_env": "DEEPSEEK_API_KEY",
         },
     },
@@ -527,7 +527,7 @@ class ConfigManager:
                 channel.get("base_url")
                 or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
             ),
-            "model": str(channel.get("model") or os.environ.get("MODEL_NAME", "deepseek-v4-pro")),
+            "model": str(channel.get("model") or os.environ.get("MODEL_NAME", "deepseek-flash")),
             "api_key": self._channel_api_key(channel, "DEEPSEEK_API_KEY"),
             "max_tokens": int(cfg.get("max_tokens", 4096) or 4096),
             "temperature": float(cfg.get("temperature", 0.7) or 0.7),

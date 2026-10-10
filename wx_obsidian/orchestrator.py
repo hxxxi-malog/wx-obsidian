@@ -383,6 +383,7 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
         llm_images = []
 
     if llm_images:
+        placed = 0
         for i, img in enumerate(llm_images, 1):
             if not isinstance(img, dict):
                 continue
@@ -390,9 +391,39 @@ def _image_stage(ctx: PipelineContext) -> PipelineContext:
             purpose = img.get("purpose", "")
             if not url:
                 continue
+            placeholder = f"[IMG:{i}]"
+            if placeholder not in md:
+                continue
             desc = purpose[:80] if purpose else "图片"
-            img_md = f"\n![{desc}]({url})\n"
-            md = md.replace(f"[IMG:{i}]", img_md)
+            md = md.replace(placeholder, f"\n![{desc}]({url})\n")
+            placed += 1
+
+        # LLM 有选图但正文一个占位符都没写：图片会静默丢失，降级为程序化插入。
+        # 最常见的成因是响应被 max_tokens 截断——body_sections 排在 JSON schema
+        # 末尾，截断后正文连同 [IMG:N] 一起丢失（见 llm.py 输出预算说明）。
+        if placed == 0:
+            logger.warning(
+                "LLM 选择了 %d 张图片但正文无 [IMG:N] 占位符，降级为程序化插入", len(llm_images)
+            )
+            purpose_by_url = {
+                str(img.get("url")): str(img.get("purpose") or "")
+                for img in llm_images
+                if isinstance(img, dict) and img.get("url")
+            }
+            selected_urls = set(purpose_by_url)
+            chosen = [im for im in ctx.images if im.get("url") in selected_urls] or ctx.images
+            md = insert_images_into_markdown(md, chosen, ctx.image_descriptions)
+
+            # 关键词匹配也可能一无所获（图片上下文与正文无共同关键词），
+            # 此时直接追加到文末——宁可位置不完美，也不能静默丢图。
+            missing = [im for im in chosen if str(im.get("url") or "") not in md]
+            if missing:
+                logger.warning("关键词匹配未命中，改为追加 %d 张图片到文末", len(missing))
+                blocks = [
+                    f"![{purpose_by_url.get(str(im.get('url')), '图片')[:80]}]({im.get('url')})"
+                    for im in missing
+                ]
+                md = md.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
 
     # 清除所有未替换的 [IMG:N] 占位符
     leftover = re.findall(r"\[IMG:\d+\]", md)

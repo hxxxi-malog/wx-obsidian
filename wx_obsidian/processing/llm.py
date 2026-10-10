@@ -18,6 +18,19 @@ from wx_obsidian.processing.models import ImageDescription
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# 输出 token 预算
+# ---------------------------------------------------------------------------
+
+# 推理型模型（deepseek-flash）会先产出 reasoning token，再输出 JSON 正文。
+# 预算不足时 JSON 从尾部被截断，而 body_sections（含图片占位符）恰好排在 schema 末尾。
+# 实测：同一篇文章 prompt_len=19954 时按旧规则只给 9977，直接跑到 length 上限被截断；
+# 给到 16384 后 completion 仅用 7839 即正常 stop。
+DEFAULT_MIN_OUTPUT_TOKENS = 16384
+# 上限：DeepSeek 实测可接受 65536，长文章可适当调大 llm.max_output_tokens
+DEFAULT_MAX_OUTPUT_CEILING = 32768
+
+
+# ---------------------------------------------------------------------------
 # Prompt 模板
 # ---------------------------------------------------------------------------
 
@@ -395,19 +408,27 @@ def _call_llm(
     base_url = llm_cfg.get(
         "base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
-    model = llm_cfg.get("model", os.environ.get("MODEL_NAME", "deepseek-v4-pro"))
+    model = llm_cfg.get("model", os.environ.get("MODEL_NAME", "deepseek-flash"))
 
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY 未设置")
 
-    base_max = llm_cfg.get("max_tokens", 16384)
-    # 动态 max_tokens：长 prompt 需要更多 output token
-    max_tokens = min(16384, max(base_max, (len(system_prompt) + len(user_prompt)) // 2))
+    base_max = int(llm_cfg.get("max_tokens", DEFAULT_MIN_OUTPUT_TOKENS))
+    # 输出预算必须为 reasoning 预留空间：推理型模型（deepseek-flash）会先消耗
+    # 大量 reasoning token，预算不足时 JSON 会从尾部被截断——而 body_sections
+    # 恰好在 schema 最后，截断后图片占位符 [IMG:N] 会整段丢失。
+    #
+    # 原来的 `min(16384, max(base_max, prompt_len // 2))` 有反直觉缺陷：
+    # prompt 越长给得越多，而短 prompt（19954 字符）只给到 9977，实测正
+    # 命中该上限被截断。故改为「下限兜底 + 上限放开」。
+    ceiling = int(llm_cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_CEILING))
+    prompt_len = len(system_prompt) + len(user_prompt)
+    max_tokens = min(ceiling, max(base_max, prompt_len // 2, DEFAULT_MIN_OUTPUT_TOKENS))
     logger.info(
         "_call_llm: model=%s max_tokens=%d prompt_len=%d",
         model,
         max_tokens,
-        len(system_prompt) + len(user_prompt),
+        prompt_len,
     )
 
     resp = requests.post(
@@ -506,7 +527,7 @@ def fix_format_issues(
     base_url = llm_cfg.get(
         "base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
-    model = llm_cfg.get("model", os.environ.get("MODEL_NAME", "deepseek-v4-pro"))
+    model = llm_cfg.get("model", os.environ.get("MODEL_NAME", "deepseek-flash"))
 
     if not api_key:
         return None
