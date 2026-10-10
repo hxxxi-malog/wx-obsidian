@@ -14,7 +14,7 @@
 ## 核心特性
 
 - **CLI + TUI 双模式**：命令行批量处理 + [Textual](https://textual.textualize.io/) 终端图形界面
-- **全自动抓取**：通过 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 定时拉取公众号文章，增量处理不重复
+- **增量抓取**：通过 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 拉取公众号文章，按 `processed.json` 去重，不重复处理
 - **批量并行处理**：ThreadPoolExecutor 并行处理多篇文章，指数退避重试（最多 3 次，覆盖 429/5xx/网络错误）
 - **多模态 Vision**：DeepSeek 视觉模型（`deepseek-flash`）识别文章图片，为 LLM 提供语义描述，无 Vision 时自动降级到纯文本 + 关键词匹配
 - **3-Skill 系统**：模块化控制输出风格，写作风格、分类规则、元数据格式独立配置，改 Skill 即改笔记风格
@@ -23,7 +23,7 @@
 - **混合关联**：SQLite FTS5 全文检索 + jieba 分词 + 概念模糊匹配 + 标签 Jaccard，自动计算文章间相似度并持久化索引
 - **级联删除**：一键删除文章及其所有关联数据（MOC 条目、概念页面、归档、processed.json）
 - **格式保障**：自动校验修复 + mistune 结构性检测 + LLM 反馈修正，三层格式保障
-- **定时调度**：APScheduler 集成，支持 cron 定时抓取和处理
+- **应用内调度（可选）**：APScheduler 集成，TUI 运行时按 cron 抓取与处理；不跑 TUI 时用 `./run.sh` 手动触发
 - **可切换模型渠道**：`llm.active` / `vision.active` 指向任意 OpenAI 兼容渠道，加一个 provider 即可换模型，无需改代码
 
 ## Quick Start
@@ -95,7 +95,14 @@ python process_articles.py
 
 # 只处理 5 篇（试跑）
 python process_articles.py --limit 5
+
+# 或者用封装脚本：输出同时追加到 logs/run.log
+./run.sh
+./run.sh --limit 5
 ```
+
+> 本项目**没有系统级定时任务**（原 macOS LaunchAgent 因 TCC 无法读取 `~/Downloads`，41 次全部失败，已移除）。
+> 需要自动化就用 TUI 的 Scheduler 界面，它只在应用运行期间生效。
 
 ### 5. 查看结果
 
@@ -127,7 +134,7 @@ python process_articles.py tui
 | Feeds | 公众号订阅管理 |
 | Config | LLM / Vision / Obsidian 配置编辑、连通性测试 |
 | Fetch | 手动触发文章抓取与处理 |
-| Scheduler | 定时任务管理（cron 表达式配置） |
+| Scheduler | 应用内定时任务（cron 表达式；需保持 TUI 运行） |
 
 ### 级联删除
 
@@ -225,7 +232,7 @@ wx-obsidian/
 ├── deploy/we-mp-rss/            # 数据源部署（派生镜像 + 发布时间回填补丁 + 配置）
 ├── pyproject.toml               # Python 项目配置 + ruff/mypy 配置
 ├── .env.example                 # 环境变量模板
-├── run.sh                       # 定时任务启动脚本（launchd 每日调用）
+├── run.sh                       # 手动跑一轮的启动脚本（./run.sh [--limit N]）
 │
 ├── prompts/
 │   ├── summarize_article.txt    # 主 prompt（string.Template, $variable 占位符）
@@ -243,7 +250,7 @@ wx-obsidian/
     ├── config.py                # 旧版配置读取（processed.json, .env, Skill 加载）
     ├── models.py                # 全局数据模型（ProcessingResult, HealthStatus, Feed 等）
     ├── batch.py                 # 批量并行处理 + 指数退避重试
-    ├── scheduler.py             # 定时任务调度（APScheduler AsyncIOScheduler）
+    ├── scheduler.py             # 应用内定时调度（APScheduler，仅应用运行期间生效）
     ├── sources/
     │   ├── base.py              # ArticleSource 协议（编排层只依赖此抽象）
     │   ├── factory.py           # 数据源工厂（按 WX_SOURCE / source.type 选择）

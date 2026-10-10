@@ -168,6 +168,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 - Path safety: LLM-returned category/sub_topic names are sanitized with `re.sub(r'[<>:"/\\|?*]', "_", ...)`.
 - Images are inserted programmatically (not by LLM) via keyword-overlap matching between image context and markdown sections.
 - `run.sh` is self-contained: config and keys come from `~/.wx-obsidian/` (`config.json` + `.env`).
+- 没有系统级定时任务（原 macOS LaunchAgent 因 macOS 15 TCC 读不到 `~/Downloads`，已移除）：手动跑 `./run.sh [--limit N]` 或 `python process_articles.py`；应用内 APScheduler 仅在 TUI 运行期间生效。
 - Model channels are switchable through `llm.active` / `vision.active` + `providers`; both default to `deepseek-flash` (supports image input).
 
 ## Harness 开发范式

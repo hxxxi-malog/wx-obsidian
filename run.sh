@@ -1,10 +1,21 @@
 #!/bin/bash
-# 定时抓取入口（launchd: com.malog.wx-knowledge-base）。
+# 手动跑一轮：抓取 → Vision → LLM → 写笔记。
 #
-# 配置与密钥统一由 ~/.wx-obsidian/ 提供（config.json + .env），
-# 应用启动时会自行加载，这里不再从其它项目 source 环境变量。
+# 为什么没有系统级定时任务：原来的 macOS LaunchAgent（每日 9:03）在 macOS 15 的
+# TCC 下无法读取 ~/Downloads 里的脚本与 vault —— 实测 launchd.err 41 次全部是
+# "Operation not permitted"，且只把仓库搬出 ~/Downloads 也没用（vault 也在里面）。
+# 需要自动化时用 TUI 的 Scheduler 界面（APScheduler，仅在应用运行期间生效）。
+#
+# 用法：
+#   ./run.sh                # 处理所有未处理文章
+#   ./run.sh --limit 3      # 只处理 3 篇
+#   ./run.sh --force        # 强制重新处理
 set -euo pipefail
 
 cd "$(dirname "$0")"
 mkdir -p logs
-exec .venv/bin/python process_articles.py >> logs/run.log 2>&1
+
+export PYTHONUNBUFFERED=1
+# 同时打到终端并追加进日志，方便手动观察进度
+.venv/bin/python process_articles.py "$@" 2>&1 | tee -a logs/run.log
+exit "${PIPESTATUS[0]}"
