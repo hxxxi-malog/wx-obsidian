@@ -16,9 +16,6 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 
-# Tests
-tests/
-
 # IDE
 .idea/
 .vscode/
