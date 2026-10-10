@@ -52,12 +52,24 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "vault_path": "",
         "articles_dir": "公众号文章",
     },
+    # 文章数据源。type 可用 we_mp_rss（默认）或 wewe（旧源，回退用）；
+    # 也可用环境变量 WX_SOURCE 临时覆盖，无需改配置。
+    "source": {
+        "type": "we_mp_rss",
+        "base_url": "http://localhost:8001",
+        "timeout": 15,
+        "token": "",
+    },
+    # 旧 WeWe RSS 配置：已归档，仅在新源失败时作为回退保留。
     "wewe_rss": {
         "base_url": "http://localhost:4000",
     },
     "fetch": {
         "max_days": 7,
         "max_workers": 5,
+        # 抓取窗口（篇）。we-mp-rss 的 /feed/*.json 连正文一起返回，
+        # 调大会显著增加传输量；调小则可能漏掉窗口外的文章。
+        "feed_limit": 300,
     },
     "scheduler": {
         "fetch_cron": "0 */2 * * *",
@@ -84,10 +96,15 @@ class ConfigManager:
     # -- 读写 ---------------------------------------------------------------
 
     def load(self) -> dict[str, Any]:
-        """加载配置。优先读 config.json，回退到旧 config.yaml。"""
+        """加载配置。优先读 config.json，回退到旧 config.yaml。
+
+        加载后会补齐缺失的默认字段，保证旧配置（例如只有 wewe_rss、
+        没有 source 的 config.json）也能获得新数据源配置段。
+        """
         if self._config_file.exists():
             try:
-                self._config = json.loads(self._config_file.read_text(encoding="utf-8"))
+                loaded = json.loads(self._config_file.read_text(encoding="utf-8"))
+                self._config = self._merge_with_defaults(loaded)
                 self._loaded = True
                 return self._config
             except json.JSONDecodeError:
@@ -104,7 +121,7 @@ class ConfigManager:
             except (yaml.YAMLError, OSError):
                 pass
 
-        self._config = dict(_DEFAULT_CONFIG)
+        self._config = json.loads(json.dumps(_DEFAULT_CONFIG))
         self._loaded = True
         return self._config
 
@@ -196,9 +213,18 @@ class ConfigManager:
             elif not os.access(vp.parent, os.W_OK):
                 errors.append(f"obsidian.vault_path 父目录不可写: {vault_path}")
 
-        wewe_url = self.get("wewe_rss.base_url", "")
-        if not wewe_url:
-            errors.append("wewe_rss.base_url 未设置")
+        source_type = self.get("source.type", "")
+        source_url = self.get("source.base_url", "")
+        if not source_type:
+            errors.append("source.type 未设置")
+        elif source_type not in ("we_mp_rss", "wewe"):
+            errors.append(f"source.type 取值非法: {source_type}（应为 we_mp_rss 或 wewe）")
+        if not source_url:
+            errors.append("source.base_url 未设置")
+
+        # 回退源：仅在选择旧源时需要
+        if source_type == "wewe" and not self.get("wewe_rss.base_url", ""):
+            errors.append("source.type=wewe 但 wewe_rss.base_url 未设置")
 
         # .env 必须字段
         env = self._load_env()
@@ -311,10 +337,29 @@ class ConfigManager:
             label="Vision",
         )
 
+    def test_source_connection(self) -> ConnectionTestResult:
+        """测试当前文章数据源的连通性（按 source.type 分派）。"""
+        source_type = self.get("source.type", "we_mp_rss")
+        if source_type == "wewe":
+            return self._test_endpoint(
+                self.get("wewe_rss.base_url", "http://localhost:4000") + "/feeds/all.json",
+                "WeWe RSS",
+            )
+        # we-mp-rss：/feed/all.json 是无需鉴权的只读接口，适合做探活
+        return self._test_endpoint(
+            self.get("source.base_url", "http://localhost:8001") + "/feed/all.json?limit=1",
+            "we-mp-rss",
+        )
+
     def test_wewe_rss_connection(self) -> ConnectionTestResult:
-        """测试 WeWe RSS 连通性。"""
-        base_url = self.get("wewe_rss.base_url", "http://localhost:4000")
-        url = f"{base_url}/feeds/all.json"
+        """旧接口保留：直接测 WeWe RSS 连通性（回退排查用）。"""
+        return self._test_endpoint(
+            self.get("wewe_rss.base_url", "http://localhost:4000") + "/feeds/all.json",
+            "WeWe RSS",
+        )
+
+    def _test_endpoint(self, url: str, label: str) -> ConnectionTestResult:
+        """GET 探活并返回统一的连通性结果。"""
         start = time.monotonic()
         try:
             resp = requests.get(url, timeout=5)
@@ -323,12 +368,12 @@ class ConfigManager:
                 return ConnectionTestResult(
                     success=True,
                     latency_ms=round(elapsed, 1),
-                    message="WeWe RSS 可达",
+                    message=f"{label} 可达",
                 )
             return ConnectionTestResult(
                 success=False,
                 latency_ms=round(elapsed, 1),
-                message=f"HTTP {resp.status_code}",
+                message=f"{label} HTTP {resp.status_code}",
             )
         except requests.RequestException as e:
             elapsed = (time.monotonic() - start) * 1000
@@ -343,7 +388,7 @@ class ConfigManager:
         return {
             "llm": self.test_llm_connection(),
             "vision": self.test_vision_connection(),
-            "wewe_rss": self.test_wewe_rss_connection(),
+            "source": self.test_source_connection(),
         }
 
     # -- 内部方法 -----------------------------------------------------------

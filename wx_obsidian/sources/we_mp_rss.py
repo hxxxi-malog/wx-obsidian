@@ -14,6 +14,7 @@ we-mp-rss 为 WeWe RSS 的替代数据源（详见 docs/design-docs/wewe-rss-rep
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from wx_obsidian.models import Feed
+from wx_obsidian.models import AccountStatus, Feed
 
 logger = logging.getLogger(__name__)
 
@@ -288,3 +289,153 @@ class WeMpRssClient:
                 )
             )
         return feeds
+
+    # -- ArticleSource 协议方法 ---------------------------------------------
+
+    def get_feeds(self) -> list[Feed]:
+        """已订阅的公众号列表（ArticleSource 协议名）。"""
+        return self.list_feeds()
+
+    def get_account_status(self) -> AccountStatus:
+        """微信读书登录态。
+
+        上游 `GET /api/v1/wx/weread` 需要 Bearer Token；未配置 token 或请求失败时
+        返回「未登录」，调用方据此提示用户去 /weread 扫码授权。
+        """
+        payload = self._get_json("/api/v1/wx/weread")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return AccountStatus(is_logged_in=False)
+
+        has_cookie = bool(data.get("has_cookie"))
+        return AccountStatus(
+            is_logged_in=has_cookie,
+            username=str(data.get("name") or "") or None,
+            need_refresh=not has_cookie,
+        )
+
+    def add_feed(self, article_url: str) -> Feed | None:
+        """we-mp-rss 不支持「按文章链接添加公众号」。
+
+        旧源 WeWe RSS 有 `platform.getMpInfo(wxsLink)` 可按链接反查公众号，
+        we-mp-rss 没有等价接口。请改用 `search_accounts()` 按名称搜索后
+        `subscribe()`。此处返回 None 并告警，调用方需给出相应提示。
+        """
+        logger.warning(
+            "we-mp-rss 数据源不支持按文章链接添加公众号（url=%s），请改用名称搜索订阅",
+            article_url[:80],
+        )
+        return None
+
+    def delete_feed(self, feed_id: str) -> bool:
+        """取消订阅：`DELETE /api/v1/wx/mps/{feed_id}`。"""
+        try:
+            response = requests.delete(
+                f"{self._base_url}/api/v1/wx/mps/{feed_id}",
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("取消订阅失败 (%s): %s", feed_id, exc)
+            return False
+        return True
+
+    def refresh_cookie(self) -> bool:
+        """探测数据源可用性。
+
+        we-mp-rss 自行维护微信读书 Cookie（内置浏览器定时刷新），本项目不持有凭据，
+        因此这里只反映服务可达性，不代表登录态是否有效。
+        """
+        return self.is_healthy()
+
+    def get_login_url(self) -> str:
+        """微信读书扫码授权页面。"""
+        return f"{self._base_url}/weread"
+
+    # -- 订阅管理（TUI 用） --------------------------------------------------
+
+    def search_accounts(self, query: str, limit: int = 10) -> list[Feed]:
+        """按名称搜索公众号：`GET /api/v1/wx/mps/search/{kw}`（需凭据）。"""
+        if not query.strip():
+            return []
+        payload = self._get_json(f"/api/v1/wx/mps/search/{query.strip()}", {"limit": limit})
+        data = payload.get("data")
+        rows = data.get("list") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            return []
+
+        feeds: list[Feed] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            feed_id = str(row.get("id") or row.get("mp_id") or "")
+            name = str(row.get("mp_name") or row.get("nickname") or row.get("name") or "")
+            if not name:
+                continue
+            feeds.append(
+                Feed(
+                    id=feed_id,
+                    name=name,
+                    intro=str(row.get("mp_intro") or row.get("intro") or ""),
+                    cover=str(row.get("mp_cover") or row.get("round_head_img") or ""),
+                )
+            )
+        return feeds
+
+    def subscribe(self, feed_id: str, name: str = "") -> bool:
+        """添加订阅：`POST /api/v1/wx/mps`。
+
+        注意上游约定：请求体的 `mp_id` 必须是 `MP_WXS_<数字>` 中**数字部分的
+        base64**，服务端解码后拼成 `MP_WXS_<数字>` 作为主键（见 upstream
+        apis/mps.py add_mp）。传错会得到错误的 feed id。
+        """
+        suffix = feed_id.replace("MP_WXS_", "")
+        payload = {
+            "mp_name": name or feed_id,
+            "mp_id": base64.b64encode(suffix.encode("utf-8")).decode("ascii"),
+            "mp_cover": "",
+            "avatar": "",
+            "mp_intro": "",
+        }
+        response = self._post_json("/api/v1/wx/mps", payload)
+        return bool(response.get("code") == 0)
+
+    def trigger_update(self, feed_id: str) -> bool:
+        """立即触发某公众号的采集：`GET /api/v1/wx/mps/update/{mp_id}`。"""
+        response = self._get_json(f"/api/v1/wx/mps/update/{feed_id}")
+        return bool(response.get("code") == 0)
+
+    # -- 内部请求封装 --------------------------------------------------------
+
+    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """GET 并解析 JSON；任何失败都返回空 dict（调用方按空值降级）。"""
+        try:
+            response = requests.get(
+                f"{self._base_url}{path}",
+                params=params,
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("we-mp-rss 请求失败 %s: %s", path, exc)
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST JSON 并解析响应；任何失败都返回空 dict。"""
+        try:
+            response = requests.post(
+                f"{self._base_url}{path}",
+                json=body,
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("we-mp-rss 请求失败 POST %s: %s", path, exc)
+            return {}
+        return payload if isinstance(payload, dict) else {}

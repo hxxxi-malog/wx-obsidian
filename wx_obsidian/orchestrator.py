@@ -9,7 +9,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import requests
 
@@ -49,7 +49,9 @@ from wx_obsidian.processing.pipeline import run_pipeline
 from wx_obsidian.processing.similarity import compute_related
 from wx_obsidian.processing.vision import describe_images
 from wx_obsidian.sources.rss import fetch_article_content_and_images, fetch_articles
-from wx_obsidian.wewe_rss import WeWeRSSClient
+
+if TYPE_CHECKING:
+    from wx_obsidian.sources.base import ArticleSource
 
 logger = logging.getLogger(__name__)
 
@@ -504,14 +506,14 @@ class Orchestrator:
     def __init__(
         self,
         config_manager: ConfigManager,
-        wewe_rss: WeWeRSSClient,
+        source: ArticleSource,
     ) -> None:
         self._config_manager = config_manager
-        self._wewe_rss = wewe_rss
+        self._source = source
 
     def get_health_status(self) -> HealthStatus:
         """检测所有组件健康状态。"""
-        wewe = self._config_manager.test_wewe_rss_connection()
+        source = self._config_manager.test_source_connection()
         llm = self._config_manager.test_llm_connection()
         vision = self._config_manager.test_vision_connection()
 
@@ -527,7 +529,7 @@ class Orchestrator:
                 )
 
         return HealthStatus(
-            wewe_rss=wewe,
+            source=source,
             llm_api=llm,
             vision_api=vision,
             vault_path=vault,
@@ -579,35 +581,35 @@ class Orchestrator:
         except (json.JSONDecodeError, OSError):
             return []
 
-    # -- WeWe RSS 代理方法（TUI 通过 orchestrator 调用） ----------------------
+    # -- 数据源代理方法（TUI 通过 orchestrator 调用） ------------------------
 
     def get_account_status(self) -> AccountStatus:
-        """获取微信读书登录状态。"""
-        return self._wewe_rss.get_account_status()
+        """获取数据源账号登录状态。"""
+        return self._source.get_account_status()
 
-    def is_wewe_healthy(self) -> bool:
-        """WeWe RSS 服务是否可达。"""
-        return self._wewe_rss.is_healthy()
+    def is_source_healthy(self) -> bool:
+        """数据源服务是否可达。"""
+        return self._source.is_healthy()
 
     def get_feeds(self) -> list[Feed]:
-        """获取已添加的公众号列表。"""
-        return self._wewe_rss.get_feeds()
+        """获取已订阅的公众号列表。"""
+        return self._source.get_feeds()
 
     def add_feed(self, article_url: str) -> Feed | None:
-        """通过文章链接添加公众号。"""
-        return self._wewe_rss.add_feed(article_url)
+        """通过文章链接添加公众号（仅旧源 WeWe RSS 支持）。"""
+        return self._source.add_feed(article_url)
 
     def delete_feed(self, feed_id: str) -> bool:
-        """删除公众号。"""
-        return self._wewe_rss.delete_feed(feed_id)
+        """取消订阅。"""
+        return self._source.delete_feed(feed_id)
 
     def refresh_cookie(self) -> bool:
-        """刷新微信读书 cookie。"""
-        return self._wewe_rss.refresh_cookie()
+        """刷新登录态（we-mp-rss 自行维护读书 Cookie，仅探测可达性）。"""
+        return self._source.refresh_cookie()
 
     def get_login_url(self) -> str:
-        """获取 WeWe RSS 登录页面 URL。"""
-        return self._wewe_rss.get_login_url()
+        """获取数据源的登录/授权页面 URL。"""
+        return self._source.get_login_url()
 
     async def fetch_and_process(
         self,
@@ -646,9 +648,11 @@ class Orchestrator:
 
         # 构建 config dict（兼容需要 config 参数的旧函数）
         config: dict[str, Any] = {
+            "source": self._config_manager.get("source", {}),
             "wewe_rss": {
                 "base_url": self._config_manager.get("wewe_rss.base_url", "http://localhost:4000")
             },
+            "fetch": self._config_manager.get("fetch", {}),
             "obsidian": {"vault_path": str(vault_path), "articles_dir": articles_dir_name},
             "categories": self._config_manager.get("categories", []),
             "llm": self._config_manager.get("llm", {}),
@@ -657,7 +661,7 @@ class Orchestrator:
 
         # 获取文章列表
         try:
-            articles = fetch_articles(config, wewe_rss=self._wewe_rss)
+            articles = fetch_articles(config, source=self._source)
         except requests.RequestException as e:
             logger.error("获取文章失败: %s", e)
             return []

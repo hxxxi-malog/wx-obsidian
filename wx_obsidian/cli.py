@@ -28,15 +28,19 @@ def main() -> None:
 
     from wx_obsidian.config_manager import ConfigManager
     from wx_obsidian.orchestrator import Orchestrator
-    from wx_obsidian.wewe_rss import WeWeRSSClient
+    from wx_obsidian.sources.factory import create_article_source, resolve_source_type
 
     config_manager = ConfigManager()
     config_manager.load()
 
-    wewe_url = config_manager.get("wewe_rss.base_url", "http://localhost:4000")
-    auth_code = config_manager.get("wewe_rss.auth_code", "")
-    wewe_rss = WeWeRSSClient(wewe_url, auth_code)
-    orchestrator = Orchestrator(config_manager, wewe_rss)
+    source = create_article_source(
+        resolve_source_type(config_manager.get("source.type", "")),
+        base_url=config_manager.get("source.base_url", ""),
+        timeout=int(config_manager.get("source.timeout", 15) or 15),
+        token=config_manager.get("source.token", ""),
+        wewe_auth_code=config_manager.get("wewe_rss.auth_code", ""),
+    )
+    orchestrator = Orchestrator(config_manager, source)
 
     import asyncio
 

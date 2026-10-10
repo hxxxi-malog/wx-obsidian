@@ -87,13 +87,14 @@ class FeedsScreen(Screen[None]):
                 await self._load_feeds()
             else:
                 app.show_notification(
-                    "添加失败: 链接无效或无法识别公众号，请确认是微信公众号文章链接",
+                    f"添加失败: 当前数据源（{app.source_label}）不支持按文章链接添加公众号。"
+                    "we-mp-rss 请在 http://127.0.0.1:8001 的订阅管理里按名称添加",
                     severity="error",
                 )
         except http_requests.ConnectionError:
-            logger.warning("添加公众号失败: 无法连接 WeWe RSS 服务")
+            logger.warning("添加公众号失败: 无法连接数据源服务")
             app.show_notification(
-                "添加失败: 无法连接 WeWe RSS 服务，请检查服务是否运行",
+                f"添加失败: 无法连接数据源（{app.source_label}），请检查服务是否运行",
                 severity="error",
             )
         except http_requests.RequestException as e:

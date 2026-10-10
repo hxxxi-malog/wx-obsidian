@@ -109,13 +109,17 @@ class ConfigScreen(Screen[None]):
             yield StatusIndicator("Vision", id="vision-status")
             yield Button("测试连通性", id="test-vision-btn", variant="primary")
 
-            yield Static("\n  WeWe RSS", id="wewe-label")
-            yield Static("  服务地址:", id="wewe-url-label")
-            yield Input(placeholder="http://localhost:4000", id="wewe-url-input")
-            yield Static("  授权码:", id="wewe-auth-label")
+            yield Static("\n  文章数据源", id="source-label")
+            yield Static("  类型 (we_mp_rss / wewe):", id="source-type-label")
+            yield Input(placeholder="we_mp_rss", id="source-type-input")
+            yield Static("  服务地址:", id="source-url-label")
+            yield Input(placeholder="http://localhost:8001", id="source-url-input")
+            yield Static("  访问令牌 (we-mp-rss 管理接口, 可选):", id="source-token-label")
+            yield Input(placeholder="Bearer token", id="source-token-input")
+            yield Static("  旧源授权码 (wewe 回退用):", id="wewe-auth-label")
             yield Input(placeholder="auth code", id="wewe-auth-input")
-            yield StatusIndicator("WeWe RSS", id="wewe-status")
-            yield Button("测试连通性", id="test-wewe-btn", variant="primary")
+            yield StatusIndicator("数据源", id="source-status")
+            yield Button("测试连通性", id="test-source-btn", variant="primary")
 
             yield Static("\n  知识库路径", id="vault-label")
             yield Input(placeholder="/path/to/obsidian/vault", id="vault-input")
@@ -146,9 +150,11 @@ class ConfigScreen(Screen[None]):
         self.query_one("#vision-url-input", Input).value = cm.get("vision.base_url", "")
         self.query_one("#vision-model-input", Input).value = cm.get("vision.model", "")
 
-        # WeWe RSS
-        self.query_one("#wewe-url-input", Input).value = cm.get("wewe_rss.base_url", "")
-        self.query_one("#wewe-auth-input", Input).value = cm.get_env("AUTH_CODE")
+        # 文章数据源
+        self.query_one("#source-type-input", Input).value = cm.get("source.type", "")
+        self.query_one("#source-url-input", Input).value = cm.get("source.base_url", "")
+        self.query_one("#source-token-input", Input).value = cm.get("source.token", "")
+        self.query_one("#wewe-auth-input", Input).value = cm.get("wewe_rss.auth_code", "")
 
         # 其他
         self.query_one("#vault-input", Input).value = cm.get("obsidian.vault_path", "")
@@ -179,10 +185,10 @@ class ConfigScreen(Screen[None]):
                     app.config_manager.test_vision_connection, "#vision-status", "Vision"
                 )
             )
-        elif btn_id == "test-wewe-btn":
+        elif btn_id == "test-source-btn":
             asyncio.create_task(
                 self._test_connection(
-                    app.config_manager.test_wewe_rss_connection, "#wewe-status", "WeWe RSS"
+                    app.config_manager.test_source_connection, "#source-status", "数据源"
                 )
             )
         elif btn_id == "save-btn":
@@ -209,13 +215,19 @@ class ConfigScreen(Screen[None]):
             if vision_model:
                 cm.set("vision.model", vision_model)
 
-            # WeWe RSS
-            wewe_url = self.query_one("#wewe-url-input", Input).value.strip()
-            if wewe_url:
-                cm.set("wewe_rss.base_url", wewe_url)
+            # 文章数据源
+            source_type = self.query_one("#source-type-input", Input).value.strip()
+            if source_type:
+                cm.set("source.type", source_type)
+            source_url = self.query_one("#source-url-input", Input).value.strip()
+            if source_url:
+                cm.set("source.base_url", source_url)
+            source_token = self.query_one("#source-token-input", Input).value.strip()
+            if source_token:
+                cm.set("source.token", source_token)
             wewe_auth = self.query_one("#wewe-auth-input", Input).value.strip()
             if wewe_auth:
-                cm.set_env("AUTH_CODE", wewe_auth)
+                cm.set("wewe_rss.auth_code", wewe_auth)
 
             # 其他
             path = self.query_one("#vault-input", Input).value.strip()

@@ -1,4 +1,4 @@
-"""文章抓取：WeWe RSS Feed + 微信文章 URL 内容提取。"""
+"""文章抓取：数据源抽象（we-mp-rss / WeWe RSS）+ 微信文章 URL 内容提取。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import requests
 from wx_obsidian.config import MAX_ARTICLE_LENGTH
 
 if TYPE_CHECKING:
-    from wx_obsidian.wewe_rss import WeWeRSSClient
+    from wx_obsidian.sources.base import ArticleSource
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,9 @@ _fetch_last_time = 0.0
 _fetch_time_lock = threading.Lock()
 _FETCH_MIN_INTERVAL = 0.5
 
-# WeWe RSS /feeds/all.json 默认 limit=30，会导致文章被截断。
-# 显式请求足够大的 limit 以获取全部文章。
+# 抓取窗口上限的兜底值（仅回退路径与未配置 fetch.feed_limit 时使用）。
+# 注意：we-mp-rss 的 /feed/*.json 会连正文一起返回，limit 过大会显著放大传输量，
+# 因此默认值由 config 的 fetch.feed_limit 控制（见 config_manager._DEFAULT_CONFIG）。
 _FEED_LIMIT = 1000
 
 # 预编译正则
@@ -123,31 +124,61 @@ def fetch_article_content_and_images(
 
 def fetch_articles(
     config: dict[str, Any],
-    wewe_rss: WeWeRSSClient | None = None,
+    source: ArticleSource | None = None,
 ) -> list[dict[str, Any]]:
-    """从 WeWe RSS 获取文章列表。
+    """获取文章列表。
 
-    优先使用 tRPC API（通过 wewe_rss 参数），获取含真实 publishTime 的文章。
-    回退到 JSON Feed API。
+    优先使用数据源抽象（`source.get_articles()`，具体实现由 WX_SOURCE 决定）；
+    未提供或返回空时回退到旧 WeWe RSS 的 JSON Feed，作为迁移期的安全网。
 
     Args:
-        config: 配置字典，需包含 wewe_rss.base_url。
-        wewe_rss: WeWeRSSClient 实例（可选）。提供时使用 tRPC API。
-    """
-    if wewe_rss is not None:
-        try:
-            articles = wewe_rss.get_articles(limit=_FEED_LIMIT)
-            if articles:
-                logger.info("通过 tRPC API 获取 %d 篇文章", len(articles))
-                return articles
-            logger.warning("tRPC API 返回空列表，回退到 JSON Feed")
-        except (requests.RequestException, ValueError) as e:
-            logger.warning("tRPC API 获取失败，回退到 JSON Feed: %s", e)
+        config: 配置字典。回退路径需要 `wewe_rss.base_url`；
+            抓取窗口由 `fetch.feed_limit` 控制。
+        source: ArticleSource 实现（可选）。
 
-    base_url = config["wewe_rss"]["base_url"]
+    Returns:
+        统一契约的文章 dict 列表（字段一致性由各实现自行保证）。
+    """
+    limit = _resolve_feed_limit(config)
+
+    if source is not None:
+        try:
+            articles = source.get_articles(limit=limit)
+            if articles:
+                if len(articles) >= limit:
+                    logger.warning(
+                        "文章数达到上限 %d，抓取窗口可能被截断；可调大 fetch.feed_limit", limit
+                    )
+                logger.info("通过数据源获取 %d 篇文章", len(articles))
+                return articles
+            logger.warning("数据源返回空列表，回退到 JSON Feed")
+        except (requests.RequestException, ValueError) as e:
+            logger.warning("数据源获取失败，回退到 JSON Feed: %s", e)
+
+    return _fetch_from_json_feed(config, limit)
+
+
+def _resolve_feed_limit(config: dict[str, Any]) -> int:
+    """抓取窗口大小；未配置或非法时退回 _FEED_LIMIT。"""
+    fetch_config = config.get("fetch")
+    if isinstance(fetch_config, dict):
+        configured = fetch_config.get("feed_limit")
+        if isinstance(configured, int) and configured > 0:
+            return configured
+    return _FEED_LIMIT
+
+
+def _fetch_from_json_feed(config: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    """旧 WeWe RSS JSON Feed 回退路径（`/feeds/all.json`）。"""
+    wewe_config = config.get("wewe_rss")
+    base_url = wewe_config.get("base_url", "") if isinstance(wewe_config, dict) else ""
+    if not base_url:
+        logger.error("未配置 wewe_rss.base_url，无法回退到 JSON Feed")
+        return []
+
     resp = requests.get(
         f"{base_url}/feeds/all.json",
-        params={"limit": _FEED_LIMIT},
+        params={"limit": limit},
         timeout=15,
     )
     resp.raise_for_status()

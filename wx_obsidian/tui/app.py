@@ -13,6 +13,11 @@ from textual.screen import Screen
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.orchestrator import Orchestrator
 from wx_obsidian.scheduler import TaskScheduler
+from wx_obsidian.sources.factory import (
+    SOURCE_WE_MP_RSS,
+    create_article_source,
+    resolve_source_type,
+)
 from wx_obsidian.tui.screens.account import AccountScreen
 from wx_obsidian.tui.screens.articles import ArticlesScreen
 from wx_obsidian.tui.screens.config import ConfigScreen
@@ -21,7 +26,6 @@ from wx_obsidian.tui.screens.feeds import FeedsScreen
 from wx_obsidian.tui.screens.fetch import FetchScreen
 from wx_obsidian.tui.screens.home import HomeScreen
 from wx_obsidian.tui.screens.scheduler import SchedulerScreen
-from wx_obsidian.wewe_rss import WeWeRSSClient
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +70,22 @@ class WxObsidianApp(App[None]):
     def __init__(self, config_manager: ConfigManager | None = None) -> None:
         super().__init__()
         self.config_manager = config_manager or ConfigManager()
-        wewe_url = self.config_manager.get("wewe_rss.base_url", "http://localhost:4000")
-        auth_code = self.config_manager.get("wewe_rss.auth_code", "")
-        self._wewe_rss = WeWeRSSClient(wewe_url, auth_code)
-        self.orchestrator = Orchestrator(self.config_manager, self._wewe_rss)
+        self.config_manager.load()
+        self.source_type = resolve_source_type(self.config_manager.get("source.type", ""))
+        self.source = create_article_source(
+            self.source_type,
+            base_url=self.config_manager.get("source.base_url", ""),
+            timeout=int(self.config_manager.get("source.timeout", 15) or 15),
+            token=self.config_manager.get("source.token", ""),
+            wewe_auth_code=self.config_manager.get("wewe_rss.auth_code", ""),
+        )
+        self.orchestrator = Orchestrator(self.config_manager, self.source)
         self.scheduler = TaskScheduler()
+
+    @property
+    def source_label(self) -> str:
+        """数据源的展示名（用于状态栏/健康检查文案）。"""
+        return "we-mp-rss" if self.source_type == SOURCE_WE_MP_RSS else "WeWe RSS"
 
     def on_mount(self) -> None:
         """注册屏幕并显示主页。"""

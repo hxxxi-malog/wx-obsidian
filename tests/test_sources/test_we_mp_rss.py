@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -416,13 +417,25 @@ class TestLegacyIdRegression:
         assert all(info["name"] for info in feeds.values())
 
     @pytest.mark.skipif(not _PROCESSED.exists(), reason="缺少 processed.json")
-    def test_processed_ids_are_subset_of_legacy(self) -> None:
-        """processed.json 的 363 条必须全部落在存量库中（历史兼容性实证）。"""
+    def test_historical_processed_ids_are_subset_of_legacy(self) -> None:
+        """历史已处理的 ID 必须全部落在存量库中（ID 归一化兼容性实证）。
+
+        2026-10-10 迁移时该交集恰好是 363/363。
+
+        注意：这里**不能**断言 processed.json 的总条数或「是存量库子集」——
+        迁移上线后管线会持续处理全新文章（其 ID 天然不在旧库中），
+        存量库里也还有 1525 篇尚未处理的文章随时可能被补处理。
+        因此断言改为「交集不少于历史基线」，并对新增 ID 校验格式。
+        """
         legacy_ids = {article["id"] for article in self._legacy()["articles"]}
         processed = {
             key
             for key, value in json.loads(_PROCESSED.read_text(encoding="utf-8")).items()
             if isinstance(value, dict)
         }
-        assert processed <= legacy_ids
-        assert len(processed) == 363
+        overlap = processed & legacy_ids
+        assert len(overlap) >= 363, f"历史基线 363 条未全部命中，实际 {len(overlap)}"
+
+        # 迁移后新增的 ID 也必须是合法的 22 字符 token
+        new_ids = processed - legacy_ids
+        assert all(re.fullmatch(r"[A-Za-z0-9_~-]{22}", i) for i in new_ids)

@@ -1,4 +1,4 @@
-"""容器管理屏幕：WeWe RSS 容器状态查看。"""
+"""数据源状态屏幕：文章数据源服务（we-mp-rss / WeWe RSS）探活。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from wx_obsidian.tui.widgets.status import StatusIndicator
 
 
 class ContainerScreen(Screen[None]):
-    """WeWe RSS 容器状态管理。"""
+    """数据源服务状态管理。"""
 
     BINDINGS = [Binding("escape", "app.pop_screen", "返回")]
 
@@ -26,10 +26,12 @@ class ContainerScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll():
-            yield Static("\n  WeWe RSS 容器管理\n", id="page-title")
-            yield StatusIndicator("WeWe RSS", id="wewe-status")
+            yield Static("\n  数据源服务状态\n", id="page-title")
+            yield StatusIndicator("数据源", id="source-status")
             yield Static(
-                "\n  注意: V1 仅支持 HTTP 探活，请确保容器已通过 docker-compose 启动\n", id="hint"
+                "\n  注意: 仅做 HTTP 探活，请确保数据源服务已启动\n"
+                "  we-mp-rss 默认 http://127.0.0.1:8001\n",
+                id="hint",
             )
             yield Button("刷新状态", id="refresh-btn", variant="primary")
         yield Footer()
@@ -46,20 +48,19 @@ class ContainerScreen(Screen[None]):
             self._check_task = asyncio.create_task(self._check_status())
 
     async def _check_status(self) -> None:
-        """异步检查容器状态。"""
+        """异步检查数据源状态。"""
         from wx_obsidian.tui.app import WxObsidianApp
 
         app = cast(WxObsidianApp, self.app)
+        label = app.source_label
         try:
-            healthy = await asyncio.to_thread(app.orchestrator.is_wewe_healthy)
+            healthy = await asyncio.to_thread(app.orchestrator.is_source_healthy)
             if not self.is_current:
                 return
-            self.query_one("#wewe-status", StatusIndicator).set_result(
-                "WeWe RSS", healthy, "运行中" if healthy else "未运行"
+            self.query_one("#source-status", StatusIndicator).set_result(
+                label, healthy, "运行中" if healthy else "未运行"
             )
         except Exception:
             if not self.is_current:
                 return
-            self.query_one("#wewe-status", StatusIndicator).set_result(
-                "WeWe RSS", False, "检测失败"
-            )
+            self.query_one("#source-status", StatusIndicator).set_result(label, False, "检测失败")

@@ -114,7 +114,7 @@ class FailedArticle:
 class HealthStatus:
     """系统健康状态。"""
 
-    wewe_rss: ConnectionTestResult
+    source: ConnectionTestResult
     llm_api: ConnectionTestResult
     vision_api: ConnectionTestResult | None = None
     vault_path: ConnectionTestResult | None = None
@@ -123,7 +123,7 @@ class HealthStatus:
     def overall(self) -> bool:
         """所有必须组件是否健康。"""
         return (
-            self.wewe_rss.success
+            self.source.success
             and self.llm_api.success
             and (not self.vision_api or self.vision_api.success)
             and (not self.vault_path or self.vault_path.success)

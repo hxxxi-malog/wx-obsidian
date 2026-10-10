@@ -62,7 +62,7 @@ class AccountScreen(Screen[None]):
                 "微信读书", False, "检测失败"
             )
             self.query_one("#account-info", Static).update(
-                "\n  无法连接 WeWe RSS，请检查容器是否运行\n"
+                f"\n  无法连接数据源（{app.source_label}），请检查服务是否运行\n"
             )
             return
 
