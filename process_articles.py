@@ -5,6 +5,7 @@
     python process_articles.py              # CLI 模式（默认）
     python process_articles.py --limit 5    # CLI 模式，限制处理数量
     python process_articles.py tui          # TUI 模式
+    python process_articles.py web          # Web 模式（浏览器界面）
 """
 
 import argparse
@@ -55,6 +56,23 @@ def _run_delete(query: str) -> None:
     print(f"\n已清理 {len(actions)} 项，可以重新生成该文章了")
 
 
+def _run_migrate_vault(new_vault: str, dry_run: bool) -> None:
+    """换 vault 路径：修正配置与 processed.json 里的绝对路径。"""
+    from pathlib import Path
+
+    from wx_obsidian.vault_migration import migrate_vault_path
+
+    try:
+        report = migrate_vault_path(Path(new_vault), dry_run=dry_run)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"错误: {e}")
+        return
+
+    print(report.summary())
+    if not dry_run:
+        print("\n已更新配置与 processed.json，可以正常运行了")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="公众号文章 → Obsidian 知识库处理器")
     subparsers = parser.add_subparsers(dest="command")
@@ -68,12 +86,33 @@ def main() -> None:
     # TUI 子命令
     subparsers.add_parser("tui", help="TUI 模式（终端图形界面）")
 
+    # Web 子命令
+    web_parser = subparsers.add_parser("web", help="Web 模式（浏览器界面）")
+    web_parser.add_argument("--port", type=int, default=0, help="监听端口（0=读配置，默认 8765）")
+    web_parser.add_argument("--no-open", action="store_true", help="启动后不自动打开浏览器")
+
     # delete 子命令
     delete_parser = subparsers.add_parser("delete", help="级联删除文章及其关联数据")
     delete_parser.add_argument("query", help="文章标题或 ID")
 
+    # migrate-vault 子命令
+    migrate_parser = subparsers.add_parser(
+        "migrate-vault",
+        help="换 vault 路径后修正配置与 processed.json 里的绝对路径",
+    )
+    migrate_parser.add_argument("new_vault", help="vault 新根目录（文章目录是其下的子目录）")
+    migrate_parser.add_argument("--dry-run", action="store_true", help="只统计不写入")
+
     # 无子命令时默认 CLI 模式，兼容旧用法
-    if len(sys.argv) > 1 and sys.argv[1] not in ("cli", "tui", "delete", "-h", "--help"):
+    if len(sys.argv) > 1 and sys.argv[1] not in (
+        "cli",
+        "tui",
+        "web",
+        "delete",
+        "migrate-vault",
+        "-h",
+        "--help",
+    ):
         # 旧用法：python process_articles.py --limit 5
         # 插入 "cli" 子命令
         sys.argv.insert(1, "cli")
@@ -82,10 +121,19 @@ def main() -> None:
 
     if args.command == "delete":
         _run_delete(args.query)
+    elif args.command == "migrate-vault":
+        _run_migrate_vault(args.new_vault, args.dry_run)
     elif args.command == "tui":
         from wx_obsidian.tui.app import main as tui_main
 
         tui_main()
+    elif args.command == "web":
+        from wx_obsidian.web.__main__ import main as web_main
+
+        web_argv = ["--port", str(args.port)]
+        if args.no_open:
+            web_argv.append("--no-open")
+        sys.exit(web_main(web_argv))
     else:
         # CLI 模式（默认）
         # 将参数传递给 cli.main

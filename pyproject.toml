@@ -10,6 +10,8 @@ dependencies = [
     "apscheduler>=3.10.0",
     "mistune>=3.2.1",
     "jieba>=0.42",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,10 @@ ignore = ["E501"]  # f-string prompt 模板无法拆行
 
 [tool.ruff.lint.isort]
 known-first-party = ["validate_markdown", "wx_obsidian"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 的 Body()/Query() 写在默认值里是官方用法，B008 在此属误报
+extend-immutable-calls = ["fastapi.Body", "fastapi.Query", "fastapi.Depends", "fastapi.Path"]
 
 [tool.mypy]
 python_version = "3.9"
