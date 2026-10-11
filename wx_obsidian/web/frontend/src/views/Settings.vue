@@ -25,7 +25,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DirPicker from '@/components/DirPicker.vue'
-import ConfigSection from '@/components/domain/ConfigSection.vue'
+import ConfigSection, { type ConfigSectionResult } from '@/components/domain/ConfigSection.vue'
 import SaveBar from '@/components/domain/SaveBar.vue'
 import SecretField from '@/components/domain/SecretField.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -45,7 +45,7 @@ import { useDirtyGuard } from '@/composables/useDirtyGuard'
 import { useToast } from '@/composables/useToast'
 import { ApiError, apiPost, hasCode } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
-import type { ConnectionTestResult, ConnectionTestTarget, FsPickResult } from '@/lib/api/types'
+import type { ConnectionTestTarget, FsPickResult } from '@/lib/api/types'
 import { formFromSnapshot, useConfigStore } from '@/stores/config'
 import type { ConfigForm } from '@/stores/config'
 
@@ -76,13 +76,10 @@ const SECTIONS = [
 const activeSection = ref<string>(SECTIONS[0].key)
 
 /**
- * 脏值守卫：必须传「当场摊平的新对象」，不能直接传 `config.form`。
- *
- * 原因：useDirtyGuard 内部是 `JSON.stringify(toRaw(snapshot()))`——`toRaw` 会把响应式
- * 代理剥成原始对象，之后读字段就不再建立依赖，computed 永远只在 `form` 整体被替换时
- * 重算。摊平一次（`{ ...form }`）才会在读取时经过代理，字段级改动才能触发重算。
+ * 脏值守卫：直接传 reactive 对象即可（`useDirtyGuard` 内部靠 `JSON.stringify` 逐字段读取
+ * 建立依赖，字段级改动会触发重算）。**不要**在里面做 `toRaw`，那样会断掉依赖追踪。
  */
-const { dirty, markClean } = useDirtyGuard(() => ({ ...config.form }))
+const { dirty, markClean } = useDirtyGuard(() => config.form)
 
 /** 「N 项未保存」：与「服务端快照还原出来的表单」逐字段比对，不是数输入事件 */
 const changedCount = computed(() => {
@@ -149,8 +146,8 @@ const hasErrors = computed(() =>
 )
 
 /** 连通性结果按分区取（store 里按 llm / vision / source 三个键存最近一次结果） */
-function resultsFor(keys: string[]): { key: string; result: ConnectionTestResult }[] {
-  const out: { key: string; result: ConnectionTestResult }[] = []
+function resultsFor(keys: string[]): ConfigSectionResult[] {
+  const out: ConfigSectionResult[] = []
   keys.forEach((key) => {
     const result = config.testResults[key]
     if (result) {
@@ -178,7 +175,10 @@ async function save(): Promise<void> {
     toast.error(config.error || '保存失败')
     return
   }
-  toast.success(`已保存 ${result.applied.length} 项`)
+  toast.success(
+    `已保存 ${result.applied.length} 项`,
+    result.skipped.length ? `跳过 ${result.skipped.length} 项（留空的密钥不修改）` : undefined,
+  )
   if (result.restart_required) {
     toast.warn('数据源地址改动需重启服务后生效')
   }

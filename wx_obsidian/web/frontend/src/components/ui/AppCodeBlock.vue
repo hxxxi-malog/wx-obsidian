@@ -26,7 +26,8 @@ const style = computed(() => ({ maxHeight: props.maxHeight || undefined }))
         :class="[wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre', muted ? 'text-muted' : 'text-ink']"
         :style="style"
       ><slot>{{ code }}</slot></pre>
-      <div class="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      <!-- 常显：触屏设备没有 hover，藏起来的复制按钮等于没有 -->
+      <div class="shrink-0 opacity-70 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <AppCopyButton :value="code" :label="copyLabel" />
       </div>
     </div>

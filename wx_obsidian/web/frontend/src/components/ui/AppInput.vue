@@ -49,6 +49,9 @@ const emit = defineEmits<{
 }>()
 
 const attrs = useAttrs()
+/** class/style 留在外层容器上（宽度、栅格跨度这类布局由调用方决定） */
+const wrapperAttrs = computed(() => ({ class: attrs.class, style: attrs.style }))
+/** 其余属性（data-*、aria-*、name、id、autofocus…）落到真正的 input 上 */
 const inputAttrs = computed(() => {
   const rest: Record<string, unknown> = { ...attrs }
   delete rest.class
@@ -84,7 +87,7 @@ const inputClasses = computed(() => [
 </script>
 
 <template>
-  <div :class="wrapper">
+  <div :class="[wrapper, wrapperAttrs.class]" :style="wrapperAttrs.style">
     <slot name="prefix" />
     <input
       :id="id"

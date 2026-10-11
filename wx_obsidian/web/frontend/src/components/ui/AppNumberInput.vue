@@ -1,7 +1,10 @@
 <script setup lang="ts">
 /** 数字输入：带步进按钮与快捷预设（抓取条数这类「常用值就那几档」的场景）。 */
 import { PhMinus, PhPlus } from '@phosphor-icons/vue'
-import { computed } from 'vue'
+import { computed, useAttrs } from 'vue'
+
+// 与 AppInput 一致：非 class/style 的属性落到真正的 input 上（id/aria-*/data-*）
+defineOptions({ inheritAttrs: false })
 
 const props = withDefaults(
   defineProps<{
@@ -14,9 +17,28 @@ const props = withDefaults(
     disabled?: boolean
     invalid?: boolean
     size?: 'sm' | 'md'
+    id?: string
   }>(),
-  { min: 0, max: Number.MAX_SAFE_INTEGER, step: 1, presets: () => [], suffix: '', disabled: false, invalid: false, size: 'md' },
+  {
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+    step: 1,
+    presets: () => [],
+    suffix: '',
+    disabled: false,
+    invalid: false,
+    size: 'md',
+    id: undefined,
+  },
 )
+
+const attrs = useAttrs()
+const inputAttrs = computed(() => {
+  const rest: Record<string, unknown> = { ...attrs }
+  delete rest.class
+  delete rest.style
+  return rest
+})
 
 const emit = defineEmits<{ (event: 'update:modelValue', value: number): void }>()
 
@@ -40,7 +62,7 @@ function onInput(event: Event): void {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-2">
+  <div class="flex flex-wrap items-center gap-2" :class="attrs.class" :style="attrs.style">
     <div
       class="inline-flex items-center rounded-control border bg-inset transition-colors"
       :class="[size === 'sm' ? 'h-8' : 'h-9', invalid ? 'border-danger/60' : 'border-hairline focus-within:border-strong', disabled ? 'opacity-50' : '']"
@@ -55,11 +77,13 @@ function onInput(event: Event): void {
         <PhMinus :size="13" aria-hidden="true" />
       </button>
       <input
+        :id="id"
         :value="clamped"
         type="text"
         inputmode="numeric"
         class="nums h-full w-14 border-x border-hairline bg-transparent text-center font-mono text-[13.5px] text-ink outline-none"
         :disabled="disabled"
+        v-bind="inputAttrs"
         @change="onInput"
       />
       <button

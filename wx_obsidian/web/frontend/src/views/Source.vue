@@ -172,9 +172,11 @@ const probedLabel = computed(() => (probedAt.value ? formatRelative(probedAt.val
           <span class="nums mt-0.5 font-mono text-[11.5px] text-faint">{{ index + 1 }}</span>
           <div class="min-w-0 flex-1">
             <p class="m-0 text-[11.5px] text-faint">{{ step.label }}</p>
-            <code class="font-mono text-[12.5px] leading-relaxed break-all text-ink">
-              {{ step.command }}
-            </code>
+            <!-- whitespace-pre-wrap：命令里的对齐空格要原样显示（复制的是原串）；
+                 插值必须紧贴标签，否则模板缩进会被当成命令的一部分 -->
+            <code
+              class="font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap break-all text-ink"
+            >{{ step.command }}</code>
           </div>
           <AppCopyButton :value="step.command" label="复制" />
         </li>
