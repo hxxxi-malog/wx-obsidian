@@ -171,4 +171,10 @@ def test_web_defaults_come_from_default_config() -> None:
     """旧配置（没有 web 段）加载后必须补齐默认值，否则启动器读不到端口。"""
     from wx_obsidian.config_manager import _DEFAULT_CONFIG
 
-    assert _DEFAULT_CONFIG["web"] == {"port": 8765, "open_browser": True, "log_level": "INFO"}
+    assert _DEFAULT_CONFIG["web"] == {
+        "port": 8765,
+        "host": "127.0.0.1",
+        "allow_remote": False,
+        "open_browser": True,
+        "log_level": "INFO",
+    }

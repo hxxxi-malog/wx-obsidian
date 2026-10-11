@@ -128,3 +128,52 @@ def test_health_warns_when_vault_missing(tmp_path) -> None:
         payload = client.get("/api/health", headers=AUTH).json()
 
     assert "vault_missing" in [item["code"] for item in payload["warnings"]]
+
+
+def test_vault_warning_checks_actual_articles_dir(tmp_path, monkeypatch) -> None:
+    """容器场景：vault_path 只是个自动建的目录，真正写入的是 articles_dir。
+
+    旧实现检查 vault_path 可写性 → 容器里必然误报；现在检查「最近的存在祖先」。
+    """
+    from wx_obsidian.web.api import vault_warnings
+
+    vault = tmp_path / "Documents"
+    articles = vault / "公众号文章"
+    articles.mkdir(parents=True)
+
+    runtime = make_fake_runtime(config_manager=_cfg(tmp_path, vault))
+    codes = [w["code"] for w in vault_warnings(runtime)]
+    assert "vault_readonly" not in codes
+
+    # 容器实况：vault_path 不可写（Docker 为挂载点自动建的目录），articles_dir 可写
+    monkeypatch.setattr(
+        "wx_obsidian.web.api.os.access", lambda path, mode: str(path) == str(articles)
+    )
+    assert "vault_readonly" not in [w["code"] for w in vault_warnings(runtime)]
+
+
+def test_vault_warning_points_at_first_existing_ancestor(tmp_path, monkeypatch) -> None:
+    from wx_obsidian.web.api import vault_warnings
+
+    vault = tmp_path / "Documents"
+    vault.mkdir()
+    runtime = make_fake_runtime(config_manager=_cfg(tmp_path, vault))
+
+    monkeypatch.setattr("wx_obsidian.web.api.os.access", lambda path, mode: False)
+    warnings = vault_warnings(runtime)
+
+    readonly = [w for w in warnings if w["code"] == "vault_readonly"]
+    assert len(readonly) == 1
+    # articles_dir 还不存在 → 指向最近的存在祖先，而不是一个不存在的路径
+    assert str(vault) in readonly[0]["message"]
+    assert "公众号文章" not in readonly[0]["message"]
+
+
+def _cfg(tmp_path, vault):
+    from wx_obsidian.config_manager import ConfigManager
+
+    cm = ConfigManager(config_dir=tmp_path / "cfg")
+    cm.load()
+    cm.set("obsidian.vault_path", str(vault))
+    cm.save()
+    return cm

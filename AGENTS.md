@@ -21,8 +21,12 @@ python process_articles.py tui
 # Web mode (browser UI; prints a token-bearing URL)
 python process_articles.py web
 
-# Build the macOS .app (separate Python 3.12 build venv) + ad-hoc sign + self-check
-./packaging/build_app.sh              # add --dmg to also produce dist/wx-obsidian.dmg
+# Bring up everything (we-mp-rss + wx-obsidian web) — the primary way to run it
+docker compose up -d --build
+docker compose logs -f wx-obsidian
+
+# Optional: macOS .app (same web app, packaged; kept as a fallback)
+./packaging/build_app.sh              # add --dmg / --install
 
 # Frozen end-to-end smoke test (temp HOME + stub upstream; no API cost, no real vault)
 .venv/bin/python packaging/smoke_frozen.py
@@ -155,6 +159,9 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `web/logs.py` | 日志环形缓冲（页面告警面板） | 只收 WARNING+，与文件日志互不影响 |
 | `web/__main__.py` | 启动器（端口/单实例/退出/日志） | 改判定逻辑要同步 `tests/test_web/test_launcher.py` |
 | `packaging/*.spec`, `*.sh` | PyInstaller 打包 | 资源路径 / hiddenimports / Info.plist 一改就重跑 `smoke_frozen.py` |
+| `docker-compose.yml` | 一条命令拉起全部服务 | `include` 引入 we-mp-rss 配方；`ports` 默认只绑 127.0.0.1 |
+| `deploy/wx-obsidian/Dockerfile` | Web 服务镜像 | 多阶段构建前端；改依赖只改 pyproject（单一来源） |
+| `config.py` 的 `resolve_source_base_url` | 数据源地址解析（env 优先） | 适配器/探活/CLI/TUI 必须共用，否则容器里健康探活会连错地址 |
 | `vault_migration.py` | Vault 路径迁移 | 影响 processed.json 的 `file` 字段与级联删除 |
 | `prompts/summarize_article.txt` | Prompt 模板 | 改动直接影响 LLM 输出质量 |
 | `skills/*/SKILL.md` | LLM 输出风格控制 | 改动影响所有新生成的笔记 |
@@ -176,6 +183,8 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | 调整 macOS 打包 | `packaging/wx-obsidian.spec`, `packaging/build_app.sh`, `packaging/make_icon.py` |
 | 调整 Web 启动器行为（端口/单实例/退出） | `web/__main__.py`, `web/logging_setup.py`, `tests/test_web/test_launcher.py` |
 | 冻结包端到端自检 | `packaging/smoke_frozen.py`（临时 HOME + stub 上游，真跑一轮并断言笔记/日志/退出） |
+| 调整容器部署 | `docker-compose.yml`, `deploy/wx-obsidian/Dockerfile`, `deploy/wx-obsidian/.env.example` |
+| 改动 Web 启动期行为 | `web/__main__.py`（`--host`/`WX_WEB_HOST`、`WX_WEB_TOKEN`、`WX_ALLOW_REMOTE`） |
 
 ### 关键常量速查
 
@@ -200,6 +209,11 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 - `.app` 是 `console=False`：日志落 `~/Library/Logs/wx-obsidian/app.log`（2MB×3 轮转），并且冻结包里会接管 `sys.stdout/stderr`，否则管线的 `print()` 全丢。日志统一过 `MaskSecretsFilter`（`sk-` / `token=` / `Bearer`），写日志失败只降级不拦启动。
 - 打包仍以 **`requires-python = ">=3.9"`** 为准，所以 dev 依赖钉 `mypy>=1.10,<2`：mypy 2.x 已移除 3.9 目标，会静默按 3.12 检查（PEP 604 之类写法就拦不住了）。
 - 冻结包验证不看「能不能启动」，看 `packaging/smoke_frozen.py`：独立 HOME、拷出仓库运行、本地 stub 上游真跑一轮，断言笔记落盘 + processed.json/config.json 写入 + 日志掩码 + `POST /api/shutdown` 干净退出。
+- **主用运行方式是 Docker**（`docker compose up -d --build`，见 README 的 Docker 章节）：数据源与 Web 服务一个 compose 项目，`include` 复用 `deploy/we-mp-rss` 的配方，默认只绑 `127.0.0.1`。`.app` 保留可用但已不是推荐路径。
+- 容器里有两处必须注意：①**vault 必须挂到与宿主机相同的绝对路径**（`processed.json` 存的是绝对路径，挂 `/vault` 会让级联删除静默失效、记录分叉）；②**必须开 `WX_ALLOW_REMOTE=1`**，因为经发布端口进来的连接，容器看到的客户端 IP 是容器网关（实测 `192.168.117.1`），不放行连宿主浏览器都 403；真正的边界是宿主端口绑定。
+- 数据源地址走 `config.resolve_source_base_url()`（`WX_SOURCE_BASE_URL` 优先），容器用服务名、宿主用 `localhost`，而 `config.json` 只有一份。**新增任何读 `source.base_url` 的代码都必须走这个函数**，否则会出现「抓取正常但探活失败」这类只在一侧暴露的问题。
+- 容器构建的两个坑：`package.json` 里的 `pnpm.onlyBuiltDependencies` 在 pnpm 12 已失效（10.13+ 移到 `pnpm-workspace.yaml`），`pnpm install --frozen-lockfile` 会直接报错退出，故 Dockerfile 显式带 `--config.strict-dep-builds=false`；`COPY` 会保留源文件权限，而本机检出的文件可能是 0600（git 只记可执行位），必须 `chown -R wx:wx /app`，否则非 root 启动即 `PermissionError`。
+- 构建期默认走国内镜像（npm→npmmirror、pip→腾讯云），可用 `--build-arg NPM_REGISTRY=... / PIP_INDEX_URL=...` 覆盖：实测直连 npmjs 3.1s 且会 ECONNRESET。
 - 没有系统级定时任务（原 macOS LaunchAgent 因 macOS 15 TCC 读不到 `~/Downloads`，已移除）：手动跑 `./run.sh [--limit N]` 或 `python process_articles.py`；应用内 APScheduler 仅在 TUI 运行期间生效。
 - Model channels are switchable through `llm.active` / `vision.active` + `providers`; both default to `deepseek-flash` (supports image input).
 

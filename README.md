@@ -54,10 +54,13 @@ pip install -e .
 绕开公众平台后台接口的 `ret=200013` 风控；并附带修复「发布时间 = 抓取时间」的派生镜像。
 
 ```bash
-cd deploy/we-mp-rss
-cp .env.example .env          # 填写 WERSS_PASS / WEREAD_COOKIE
+# 一条命令把数据源和 Web 服务都拉起来（配方在 deploy/we-mp-rss，由根 compose include 引入）
+cp deploy/we-mp-rss/.env.example deploy/we-mp-rss/.env   # 填写 WERSS_PASS / WEREAD_COOKIE
 docker compose up -d --build
 ```
+
+只想单独跑数据源时，仍然可以 `cd deploy/we-mp-rss && docker compose up -d --build`（同一个配方，
+只是不含 Web 服务）。
 
 访问 `http://localhost:8001` 完成初始化并登录微信读书，然后添加要订阅的公众号。
 细节（为什么用派生镜像、如何升级上游补丁）见 [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
@@ -166,7 +169,53 @@ python process_articles.py web --port 8765 --no-open
 - ⚠️ **不要同时用 TUI 和 Web 发起抓取**：两者各自持有任务状态，会争抢 `processed.json` 的写入。要跑就开一个。
 - 进度走 SSE；断线或刷新页面会自动重连并按事件序号补齐，不会丢中间的进度。
 
-### 桌面应用（macOS .app）
+### Docker 部署（推荐）
+
+一条命令拉起数据源 + Web 服务：
+
+```bash
+cd ~/path/to/wx-obsidian
+cp deploy/wx-obsidian/.env.example deploy/wx-obsidian/.env
+# 生成一个稳定令牌；不设的话每次重启 URL 都会变，收藏就失效了
+sed -i '' "s|^WX_WEB_TOKEN=.*|WX_WEB_TOKEN=$(openssl rand -base64 24)|" deploy/wx-obsidian/.env
+
+docker compose up -d --build
+docker compose ps                     # we-mp-rss 与 wx-obsidian 都应为 healthy
+```
+
+然后打开 `http://127.0.0.1:8765/?token=<deploy/wx-obsidian/.env 里的 WX_WEB_TOKEN>`。
+
+> 从旧方式（直接 `cd deploy/we-mp-rss && docker compose up -d`）迁过来，先
+> `cd deploy/we-mp-rss && docker compose down`，否则容器名冲突。数据在挂载卷里，不受影响。
+
+| 事项 | 做法 | 为什么 |
+|---|---|---|
+| 只给本机 | `ports` 默认 `127.0.0.1:8765` | 这套服务能写你的 vault、读你的 API Key，不带鉴权不能对外 |
+| 手机/其它设备访问 | `WX_WEB_BIND=0.0.0.0 docker compose up -d`（先读下面的安全提醒） | 明文 HTTP 里的 token 会走在网线上；优先 Tailscale 或 SSH 隧道 |
+| 令牌稳定 | `WX_WEB_TOKEN`（`deploy/wx-obsidian/.env`） | 容器会重启，随机令牌会让收藏的 URL 失效 |
+| 数据在哪 | `~/.wx-obsidian` 与 vault 都是**绑定挂载** | `processed.json` 必须只有一份，否则容器与宿主会把同一篇各处理一遍 |
+| vault 挂载点 | 与宿主机**同一个绝对路径** | `processed.json` 存的是绝对路径，挂到 `/vault` 会让级联删除静默失效 |
+| 数据源地址 | 容器内 `http://we-mp-rss:8001`（compose 注入 `WX_SOURCE_BASE_URL`） | `config.json` 与宿主共用，地址这类随环境变化的值只能按环境区分 |
+| 看日志 | `docker compose logs -f wx-obsidian` | 容器里没有 `~/Library/Logs`；同时落 `~/.wx-obsidian/logs/app.log` |
+| 重启策略 | `on-failure` | 这样网页上的「退出应用」才真的是「停」，不会被 Docker 立刻拉起 |
+| 换端口 | `WX_WEB_PORT=8766 docker compose up -d` | 与其它实例并存 |
+
+容器里的来源放行开关（`WX_ALLOW_REMOTE=1`）看着像放宽了安全，其实不是：经发布端口进来的连接，
+容器看到的客户端 IP 是**容器网关**（实测 `192.168.117.1`），不放行就连宿主自己的浏览器都会 403。
+真正的边界是上表第一行的宿主端口绑定——容器内这一层本来也拿不到真实来源 IP。
+**token 校验在任何情况下都强制。**
+
+镜像里不含 TUI（构建时排除 `textual`），容器也不写宿主机的 `~/Library/Logs`。
+
+### 可选：桌面应用（macOS .app）
+
+> 现在的主用方式是上面的 Docker。`.app` 仍然可用、代码与脚本都保留，适合不想常驻 Docker 的场景。
+
+```bash
+./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
+./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg（自用可选）
+./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
+```
 
 ```bash
 ./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
@@ -198,11 +247,15 @@ python process_articles.py web --port 8765 --no-open
 
 ### 排错：日志在哪
 
-`.app` 是 `console=False` 打包的，没有终端——所以日志必须落盘：
+Docker 部署直接看容器输出（和 `.app` 一样，日志同时落盘并轮转）：
 
 ```bash
-tail -f ~/Library/Logs/wx-obsidian/app.log     # 2MB × 3 轮转
+docker compose logs -f wx-obsidian              # 实时
+tail -f ~/.wx-obsidian/logs/app.log             # 容器内的落盘日志（随 config 目录挂载到宿主）
 ```
+
+`.app` / 源码方式下落在 `~/Library/Logs/wx-obsidian/app.log`（2MB × 3 轮转）；
+冻结包是 `console=False` 打包的、没有终端，所以它还会接管 stdout/stderr，否则管线的 `print()` 全丢。
 
 日志里包含 `print()` 出来的管线进度（冻结包会自动接管 stdout/stderr），并且 `sk-`、`token=`、`Bearer` 都会被掩码 —— 排错通道本身不能变成泄漏面。启动阶段失败（端口冲突、配置损坏）除了写日志还会弹一个系统对话框，不会静默什么都不发生。
 
@@ -318,7 +371,10 @@ Obsidian Vault/
 wx-obsidian/
 ├── process_articles.py          # 统一入口（CLI / TUI / Web / delete / migrate-vault 子命令）
 ├── validate_markdown.py         # Markdown 格式校验（向后兼容入口）
+├── docker-compose.yml           # 一条命令拉起全部服务（include 引入 we-mp-rss 配方）
+├── .dockerignore               # 上下文瘦身（不带 .venv312/.pnpm-store/dist 进构建）
 ├── deploy/we-mp-rss/            # 数据源部署（派生镜像 + 发布时间回填补丁 + 配置）
+├── deploy/wx-obsidian/          # Web 服务镜像（多阶段：node 构建前端 → python 运行）
 ├── packaging/                   # macOS 打包
 │   ├── build_app.sh             # 构建 .app（3.12 venv + PyInstaller + ad-hoc 签名 + 自检）
 │   ├── wx-obsidian.spec         # PyInstaller 配置（资源、hiddenimports、Info.plist）

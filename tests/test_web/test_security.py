@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_web.helpers import make_fake_runtime
-from wx_obsidian.web.api import create_app, is_loopback_host
+from wx_obsidian.web.api import create_app, is_allowed_host, is_loopback_host
 
 TOKEN = "test-token-123"
 AUTH_HEADERS = {"X-WX-Token": TOKEN}
@@ -40,6 +40,51 @@ def _client(*, allow_test_client: bool = True, healthy: bool = True) -> TestClie
 )
 def test_is_loopback_host(host: str, expected: bool) -> None:
     assert is_loopback_host(host) is expected
+
+
+@pytest.mark.parametrize(
+    ("host", "allow_remote", "expected"),
+    [
+        # 默认：与 allow_remote=False 时行为完全不变
+        ("10.60.195.2", False, False),
+        ("172.17.0.1", False, False),
+        ("192.168.1.5", False, False),
+        ("127.0.0.1", False, True),
+        # 显式打开后放行私有网段（Docker 网关 172.x、局域网 10.x/192.168.x）
+        ("10.60.195.2", True, True),
+        ("172.17.0.1", True, True),
+        ("192.168.1.5", True, True),
+        ("169.254.1.1", True, True),
+        # 即使是公网地址也不放行
+        ("8.8.8.8", True, False),
+        # 非 IP 的主机名不接受（除非在 allowed 白名单里）
+        ("evil.example.com", True, False),
+        ("", True, False),
+    ],
+)
+def test_is_allowed_host(host: str, allow_remote: bool, expected: bool) -> None:
+    assert is_allowed_host(host, allow_remote=allow_remote) is expected
+
+
+def test_remote_client_passes_only_when_enabled() -> None:
+    """真从私有地址来的请求：默认 403，显式打开后放行，但**仍然要 token**。"""
+    runtime = make_fake_runtime()
+    private_client = ("10.60.195.2", 54321)
+
+    strict = TestClient(
+        create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset()), client=private_client
+    )
+    with strict:
+        assert strict.get("/api/ping").status_code == 403
+
+    opened = TestClient(
+        create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset(), allow_remote=True),
+        client=private_client,
+    )
+    with opened:
+        assert opened.get("/api/ping").status_code == 200
+        assert opened.get("/api/health").status_code == 401  # 放行来源不等于免鉴权
+        assert opened.get("/api/health", headers=AUTH_HEADERS).status_code == 200
 
 
 def test_ping_needs_no_token() -> None:

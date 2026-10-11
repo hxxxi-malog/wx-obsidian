@@ -15,6 +15,7 @@ from typing import Any
 import requests
 import yaml
 
+from wx_obsidian.config import resolve_source_base_url
 from wx_obsidian.models import ConnectionTestResult, MigrationReport
 
 # ---------------------------------------------------------------------------
@@ -102,9 +103,13 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "fetch_cron": "0 */2 * * *",
         "keepalive_interval_days": 7,
     },
-    # Web 模式（`process_articles.py web` / 打包后的 .app）
+    # Web 模式（`process_articles.py web` / .app / 容器）
+    # 注意：host 与 allow_remote 是**启动期**设置（改了要重启），
+    # 容器部署通常直接用环境变量 WX_WEB_HOST / WX_ALLOW_REMOTE 覆盖。
     "web": {
         "port": 8765,
+        "host": "127.0.0.1",
+        "allow_remote": False,
         "open_browser": True,
         "log_level": "INFO",
     },
@@ -429,11 +434,13 @@ class ConfigManager:
 
     def test_source_connection(self) -> ConnectionTestResult:
         """测试文章数据源（we-mp-rss）的连通性。"""
-        # /feed/all.json 是无需鉴权的只读接口，适合做探活
-        return self._test_endpoint(
-            self.get("source.base_url", "http://localhost:8001") + "/feed/all.json?limit=1",
-            "we-mp-rss",
+        # 地址必须与适配器用同一个解析函数：否则容器里适配器走服务名、
+        # 探活却去连 localhost，健康面板会误报「连接失败」
+        base_url = resolve_source_base_url(self.get("source.base_url", "")) or (
+            "http://localhost:8001"
         )
+        # /feed/all.json 是无需鉴权的只读接口，适合做探活
+        return self._test_endpoint(f"{base_url}/feed/all.json?limit=1", "we-mp-rss")
 
     def _test_endpoint(self, url: str, label: str) -> ConnectionTestResult:
         """GET 探活并返回统一的连通性结果。"""

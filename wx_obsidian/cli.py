@@ -26,6 +26,7 @@ def main() -> None:
 
     args = _parse_args()
 
+    from wx_obsidian.config import resolve_source_base_url
     from wx_obsidian.config_manager import ConfigManager
     from wx_obsidian.orchestrator import Orchestrator
     from wx_obsidian.sources.factory import create_article_source, resolve_source_type
@@ -35,7 +36,7 @@ def main() -> None:
 
     source = create_article_source(
         resolve_source_type(config_manager.get("source.type", "")),
-        base_url=config_manager.get("source.base_url", ""),
+        base_url=resolve_source_base_url(str(config_manager.get("source.base_url", "") or "")),
         timeout=int(config_manager.get("source.timeout", 15) or 15),
         token=config_manager.get("source.token", ""),
     )

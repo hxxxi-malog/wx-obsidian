@@ -1,0 +1,64 @@
+# 一条命令拉起全部服务：
+#
+#   docker compose up -d --build
+#
+# 组成：
+#   we-mp-rss    数据源（Docker 里跑，宿主浏览器通过 127.0.0.1:8001 看后台/扫码）
+#   wx-obsidian  本项目的 Web 服务（取代 .app，见 docs/design-docs/web-ui/docker.md）
+#
+# we-mp-rss 的配方仍以 `deploy/we-mp-rss/docker-compose.yml` 为准，这里只是 include
+# 进来（不复制定义，避免两份配方各自漂移）。include 会把它的 env_file 一起带上，
+# 所以 `${WERSS_PASS:?}` 这类必填校验照旧生效。
+#
+# ⚠️ 从旧方式迁过来时先清掉旧容器（否则 container_name 冲突）：
+#     cd deploy/we-mp-rss && docker compose down      # 只删容器，data/ 是挂载卷不受影响
+#     cd ../.. && docker compose up -d --build
+
+include:
+  - path: deploy/we-mp-rss/docker-compose.yml
+    env_file: deploy/we-mp-rss/.env
+
+services:
+  wx-obsidian:
+    build:
+      context: .
+      dockerfile: deploy/wx-obsidian/Dockerfile
+    image: wx-obsidian:local
+    container_name: wx-obsidian
+    # on-failure 而不是 unless-stopped：网页上的「退出应用」应该真的是「停」，
+    # 而不是被 Docker 立刻拉起来
+    restart: on-failure
+    depends_on:
+      - we-mp-rss
+    env_file:
+      # 可缺省：没建 .env 也能起（令牌随机、来源只放行回环）
+      - path: deploy/wx-obsidian/.env
+        required: false
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      # 容器内必须绑 wildcard，否则宿主发布出去的端口连不到服务
+      - WX_WEB_HOST=0.0.0.0
+      # 容器之间用服务名；宿主上的 CLI/TUI 仍用 config.json 里的 localhost:8001，
+      # config.json 只有一份（processed.json 必须共用），所以地址只能这样按环境区分
+      - WX_SOURCE_BASE_URL=http://we-mp-rss:8001
+      # 容器里**必须**放行私有网段：经发布端口进来的连接，来源是容器网关
+      # （实测 192.168.117.1），不放行的话连宿主自己的浏览器都会被 403。
+      # 这不是放宽安全边界——真正的边界是上面 ports 的绑定地址（默认 127.0.0.1，
+      # 只有宿主的回环能连进来）；容器内本来也拿不到真实客户端 IP。
+      # 确有必要可关：WX_ALLOW_REMOTE=0 docker compose up -d
+      - WX_ALLOW_REMOTE=${WX_ALLOW_REMOTE:-1}
+    ports:
+      # 默认只给本机，与 .app/源码方式的行为一致。
+      # 要局域网/手机访问：WX_WEB_BIND=0.0.0.0 docker compose up -d
+      # 并且同时打开来源放行（见 deploy/wx-obsidian/.env.example 的 WX_ALLOW_REMOTE）。
+      # 注意：明文 HTTP + URL 里的 token 在共享网段上是真的风险，优先考虑
+      # Tailscale 或 SSH 隧道（docs/design-docs/web-ui/docker.md §5）。
+      # WX_WEB_PORT 是宿主端口（容器内固定 8765），用来与原 .app 并存一段时间
+      - "${WX_WEB_BIND:-127.0.0.1}:${WX_WEB_PORT:-8765}:8765"
+    volumes:
+      # 配置与状态（config.json / .env / processed.json / similarity.sqlite）
+      # 与宿主共用一份：processed.json 若分叉，容器与宿主会把同一篇文章各处理一遍
+      - "${WX_CONFIG_DIR:-${HOME}/.wx-obsidian}:/home/wx/.wx-obsidian"
+      # vault 挂到**同一个绝对路径**（不是 /vault）：processed.json 里存的是宿主
+      # 绝对路径，挂到别处会让容器与宿主的记录对不上，级联删除静默失效
+      - "${WX_VAULT_DIR:-${HOME}/Documents/公众号文章}:${WX_VAULT_DIR:-${HOME}/Documents/公众号文章}"

@@ -49,6 +49,9 @@ data/
 deploy/we-mp-rss/.env
 deploy/we-mp-rss/data/
 
+# wx-obsidian 容器部署：令牌等运行期开关不入库（.env.example 入库）
+deploy/wx-obsidian/.env
+
 # macOS
 .DS_Store
 

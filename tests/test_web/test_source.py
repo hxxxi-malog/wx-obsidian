@@ -157,3 +157,19 @@ def test_refresh_survives_probe_failure(tmp_path: Path) -> None:
 
     assert payload["ok"] is False
     assert "连不上" in payload["error"]
+
+
+def test_source_base_url_can_be_overridden_by_env(tmp_path: Path, monkeypatch) -> None:
+    """容器里数据源是服务名（http://we-mp-rss:8001），宿主是 localhost——只能靠环境变量区分。"""
+    from wx_obsidian.web.runtime import build_runtime
+
+    cm = ConfigManager(config_dir=tmp_path / "cfg")
+    cm.load()
+    cm.set("source.base_url", "http://localhost:8001")
+    cm.save()
+
+    monkeypatch.delenv("WX_SOURCE_BASE_URL", raising=False)
+    assert build_runtime(cm).source._base_url == "http://localhost:8001"
+
+    monkeypatch.setenv("WX_SOURCE_BASE_URL", "http://we-mp-rss:8001")
+    assert build_runtime(cm).source._base_url == "http://we-mp-rss:8001"

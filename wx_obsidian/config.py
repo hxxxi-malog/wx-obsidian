@@ -96,6 +96,23 @@ def load_config() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def resolve_source_base_url(configured: str = "") -> str:
+    """解析最终生效的数据源地址（环境变量 `WX_SOURCE_BASE_URL` 优先）。
+
+    和 `resolve_source_type` 的 `WX_SOURCE` 覆盖是同一套路，但这条对容器部署是**必需**的：
+    容器里数据源是服务名（`http://we-mp-rss:8001`），宿主上是 `localhost:8001`，
+    而 `config.json` 只有一份（`processed.json` 必须共用，否则两边会各处理一遍
+    同一篇文章），所以地址这类随环境变化的值只能靠环境变量区分。
+
+    放在 config.py（最底层）而不是 sources/factory.py：连通性探活
+    （config_manager）也要用同一个值，放上层会引出循环依赖。
+    """
+    env_value = os.environ.get("WX_SOURCE_BASE_URL", "").strip()
+    if env_value:
+        return env_value.rstrip("/")
+    return str(configured or "").strip().rstrip("/")
+
+
 def load_processed(path: Path | None = None) -> dict[str, Any]:
     """加载已处理文章记录。
 

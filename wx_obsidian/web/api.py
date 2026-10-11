@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import ipaddress
 import json
 import logging
 import os
@@ -116,6 +117,38 @@ def is_loopback_host(host: str, allowed: frozenset[str] = LOOPBACK_HOSTS) -> boo
     return host.startswith("127.")
 
 
+def is_allowed_host(
+    host: str,
+    allowed: frozenset[str] = LOOPBACK_HOSTS,
+    *,
+    allow_remote: bool = False,
+) -> bool:
+    """来源是否放行。
+
+    默认只放行回环；`allow_remote=True`（显式开关，见 `WX_ALLOW_REMOTE`）时
+    追加放行私有网段与链路本地地址——容器场景下客户端 IP 是 Docker 网关
+    （172.x），局域网场景是路由后的私有地址。**token 校验与这个开关无关，
+    永远强制。**
+
+    Args:
+        host: 客户端地址。
+        allowed: 额外放行的主机名。
+        allow_remote: 是否放行私有网段。
+
+    Returns:
+        是否允许继续处理该请求。
+    """
+    if is_loopback_host(host, allowed):
+        return True
+    if not allow_remote or not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_private or address.is_link_local
+
+
 def _extract_token(scope: Scope) -> str:
     """从请求头或查询参数取出 token（SSE 的 EventSource 无法设自定义头，故支持 query）。"""
     for key, value in scope.get("headers", []):
@@ -126,7 +159,7 @@ def _extract_token(scope: Scope) -> str:
 
 
 class SecurityMiddleware:
-    """纯 ASGI 安全中间件：来源必须是回环地址，且 /api/* 必须带正确 token。
+    """纯 ASGI 安全中间件：来源必须是回环地址（或显式放行的私有网段），且 /api/* 必须带正确 token。
 
     刻意不用 BaseHTTPMiddleware：它会包装响应流，对 SSE 长连接不友好。
     """
@@ -138,11 +171,13 @@ class SecurityMiddleware:
         token: str,
         allowed_hosts: frozenset[str] = LOOPBACK_HOSTS,
         public_paths: frozenset[str] = PUBLIC_PATHS,
+        allow_remote: bool = False,
     ) -> None:
         self.app = app
         self._token = token
         self._allowed_hosts = allowed_hosts
         self._public_paths = public_paths
+        self._allow_remote = allow_remote
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -151,7 +186,7 @@ class SecurityMiddleware:
 
         client = scope.get("client")
         host = str(client[0]) if client else ""
-        if not is_loopback_host(host, self._allowed_hosts):
+        if not is_allowed_host(host, self._allowed_hosts, allow_remote=self._allow_remote):
             logger.warning("拒绝非回环来源访问: %s %s", host, scope.get("path", ""))
             await self._reject(scope, receive, send, 403, "forbidden")
             return
@@ -309,6 +344,20 @@ def _coerce(key: str, raw: Any) -> Any:
 _TCC_RISKY_DIRS = frozenset({"Downloads", "Desktop"})
 
 
+def _first_existing(path: Path) -> Path:
+    """向上找到第一个存在的目录。
+
+    真正要写的是 `<vault>/<articles_dir>`，它可能还不存在（首次运行会创建）。
+    这时该检查的是**最近的存在祖先**是否可写——直接查 `vault_path` 会误判：
+    容器里 `/Users/malog/Documents` 只是 Docker 为挂载点自动建的目录，
+    而实际写入目标是挂在它下面的 `公众号文章`。
+    """
+    current = path
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current
+
+
 def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
     """Vault 路径的可操作告警：未设置 / 不存在 / 不可写 / 落在 TCC 敏感目录。
 
@@ -326,6 +375,7 @@ def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
         ]
 
     path = Path(vault).expanduser()
+    articles_dir = str(runtime.config_manager.get("obsidian.articles_dir", "") or "公众号文章")
     warnings: list[dict[str, str]] = []
     if not path.exists():
         warnings.append(
@@ -343,16 +393,19 @@ def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
                 "action": "改成目录，或用「选择文件夹」重选",
             }
         )
-    elif not os.access(path, os.W_OK):
-        # 措辞刻意克制：这一条只说明「本进程写不进去」，不能断言目录本身只读。
-        # 沙箱、TCC 未授权、POSIX 权限都表现为这一种现象，而处置方式不同。
-        warnings.append(
-            {
-                "code": "vault_readonly",
-                "message": f"当前进程写不进 Vault：{path}",
-                "action": "先用「选择文件夹」重选一次（顺带完成 macOS 授权）；仍不行再查目录属主与权限",
-            }
-        )
+    else:
+        target = _first_existing(path / articles_dir)
+        if not os.access(target, os.W_OK):
+            # 措辞刻意克制：这一条只说明「本进程写不进去」，不能断言目录本身只读。
+            # 沙箱、TCC 未授权、POSIX 权限、容器挂载缺失都表现为这一种现象。
+            warnings.append(
+                {
+                    "code": "vault_readonly",
+                    "message": f"当前进程写不进文章目录：{target}",
+                    "action": "先用「选择文件夹」重选一次（顺带完成 macOS 授权）；"
+                    "容器部署请确认 vault 已按同一路径挂载；仍不行再查目录属主与权限",
+                }
+            )
 
     if any(part in _TCC_RISKY_DIRS for part in path.parts):
         warnings.append(
@@ -418,6 +471,7 @@ def create_app(
     token: str | None = None,
     extra_allowed_hosts: frozenset[str] = frozenset(),
     on_quit: Callable[[], None] | None = None,
+    allow_remote: bool = False,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
@@ -428,6 +482,8 @@ def create_app(
         on_quit: 「退出应用」回调（启动器传入 stop.set）。省略时该接口返回 501——
             窗口化的 .app 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了本进程，
             所以界面上必须有一个能真正退出的入口。
+        allow_remote: 是否放行私有网段来源（默认否）。容器/局域网部署由启动器的
+            `WX_ALLOW_REMOTE` 显式打开；打开后 token 校验依然强制。
 
     Returns:
         可直接交给 uvicorn 的应用实例。
@@ -465,7 +521,9 @@ def create_app(
         SecurityMiddleware,
         token=resolved_token,
         allowed_hosts=LOOPBACK_HOSTS | extra_allowed_hosts,
+        allow_remote=allow_remote,
     )
+    app.state.allow_remote = allow_remote
 
     # -- 系统与状态 ---------------------------------------------------------
 

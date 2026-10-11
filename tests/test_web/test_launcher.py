@@ -342,3 +342,94 @@ def test_failure_message_does_not_advertise_unwritable_log(
     stderr = capsys.readouterr().err
     assert "日志未能落盘" in stderr
     assert f"日志：{undefined_log}" not in stderr
+
+
+# ---------------------------------------------------------------------------
+# 容器/远程部署相关的解析逻辑
+# ---------------------------------------------------------------------------
+
+
+def test_connect_host_maps_wildcard() -> None:
+    """0.0.0.0 不能拿去 connect；探测与拼 URL 都要换成回环。"""
+    assert launcher._connect_host("0.0.0.0") == "127.0.0.1"
+    assert launcher._connect_host("::") == "127.0.0.1"
+    assert launcher._connect_host("") == "127.0.0.1"
+    assert launcher._connect_host("10.60.195.2") == "10.60.195.2"
+
+
+def test_build_url_uses_host() -> None:
+    assert launcher._build_url(8765, "t", host="0.0.0.0") == "http://127.0.0.1:8765/?token=t"
+    assert launcher._build_url(8765, "t", host="10.60.195.2") == "http://10.60.195.2:8765/?token=t"
+
+
+def test_resolve_token_prefers_env_and_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """容器重启后令牌必须不变，否则收藏的 URL 全失效。"""
+    monkeypatch.setenv("WX_WEB_TOKEN", "from-env")
+    assert launcher._resolve_token() == "from-env"
+    assert launcher._resolve_token("explicit") == "explicit"
+
+    monkeypatch.delenv("WX_WEB_TOKEN")
+    generated = launcher._resolve_token()
+    assert generated and generated != launcher._resolve_token()  # 默认仍随机
+
+
+def test_env_flag_parses_common_truthy_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("WX_ALLOW_REMOTE", value)
+        assert launcher._env_flag("WX_ALLOW_REMOTE") is True
+    for value in ("0", "false", "", "no"):
+        monkeypatch.setenv("WX_ALLOW_REMOTE", value)
+        assert launcher._env_flag("WX_ALLOW_REMOTE") is False
+
+
+def test_local_ipv4s_excludes_loopback() -> None:
+    assert all(not addr.startswith("127.") for addr in launcher._local_ipv4s())
+
+
+def test_serve_binds_requested_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """容器里必须真绑 0.0.0.0，否则发布出去的端口连不到服务。"""
+    token_file = tmp_path / "web.token"
+    monkeypatch.setattr(launcher, "TOKEN_FILE", token_file)
+    monkeypatch.setenv("WX_WEB_TOKEN", "stable-token")
+    runtime, _ = make_runtime(orchestrator=FakeOrchestrator(steps=[]))
+    monkeypatch.setattr(launcher, "build_runtime", lambda _cm: runtime)
+    monkeypatch.setattr(launcher, "ConfigManager", lambda: _StubConfigManager())
+
+    port = _free_port()
+    result: dict[str, Any] = {}
+    thread = threading.Thread(
+        target=lambda: result.update(
+            code=launcher.main(
+                [
+                    "--port",
+                    str(port),
+                    "--host",
+                    "0.0.0.0",
+                    "--no-open",
+                    "--log-file",
+                    str(tmp_path / "app.log"),
+                ]
+            )
+        ),
+        daemon=True,
+    )
+    thread.start()
+    try:
+        assert launcher._wait_ready(port, timeout=15.0)
+        # 绑上了 wildcard，但探测与访问地址仍走回环
+        token = token_file.read_text(encoding="utf-8").strip()
+        assert token == "stable-token"
+        response = requests.get(
+            f"http://127.0.0.1:{port}/api/health", headers={"X-WX-Token": token}, timeout=5.0
+        )
+        assert response.status_code == 200
+        requests.post(
+            f"http://127.0.0.1:{port}/api/shutdown",
+            headers={"X-WX-Token": token},
+            timeout=5.0,
+        )
+        thread.join(timeout=15.0)
+        assert result["code"] == 0
+    finally:
+        if thread.is_alive():
+            thread.join(timeout=5.0)

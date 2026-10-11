@@ -10,6 +10,7 @@ from typing import Literal
 from textual.app import App
 from textual.screen import Screen
 
+from wx_obsidian.config import resolve_source_base_url
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.orchestrator import Orchestrator
 from wx_obsidian.scheduler import TaskScheduler
@@ -70,7 +71,9 @@ class WxObsidianApp(App[None]):
         self.source_type = resolve_source_type(self.config_manager.get("source.type", ""))
         self.source = create_article_source(
             self.source_type,
-            base_url=self.config_manager.get("source.base_url", ""),
+            base_url=resolve_source_base_url(
+                str(self.config_manager.get("source.base_url", "") or "")
+            ),
             timeout=int(self.config_manager.get("source.timeout", 15) or 15),
             token=self.config_manager.get("source.token", ""),
         )
