@@ -1,16 +1,31 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import { apiGet, apiPut, apiPost, errorMessage } from '../api/client'
-import type { ConfigSaveResult, ConfigSnapshot, ConnectionTestResult } from '../api/types'
+import type {
+  ConfigSaveResult,
+  ConfigSnapshot,
+  ConnectionTestResult,
+  FsPickResult,
+} from '../api/types'
 import DirPicker from '../components/DirPicker.vue'
 
+const route = useRoute()
+const router = useRouter()
 const config = ref<ConfigSnapshot | null>(null)
 const loading = ref(false)
 const saving = ref(false)
+const picking = ref(false)
+const quitting = ref(false)
 const error = ref('')
 const pickerVisible = ref(false)
+/** 启动器首启时直接落到 /settings?first_run=1 */
+const firstRun = ref(route.query.first_run === '1')
+
+/** 面板文案里的日志位置（.app 没有终端，排错只能看这里） */
+const logHint = '~/Library/Logs/wx-obsidian/app.log'
 
 /** 表单只承载可编辑字段；密钥留空表示「不修改」 */
 const form = ref({
@@ -29,6 +44,8 @@ const form = ref({
   vaultPath: '',
   maxDays: 7,
   maxWorkers: 5,
+  webPort: 8765,
+  webOpenBrowser: true,
 })
 
 const testing = ref<Record<string, boolean>>({})
@@ -56,12 +73,49 @@ async function load(): Promise<void> {
       vaultPath: data.obsidian.vault_path,
       maxDays: data.fetch.max_days,
       maxWorkers: data.fetch.max_workers,
+      webPort: data.web.port,
+      webOpenBrowser: data.web.open_browser,
     }
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
     loading.value = false
   }
+}
+
+/** 原生目录选择面板：同时是解决 macOS TCC 权限的正确姿势。 */
+async function pickNative(): Promise<void> {
+  picking.value = true
+  try {
+    const result = await apiPost<FsPickResult>('/api/fs/pick', { prompt: '选择 Obsidian Vault' })
+    if (result.cancelled) {
+      return
+    }
+    form.value.vaultPath = result.path
+    ElMessage.success('已选中，记得点「保存配置」')
+  } catch (err) {
+    ElMessage.error(errorMessage(err))
+  } finally {
+    picking.value = false
+  }
+}
+
+/** 退出应用：窗口化的 .app 里系统菜单的 Cmd+Q 到不了本进程，这是界面上的退出入口。 */
+async function quitApp(): Promise<void> {
+  quitting.value = true
+  try {
+    await apiPost<{ ok: boolean }>('/api/shutdown')
+    ElMessage.success('应用已退出，可以关闭此页面了')
+  } catch (err) {
+    ElMessage.error(errorMessage(err))
+  } finally {
+    quitting.value = false
+  }
+}
+
+function dismissFirstRun(): void {
+  firstRun.value = false
+  void router.replace({ path: '/settings' })
 }
 
 function activeProvider(): string {
@@ -86,6 +140,8 @@ async function save(): Promise<void> {
     'obsidian.vault_path': form.value.vaultPath,
     'fetch.max_days': form.value.maxDays,
     'fetch.max_workers': form.value.maxWorkers,
+    'web.port': form.value.webPort,
+    'web.open_browser': form.value.webOpenBrowser,
   }
   if (llm) {
     patch[`llm.providers.${llm}.base_url`] = form.value.llmBaseUrl
@@ -109,6 +165,9 @@ async function save(): Promise<void> {
     ElMessage.success(`已保存 ${result.applied.length} 项`)
     if (result.restart_required) {
       ElMessage.warning('数据源地址改动需重启服务后生效')
+    }
+    if (firstRun.value) {
+      dismissFirstRun()
     }
     await load()
   } catch (err) {
@@ -151,6 +210,24 @@ onMounted(load)
     </div>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="mb" />
+
+    <el-alert
+      v-if="firstRun"
+      type="warning"
+      show-icon
+      title="首次运行：三步就能跑起来"
+      class="mb"
+      @close="dismissFirstRun"
+    >
+      <template #default>
+        <ol class="steps">
+          <li>填 <strong>API Key</strong>（语言模型那一栏，留空等于没配）</li>
+          <li>选 <strong>Vault 路径</strong>——点「原生面板」在系统弹窗里挑，顺带完成 macOS 授权</li>
+          <li>回「文章抓取」跑一轮；本页改动都要先点 <strong>保存配置</strong></li>
+        </ol>
+      </template>
+    </el-alert>
+
     <el-alert
       title="密钥留空表示不修改；已保存的 Key 只会以掩码形式回显"
       type="info"
@@ -272,6 +349,7 @@ onMounted(load)
         <el-form-item label="Vault 路径">
           <div class="vault">
             <el-input v-model="form.vaultPath" />
+            <el-button :loading="picking" @click="pickNative">原生面板</el-button>
             <el-button @click="pickerVisible = true">浏览…</el-button>
           </div>
         </el-form-item>
@@ -285,6 +363,30 @@ onMounted(load)
           <el-input-number v-model="form.maxWorkers" :min="1" :max="32" />
         </el-form-item>
       </el-form>
+    </el-card>
+
+    <el-card shadow="never" class="mb">
+      <template #header><span>Web 服务</span></template>
+
+      <el-form label-width="110px" label-position="left">
+        <el-form-item label="端口">
+          <el-input-number v-model="form.webPort" :min="1024" :max="65535" />
+          <span class="hint hint--inline">改动需重启应用后生效</span>
+        </el-form-item>
+        <el-form-item label="自动开浏览器">
+          <el-switch v-model="form.webOpenBrowser" />
+        </el-form-item>
+        <el-form-item label="日志文件">
+          <span class="hint">{{ logHint }}</span>
+        </el-form-item>
+      </el-form>
+
+      <div class="quit">
+        <el-button :loading="quitting" @click="quitApp">退出应用</el-button>
+        <span class="hint">
+          双击启动的 .app 没有终端，系统菜单的 Cmd+Q 到不了它——退出请用这个按钮
+        </span>
+      </div>
     </el-card>
 
     <div class="settings__footer">
@@ -337,6 +439,22 @@ onMounted(load)
 .hint {
   font-size: 12px;
   color: var(--wx-muted);
+}
+
+.hint--inline {
+  margin-left: 10px;
+}
+
+.steps {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.quit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .settings__footer {

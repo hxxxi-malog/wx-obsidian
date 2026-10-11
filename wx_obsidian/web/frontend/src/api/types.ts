@@ -7,12 +7,24 @@ export interface ConnectionTestResult {
   details?: Record<string, string> | null
 }
 
+export interface EnvironmentWarning {
+  /** 机器可读的原因码，例如 vault_unset / vault_in_tcc_dir */
+  code: string
+  message: string
+  /** 该怎么处理（给用户看的动作建议） */
+  action: string
+}
+
 export interface HealthPayload {
   source: ConnectionTestResult
   llm_api: ConnectionTestResult
   vision_api: ConnectionTestResult | null
   vault_path: ConnectionTestResult | null
   overall: boolean
+  /** 首次运行（config.json 与 .env 都不存在） */
+  first_run: boolean
+  /** 环境前置条件告警：vault 未设置、落在 TCC 敏感目录、不可写等 */
+  warnings: EnvironmentWarning[]
 }
 
 export interface StatsPayload {
@@ -125,7 +137,7 @@ export interface ConfigSnapshot {
   source: { type: string; base_url: string; timeout: number; token: string }
   obsidian: { vault_path: string; articles_dir: string }
   fetch: { max_days: number; max_workers: number; feed_limit: number }
-  web: { port: number }
+  web: { port: number; open_browser: boolean }
 }
 
 export interface ConfigSaveResult {
@@ -145,6 +157,12 @@ export interface FsListing {
   parent: string
   entries: FsEntry[]
   truncated: boolean
+}
+
+/** POST /api/fs/pick：用户取消时 path 为空串且 cancelled=true */
+export interface FsPickResult {
+  path: string
+  cancelled: boolean
 }
 
 export interface FeedItem {

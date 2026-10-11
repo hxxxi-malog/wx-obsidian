@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { ApiError, apiGet } from '../api/client'
 import type { HealthPayload, StatsPayload } from '../api/types'
 
+const router = useRouter()
 const health = ref<HealthPayload | null>(null)
 const stats = ref<StatsPayload | null>(null)
 const loading = ref(false)
 const error = ref('')
+
+/** 环境告警：vault 未设置 / 落在 TCC 敏感目录 / 不可写——都是必须先处理的 */
+const warnings = computed(() => health.value?.warnings ?? [])
 
 async function load(): Promise<void> {
   loading.value = true
@@ -86,6 +91,39 @@ onMounted(load)
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="mb" />
 
+    <el-alert
+      v-if="health?.first_run"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="首次运行：还没有配置文件"
+      class="mb"
+    >
+      <template #default>
+        <span>先在「配置管理」里设置 Vault 路径与 API Key，再回「文章抓取」跑一轮。</span>
+        <el-button link type="primary" @click="router.push('/settings')">去配置</el-button>
+      </template>
+    </el-alert>
+
+    <el-card v-if="warnings.length" shadow="never" class="mb">
+      <template #header>
+        <div class="card__header">
+          <span>环境提示</span>
+          <span class="status-list__muted">这些不修好，抓取会失败</span>
+        </div>
+      </template>
+      <el-alert
+        v-for="item in warnings"
+        :key="item.code"
+        :title="item.message"
+        :description="item.action"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="warning"
+      />
+    </el-card>
+
     <el-card shadow="never" class="mb">
       <template #header>
         <div class="card__header">
@@ -163,6 +201,10 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.warning + .warning {
+  margin-top: 8px;
 }
 
 .status-list {
