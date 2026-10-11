@@ -1,0 +1,157 @@
+/**
+ * 全局基础样式：只放「全站都要成立」的东西。
+ * 组件样式一律走 Tailwind 工具类 + tokens，不要在这里堆组件规则。
+ */
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* 锚点/焦点滚动时留出粘性顶栏的高度 */
+    scroll-padding-top: 72px;
+  }
+
+  body {
+    min-height: 100dvh;
+    margin: 0;
+    background-color: var(--surface-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* 数字默认等宽不了，但别在这里全局设 tabular —— 会造成正文数字过宽 */
+  }
+
+  /* 全屏高容器用 dvh，避免 iOS 地址栏缩放导致的布局跳动 */
+  #app {
+    min-height: 100dvh;
+  }
+
+  ::selection {
+    background-color: var(--accent-soft);
+    color: var(--text-primary);
+  }
+
+  /* 键盘可见焦点统一走强调色环；鼠标点击不出现环（:focus-visible 的语义） */
+  :focus-visible {
+    outline: 2px solid var(--accent-ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::placeholder {
+    color: var(--text-tertiary);
+    opacity: 1;
+  }
+
+  /* 细滚动条（Firefox 用 scrollbar-*，WebKit 用伪元素） */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    background-clip: content-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--border-strong);
+    background-clip: content-box;
+  }
+
+  /* 表单元素继承字体与颜色（Tailwind preflight 已做字体，这里补颜色） */
+  input,
+  textarea,
+  select,
+  button {
+    color: inherit;
+    font: inherit;
+  }
+
+  /* 原生 number 输入框的上下箭头在暗色下很丑，且我们有 AppNumberInput */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    margin: 0;
+    -webkit-appearance: none;
+  }
+
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+
+  /* 尊重系统的「减少动态效果」：动画与过渡全部归零（保留透明度变化以示状态） */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ── 供工具类引用的关键帧（放在 layer 外，避免被按需裁剪） ───────── */
+@keyframes wx-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes wx-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.86);
+  }
+}
+
+@keyframes wx-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wx-slide-sheen {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}

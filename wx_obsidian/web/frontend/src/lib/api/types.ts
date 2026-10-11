@@ -52,10 +52,12 @@ export interface JobResult {
   items: JobResultItem[]
 }
 
+export type JobState = 'running' | 'finished' | 'cancelled' | 'error'
+
 export interface JobSnapshot {
   job_id: string
   kind: string
-  state: 'running' | 'finished' | 'cancelled' | 'error'
+  state: JobState
   started_at: string
   finished_at: string | null
   completed: number
@@ -83,6 +85,8 @@ export interface JobEvent {
   detail?: string
   message?: string
   error?: string
+  level?: string
+  logger?: string
   result?: JobResult
 }
 
@@ -99,12 +103,39 @@ export interface ArticleItem {
   retry_count: number
 }
 
+/** GET /api/articles 的排序键（后端白名单，非法值会被忽略） */
+export type ArticleSort = 'processed_at' | 'title' | 'category'
+export type SortOrder = 'asc' | 'desc'
+
+export interface ArticleQuery {
+  q?: string
+  category?: string
+  status?: string
+  limit?: number
+  offset?: number
+  sort?: ArticleSort
+  order?: SortOrder
+}
+
 export interface ArticleList {
   total: number
   limit: number
   offset: number
   categories: string[]
   items: ArticleItem[]
+}
+
+/** POST /api/articles/bulk-delete 的响应；未知 id 不整体失败，逐条进 failed */
+export interface BulkDeleteFailure {
+  article_id: string
+  error: string
+}
+
+export interface BulkDeleteResult {
+  ok: boolean
+  deleted: number
+  failed: BulkDeleteFailure[]
+  actions: string[]
 }
 
 export interface ProviderView {
@@ -146,6 +177,14 @@ export interface ConfigSaveResult {
   skipped: string[]
   restart_required: boolean
 }
+
+/** PUT /api/config 的入参：patch 走配置键白名单，env 走环境变量白名单 */
+export interface ConfigPatchPayload {
+  patch: Record<string, string | number | boolean>
+  env: Record<string, string>
+}
+
+export type ConnectionTestTarget = 'llm' | 'vision' | 'source' | 'all'
 
 export interface FsEntry {
   name: string
@@ -199,6 +238,12 @@ export interface SourceHealth {
   docker_hint: string
 }
 
+export interface SourceRefreshResult {
+  ok: boolean
+  error: string
+  account: AccountStatus
+}
+
 export interface SchedulerJob {
   job_id: string
   name: string
@@ -242,3 +287,13 @@ export interface FailedArticle {
   failed_at: string | null
   retry_count: number
 }
+
+/** 任务明细里的状态码 → 中文标签与色调 */
+export const JOB_ITEM_STATUS: Record<string, { label: string; tone: 'success' | 'danger' | 'warning' | 'info' }> =
+  {
+    done: { label: '成功', tone: 'success' },
+    error: { label: '失败', tone: 'danger' },
+    failed: { label: '失败', tone: 'danger' },
+    skipped: { label: '跳过', tone: 'warning' },
+    cancelled: { label: '已取消', tone: 'info' },
+  }

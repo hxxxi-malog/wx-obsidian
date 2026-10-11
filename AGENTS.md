@@ -46,6 +46,12 @@ mypy wx_obsidian/ process_articles.py validate_markdown.py
 # Validate markdown files
 python validate_markdown.py <file.md>
 python validate_markdown.py --dir <directory>
+
+# 前端（自建设计系统：Tailwind v4 + Reka UI + Phosphor）
+cd wx_obsidian/web/frontend
+pnpm type-check && pnpm style-guard && pnpm test && pnpm build   # 四道门，缺一不可
+pnpm dev                                                        # 5173，/api 代理到 8765
+node scripts/ui-smoke.mjs --base http://127.0.0.1:8765 --token "$WX_WEB_TOKEN" --out /tmp/shots
 ```
 
 ## Architecture
@@ -153,7 +159,12 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `cli.py` | 流程编排 | 串联所有模块，改动需验证完整流程 |
 | `web/api.py` | Web 接口 + 安全中间件 | 端点签名禁用 `X \| None`：py3.9 下 FastAPI 会运行时求值注解 |
 | `web/jobs.py` | 任务单飞 + SSE 事件 | `on_progress` 在工作线程调用，状态只能在事件循环线程内改 |
-| `web/frontend/` | Vue 界面 | 改动后必须 `pnpm build`；产物由 FastAPI 同源托管 |
+| `web/articles.py` | 文章列表/详情/级联删除 | `sort`/`order` 是白名单参数（非法值回落默认顺序），排序必须在分页切片前 |
+| `web/frontend/` | Vue 界面（自建设计系统） | 改动后跑 `pnpm type-check && pnpm style-guard && pnpm test && pnpm build`；产物由 FastAPI 同源托管 |
+| `web/frontend/src/styles/tokens.css` | 设计 token（三层 + 深浅两套） | 改 token 影响全站观感；业务代码只允许语义类，禁裸色值 |
+| `web/frontend/src/lib/api/endpoints.ts` | 所有接口路径的唯一事实来源 | 加接口要同步 `tests/test_web/test_frontend_contract.py` 的必选清单 |
+| `web/frontend/src/components/ui/` | 设计系统原子组件（冻结契约） | 改 props 会波及全部页面；新增能力先看 spec §5.3 |
+| `web/frontend/scripts/{style-guard,ui-smoke}.mjs` | 风格守卫 + 浏览器冒烟 | ui-smoke 需要本机 Chrome；无 token 时断言「未授权引导」而不是白屏 |
 | `web/logging_setup.py` | 日志落盘 + 密钥掩码 + stdout 接管 | 冻结包唯一的排错通道；掩码过滤器不能漏 |
 | `web/scheduling.py` | 定时任务持久化与恢复 | 设定写入 config.json，服务启动时 `restore_state` |
 | `web/logs.py` | 日志环形缓冲（页面告警面板） | 只收 WARNING+，与文件日志互不影响 |
@@ -178,8 +189,8 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | 修改 Vault 目录结构 | `output/vault.py`, `~/.wx-obsidian/config.json` |
 | 新增数据源 | `sources/` 下新建模块 + 实现 ArticleSource, `sources/factory.py`, `cli.py` |
 | 文章级联删除 | `output/cleanup.py`, `tui/screens/articles.py`, `web/articles.py`, `process_articles.py` |
-| 修改 Web 界面 | `web/frontend/src/views/`, 然后 `pnpm build` |
-| 新增 Web 接口 | `web/api.py`, `web/frontend/src/api/` |
+| 修改 Web 界面 | `web/frontend/src/views/`、`src/components/{ui,domain,layout}/`，然后跑前端四道门 + `pnpm build` |
+| 新增 Web 接口 | `web/api.py`、`web/frontend/src/lib/api/{endpoints,types}.ts`、`tests/test_web/test_frontend_contract.py` |
 | 调整 macOS 打包 | `packaging/wx-obsidian.spec`, `packaging/build_app.sh`, `packaging/make_icon.py` |
 | 调整 Web 启动器行为（端口/单实例/退出） | `web/__main__.py`, `web/logging_setup.py`, `tests/test_web/test_launcher.py` |
 | 冻结包端到端自检 | `packaging/smoke_frozen.py`（临时 HOME + stub 上游，真跑一轮并断言笔记/日志/退出） |

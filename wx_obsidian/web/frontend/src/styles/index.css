@@ -1,0 +1,9 @@
+/**
+ * 样式总入口。顺序有讲究：
+ *   tailwindcss（preflight + 引擎） → tokens（主题变量） → base（全局基础） → utilities（自定义工具类）
+ * 只有 main.ts 引这一个文件。
+ */
+@import 'tailwindcss';
+@import './tokens.css';
+@import './base.css';
+@import './utilities.css';

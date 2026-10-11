@@ -3,28 +3,38 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@12.9.1",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "type-check": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "style-guard": "node scripts/style-guard.mjs",
+    "ui:smoke": "node scripts/ui-smoke.mjs",
+    "verify": "pnpm type-check && pnpm style-guard && pnpm test && pnpm build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "element-plus": "^2.9.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@phosphor-icons/vue": "^2.2.1",
+    "@vueuse/core": "^15.0.0",
+    "motion-v": "^2.6.0",
     "pinia": "^2.2.0",
+    "reka-ui": "^2.11.0",
     "vue": "^3.5.0",
     "vue-router": "^4.4.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-vue": "^5.2.0",
+    "@vue/test-utils": "^2.5.1",
+    "happy-dom": "^20.14.6",
+    "tailwindcss": "^4.3.3",
     "typescript": "~5.6.0",
     "vite": "^6.0.0",
+    "vitest": "^5.0.3",
     "vue-tsc": "^2.1.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "vue-demi"
-    ]
   }
 }

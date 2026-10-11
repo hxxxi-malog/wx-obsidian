@@ -1,0 +1,187 @@
+/**
+ * 设计 token（三层：原始 → 语义 → 组件）
+ *
+ * 规则：
+ *  1. 业务代码只用**语义层**（`bg-panel` / `text-muted` / `border-hairline`），
+ *     不要直接用原始层，更不要写裸 hex——`scripts/style-guard.mjs` 会拦。
+ *  2. 深浅两套只切换语义层，组件不写 `dark:` 前缀也能自动适配；
+ *     确实需要按主题微调时再用 `dark:` 变体。
+ *  3. 对比度：正文 ≥ 7:1、次要文字 ≥ 4.5:1（WCAG AA），改值前先量。
+ */
+
+/* 用 class 而不是媒体查询切主题：index.html 里有一段首屏前置脚本负责定色，避免 FOUC */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* ── 原始层：中性（zinc 相，冷灰，不用纯黑） ───────────────────── */
+  --color-ink-950: oklch(0.145 0.006 285);
+  --color-ink-900: oklch(0.185 0.006 285);
+  --color-ink-850: oklch(0.215 0.006 285);
+  --color-ink-800: oklch(0.255 0.007 285);
+  --color-ink-700: oklch(0.34 0.008 285);
+  --color-paper-0: oklch(1 0 0);
+  --color-paper-50: oklch(0.985 0.002 285);
+  --color-paper-100: oklch(0.965 0.003 285);
+  --color-paper-200: oklch(0.93 0.004 285);
+
+  /* ── 原始层：唯一强调色 = 铜金（chroma 0.132 ≈ 54% 饱和度） ─────── */
+  --color-copper-300: oklch(0.80 0.115 58);
+  --color-copper-400: oklch(0.735 0.132 55);
+  --color-copper-500: oklch(0.66 0.14 50);
+  --color-copper-600: oklch(0.575 0.135 48);
+  --color-copper-700: oklch(0.50 0.125 45);
+
+  /* ── 原始层：状态色（都压过饱和度，避免和强调色抢） ─────────────── */
+  --color-jade-400: oklch(0.75 0.105 162);
+  --color-jade-600: oklch(0.56 0.115 158);
+  --color-amber-400: oklch(0.84 0.105 88);
+  --color-amber-600: oklch(0.64 0.115 78);
+  --color-rose-400: oklch(0.70 0.145 20);
+  --color-rose-600: oklch(0.55 0.165 24);
+  --color-slate-blue-400: oklch(0.74 0.045 250);
+  --color-slate-blue-600: oklch(0.54 0.060 250);
+
+  /* ── 字体 ─────────────────────────────────────────────────────── */
+  /* 拉丁走 Geist，汉字回落系统字体（不加载 CJK webfont：体积不划算） */
+  --font-sans:
+    'Geist Variable', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC',
+    system-ui, -apple-system, sans-serif;
+  --font-mono:
+    'Geist Mono Variable', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ── 圆角 / 阴影 / 缓动 ───────────────────────────────────────── */
+  --radius-control: 10px;
+  --radius-panel: 14px;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── 语义层：浅色（默认） ────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  --surface-page: var(--color-paper-50);
+  --surface-panel: var(--color-paper-0);
+  --surface-raised: var(--color-paper-100);
+  --surface-inset: var(--color-paper-100);
+  --surface-glass: oklch(1 0 0 / 0.75);
+  --surface-overlay: oklch(0.22 0.006 285 / 0.45);
+
+  --border-hairline: oklch(0.22 0.006 285 / 0.1);
+  --border-strong: oklch(0.22 0.006 285 / 0.22);
+
+  --text-primary: oklch(0.22 0.006 285);
+  --text-secondary: oklch(0.45 0.008 285);
+  --text-tertiary: oklch(0.56 0.008 285);
+  --text-inverse: var(--color-paper-0);
+
+  --accent: var(--color-copper-600);
+  --accent-hover: var(--color-copper-700);
+  --accent-contrast: var(--color-paper-0);
+  --accent-soft: oklch(0.575 0.135 48 / 0.1);
+  --accent-ring: oklch(0.575 0.135 48 / 0.45);
+
+  --success: var(--color-jade-600);
+  --success-soft: oklch(0.56 0.115 158 / 0.12);
+  --success-contrast: var(--color-paper-0);
+  --warning: var(--color-amber-600);
+  --warning-soft: oklch(0.64 0.115 78 / 0.14);
+  --warning-contrast: var(--color-paper-0);
+  --danger: var(--color-rose-600);
+  --danger-soft: oklch(0.55 0.165 24 / 0.11);
+  --danger-contrast: var(--color-paper-0);
+  --info: var(--color-slate-blue-600);
+  --info-soft: oklch(0.54 0.06 250 / 0.12);
+  --info-contrast: var(--color-paper-0);
+
+  /* 阴影染背景色相，不用纯黑 */
+  --shadow-panel: 0 1px 2px oklch(0.22 0.01 285 / 0.05), 0 12px 32px -20px oklch(0.22 0.02 285 / 0.25);
+  --shadow-float: 0 4px 12px -4px oklch(0.22 0.02 285 / 0.12), 0 28px 60px -28px oklch(0.22 0.02 285 / 0.35);
+  --inner-highlight: inset 0 1px 0 oklch(1 0 0 / 0.9);
+
+  --scrollbar-thumb: oklch(0.22 0.006 285 / 0.18);
+}
+
+/* ── 语义层：暗色（默认外观） ────────────────────────────────────── */
+.dark {
+  color-scheme: dark;
+
+  --surface-page: var(--color-ink-950);
+  --surface-panel: var(--color-ink-900);
+  --surface-raised: var(--color-ink-850);
+  --surface-inset: oklch(0.16 0.006 285);
+  --surface-glass: oklch(0.2 0.006 285 / 0.72);
+  --surface-overlay: oklch(0.08 0.006 285 / 0.66);
+
+  --border-hairline: oklch(1 0 0 / 0.1);
+  --border-strong: oklch(1 0 0 / 0.18);
+
+  --text-primary: oklch(0.94 0.004 285);
+  --text-secondary: oklch(0.72 0.008 285);
+  --text-tertiary: oklch(0.63 0.008 285);
+  --text-inverse: var(--color-ink-950);
+
+  --accent: var(--color-copper-400);
+  --accent-hover: var(--color-copper-300);
+  --accent-contrast: oklch(0.19 0.03 55);
+  --accent-soft: oklch(0.735 0.132 55 / 0.14);
+  --accent-ring: oklch(0.735 0.132 55 / 0.5);
+
+  --success: var(--color-jade-400);
+  --success-soft: oklch(0.75 0.105 162 / 0.14);
+  --success-contrast: oklch(0.2 0.03 160);
+  --warning: var(--color-amber-400);
+  --warning-soft: oklch(0.84 0.105 88 / 0.15);
+  --warning-contrast: oklch(0.22 0.04 85);
+  --danger: var(--color-rose-400);
+  --danger-soft: oklch(0.7 0.145 20 / 0.15);
+  --danger-contrast: oklch(0.2 0.04 20);
+  --info: var(--color-slate-blue-400);
+  --info-soft: oklch(0.74 0.045 250 / 0.14);
+  --info-contrast: oklch(0.2 0.02 250);
+
+  --shadow-panel: 0 1px 0 oklch(1 0 0 / 0.02), 0 16px 40px -24px oklch(0.05 0.01 285 / 0.9);
+  --shadow-float: 0 4px 16px -6px oklch(0.05 0.01 285 / 0.7), 0 32px 64px -32px oklch(0.05 0.01 285 / 0.95);
+  --inner-highlight: inset 0 1px 0 oklch(1 0 0 / 0.06);
+
+  --scrollbar-thumb: oklch(1 0 0 / 0.16);
+}
+
+/* ── 语义层 → Tailwind 工具类（`inline` 才能跟随 .dark 运行时切换） ── */
+@theme inline {
+  --color-page: var(--surface-page);
+  --color-panel: var(--surface-panel);
+  --color-raised: var(--surface-raised);
+  --color-inset: var(--surface-inset);
+  --color-glass: var(--surface-glass);
+  --color-overlay: var(--surface-overlay);
+
+  --color-hairline: var(--border-hairline);
+  --color-strong: var(--border-strong);
+
+  --color-ink: var(--text-primary);
+  --color-muted: var(--text-secondary);
+  --color-faint: var(--text-tertiary);
+  --color-inverse: var(--text-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-contrast: var(--success-contrast);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-contrast: var(--warning-contrast);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-contrast: var(--danger-contrast);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-contrast: var(--info-contrast);
+
+  --shadow-panel: var(--shadow-panel);
+  --shadow-float: var(--shadow-float);
+}

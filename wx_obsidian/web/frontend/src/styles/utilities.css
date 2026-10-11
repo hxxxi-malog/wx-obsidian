@@ -1,0 +1,55 @@
+/**
+ * 少量自定义工具类：只收「Tailwind 原生表达不了、或表达出来太长」的模式。
+ * 能被 `bg-panel border border-hairline` 拼出来的，不要再包一层。
+ */
+
+/* 面板：抬升面 + 发丝边 + 染背景色相的弱阴影（替代 Element Plus 的 el-card） */
+@utility panel {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-hairline);
+  box-shadow: var(--shadow-panel);
+}
+
+/* 玻璃层：给粘性顶栏、任务坞用；内阴影模拟边缘折射（不用外发光） */
+@utility glass {
+  background-color: var(--surface-glass);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  box-shadow: var(--inner-highlight);
+}
+
+/* 数字对齐：统计、延迟、计数、时间戳全部用 */
+@utility nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* 骨架屏的反光扫过（只动 background-position，不触发重排） */
+@utility shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--surface-raised) 0%,
+    var(--surface-inset) 40%,
+    var(--surface-raised) 80%
+  );
+  background-size: 200% 100%;
+  animation: wx-slide-sheen 1.8s linear infinite;
+}
+
+/* 运行中状态的「呼吸」点（永续微动效，靠 prefers-reduced-motion 兜底关闭） */
+@utility breathe {
+  animation: wx-breathe 2.4s var(--ease-out-expo, ease-in-out) infinite;
+}
+
+/* 进场：透明度 + 位移；随便用，CSS 级、无 JS 开销 */
+@utility rise {
+  animation: wx-rise 0.22s var(--ease-out-expo, ease-out) both;
+}
+
+/* 行悬浮过渡：v4 的 @utility 不允许带伪类选择器，所以只定义过渡，
+   hover 的具体底色由使用处用 `hover:bg-raised/60` 表达。 */
+@utility row-hover {
+  transition:
+    background-color 0.14s var(--ease-out-expo, ease),
+    color 0.14s var(--ease-out-expo, ease);
+}

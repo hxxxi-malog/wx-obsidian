@@ -1,136 +1,178 @@
 <script setup lang="ts">
-interface NavItem {
-  key: string
-  label: string
-  path: string
-  ready: boolean
-  hint?: string
+/**
+ * 应用外壳：侧栏 + 顶栏 + 内容区 + 任务坞 + 命令面板 + 提示层。
+ *
+ * 这里承担三件事：
+ *  1. 主题初始化（首屏定色在 index.html，这里接管切换与跟随系统）；
+ *  2. 全局快捷键（⌘K / Ctrl+K 命令面板、Esc 关闭、「/」聚焦搜索）；
+ *  3. 全局数据：数据源探活（顶栏胶囊）与任务状态（任务坞）——都放在最外层，
+ *     切页面不会重建 SSE 连接，也不会重复请求。
+ */
+import { useEventListener } from '@vueuse/core'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+import AppRail from '@/components/layout/AppRail.vue'
+import AppTopbar from '@/components/layout/AppTopbar.vue'
+import CommandPalette from '@/components/layout/CommandPalette.vue'
+import JobDock from '@/components/layout/JobDock.vue'
+import AppDrawer from '@/components/ui/AppDrawer.vue'
+import Toaster from '@/components/ui/Toaster.vue'
+import { usePolling } from '@/composables/usePolling'
+import { useToast } from '@/composables/useToast'
+import { apiGet } from '@/lib/api/client'
+import { endpoints } from '@/lib/api/endpoints'
+import type { SourceHealth } from '@/lib/api/types'
+import { useJobsStore } from '@/stores/jobs'
+import { useUiStore } from '@/stores/ui'
+
+const ui = useUiStore()
+const jobs = useJobsStore()
+const toast = useToast()
+
+const sourceHealth = ref<SourceHealth | null>(null)
+const healthLoading = ref(false)
+const navOpen = ref(false)
+const notifiedJob = ref('')
+
+const railWidth = computed(() => (ui.railCollapsed ? 'lg:w-[68px]' : 'lg:w-[232px]'))
+
+async function probeSource(): Promise<void> {
+  healthLoading.value = true
+  try {
+    sourceHealth.value = await apiGet<SourceHealth>(endpoints.source.health())
+  } catch {
+    sourceHealth.value = null
+  } finally {
+    healthLoading.value = false
+  }
 }
 
-// 与 TUI 的 8 个屏幕一一对应（Container/Account 在 Web 上拆成数据源状态与账号管理）
-const NAV: NavItem[] = [
-  { key: 'dashboard', label: '状态总览', path: '/', ready: true },
-  { key: 'run', label: '文章抓取', path: '/run', ready: true },
-  { key: 'articles', label: '文章管理', path: '/articles', ready: true },
-  { key: 'settings', label: '配置管理', path: '/settings', ready: true },
-  { key: 'feeds', label: '公众号管理', path: '/feeds', ready: true },
-  { key: 'source', label: '数据源状态', path: '/source', ready: true },
-  { key: 'account', label: '账号管理', path: '/account', ready: true },
-  { key: 'scheduler', label: '定时任务', path: '/scheduler', ready: true },
-]
+onMounted(() => {
+  ui.applyTheme()
+  // 刷新页面后重新挂上正在跑的任务（旧行为保留）
+  void jobs.refresh()
+})
+
+// 空闲时低频轮询：捕捉定时任务发起的抓取，让任务坞在任何页面都能自己冒出来
+usePolling(
+  async () => {
+    if (!jobs.running) {
+      await jobs.refresh()
+    }
+  },
+  20000,
+)
+
+usePolling(probeSource, 45000, { immediate: true })
+
+const stopWatchingTheme = ui.watchSystemTheme()
+watch(() => ui.themeMode, () => ui.applyTheme())
+
+// 任务结束（无论用户在哪个页面）都给一次明确反馈，并自动展开任务坞
+watch(
+  () => jobs.job?.state,
+  (state, previous) => {
+    const job = jobs.job
+    if (!job || state === previous || !state) {
+      return
+    }
+    if (state === 'running') {
+      ui.openDock()
+      return
+    }
+    if (notifiedJob.value === job.job_id) {
+      return
+    }
+    notifiedJob.value = job.job_id
+    if (state === 'finished') {
+      const result = job.result ?? {}
+      toast.success(
+        `抓取完成：成功 ${result.done ?? 0} 篇`,
+        result.failed ? `失败 ${result.failed} 篇，可在任务坞里看明细` : '全部成功',
+        { label: '查看明细', run: () => ui.openDock() },
+      )
+    } else if (state === 'cancelled') {
+      toast.warn('任务已取消', `已完成 ${job.result?.done ?? 0} 篇`)
+    } else if (state === 'error') {
+      toast.error(job.error || '任务失败', '详情见任务坞')
+    }
+  },
+  { flush: 'post' },
+)
+
+useEventListener(window, 'keydown', (event: KeyboardEvent) => {
+  const target = event.target as HTMLElement | null
+  const typing =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target?.isContentEditable === true
+
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    ui.togglePalette()
+    return
+  }
+  if (event.key === 'Escape' && !typing) {
+    if (ui.paletteOpen) {
+      ui.togglePalette(false)
+    } else if (ui.dockOpen) {
+      ui.closeDock()
+    }
+    return
+  }
+  // 「/」聚焦列表页的搜索框（在输入框里按 / 不劫持）
+  if (event.key === '/' && !typing && !ui.paletteOpen) {
+    const search = document.querySelector<HTMLInputElement>('[data-search-input]')
+    if (search) {
+      event.preventDefault()
+      search.focus()
+    }
+  }
+})
+
+onBeforeUnmount(() => stopWatchingTheme())
 </script>
 
 <template>
-  <el-container class="app">
-    <el-header class="app__header">
-      <span class="app__brand">wx-obsidian</span>
-      <span class="app__sub">公众号文章 → Obsidian 知识库</span>
-    </el-header>
+  <div class="flex min-h-[100dvh] bg-page text-ink">
+    <aside
+      class="sticky top-0 hidden h-[100dvh] shrink-0 border-r border-hairline bg-panel transition-[width] duration-200 ease-out-expo lg:block"
+      :class="railWidth"
+    >
+      <AppRail variant="rail" />
+    </aside>
 
-    <el-container>
-      <el-aside width="190px" class="app__aside">
-        <ul class="nav">
-          <li v-for="item in NAV" :key="item.key">
-            <router-link v-if="item.ready" class="nav__item nav__item--ready" :to="item.path">
-              {{ item.label }}
-            </router-link>
-            <span v-else class="nav__item nav__item--soon">
-              {{ item.label }}
-              <em class="nav__hint">{{ item.hint }}</em>
-            </span>
-          </li>
-        </ul>
-      </el-aside>
+    <div class="flex min-w-0 flex-1 flex-col">
+      <AppTopbar
+        :source-health="sourceHealth"
+        :health-loading="healthLoading"
+        :dock-open="ui.dockOpen"
+        @open-palette="ui.togglePalette(true)"
+        @toggle-nav="navOpen = true"
+        @toggle-dock="ui.toggleDock()"
+      />
 
-      <el-main class="app__main">
-        <router-view />
-      </el-main>
-    </el-container>
-  </el-container>
+      <main class="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 sm:py-6">
+        <router-view v-slot="{ Component }">
+          <Transition
+            mode="out-in"
+            enter-active-class="transition duration-200 ease-out"
+            enter-from-class="opacity-0 translate-y-1"
+            leave-active-class="transition duration-100 ease-in"
+            leave-to-class="opacity-0"
+          >
+            <component :is="Component" />
+          </Transition>
+        </router-view>
+      </main>
+    </div>
+
+    <AppDrawer v-model:open="navOpen" title="导航" width="md">
+      <AppRail variant="drawer" @navigate="navOpen = false" />
+    </AppDrawer>
+
+    <JobDock :open="ui.dockOpen" @update:open="ui.toggleDock($event)" />
+    <CommandPalette :open="ui.paletteOpen" @update:open="ui.togglePalette($event)" />
+    <Toaster />
+  </div>
 </template>
-
-<style>
-:root {
-  --wx-border: #dcdfe6;
-  --wx-muted: #909399;
-}
-
-body {
-  margin: 0;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
-  background: #f5f7fa;
-  color: #303133;
-}
-</style>
-
-<style scoped>
-.app {
-  min-height: 100vh;
-}
-
-.app__header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  background: #1f2d3d;
-  color: #fff;
-}
-
-.app__brand {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.app__sub {
-  font-size: 12px;
-  color: #a3b1c2;
-}
-
-.app__aside {
-  background: #fff;
-  border-right: 1px solid var(--wx-border);
-  padding: 12px 0;
-}
-
-.app__main {
-  padding: 20px 24px;
-}
-
-.nav {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.nav__item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  font-size: 14px;
-  text-decoration: none;
-}
-
-.nav__item--ready {
-  color: #1f2d3d;
-}
-
-.nav__item--ready.router-link-active {
-  background: #ecf5ff;
-  border-right: 3px solid #409eff;
-  font-weight: 600;
-}
-
-.nav__item--soon {
-  color: #c0c4cc;
-  cursor: not-allowed;
-}
-
-.nav__hint {
-  font-size: 11px;
-  font-style: normal;
-  color: #c0c4cc;
-}
-</style>

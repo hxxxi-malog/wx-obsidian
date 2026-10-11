@@ -150,14 +150,22 @@ python process_articles.py web --port 8765 --no-open
 
 | 页面 | 功能 |
 |------|------|
-| 状态总览 | 数据源 / LLM / Vision / Vault 四项健康状态、处理统计、分类分布、首启引导与环境告警 |
-| 文章抓取 | 发起抓取（篇数、强制重跑）、实时进度与阶段、逐篇结果、失败清单、系统告警、中途取消、重试失败文章 |
-| 文章管理 | 搜索 / 分类 / 状态筛选、分页、双击在 Obsidian 打开、级联删除 |
-| 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数 / Web 端口、连通性测试、**原生目录选择器**、退出应用 |
-| 公众号管理 | 订阅列表、按链接添加订阅、取消订阅（需数据源访问令牌，否则列表为空） |
-| 数据源状态 | we-mp-rss 可达性、上游返回详情 |
-| 账号管理 | 登录状态、扫码登录地址、令牌有效期（需数据源访问令牌，否则显示「查不到」） |
-| 定时任务 | 间隔抓取（1/2/6/12/24h）与保活任务、立即执行、删除；**设定写进 config.json，重启自动恢复** |
+| 状态总览 | 数据源 / LLM / Vision / Vault 四项健康状态、处理统计指标条、可点击的分类分布、最近任务、首启引导与环境告警 |
+| 文章抓取 | 发起抓取（篇数预设、强制重跑二次确认）、实时进度与阶段时间线、逐篇结果、失败清单、运行日志、系统告警（SSE）、中途取消、重试失败文章 |
+| 文章管理 | 搜索 / 分类（可搜索，149 个分类也挑得动）/ 状态筛选、列排序、分页、**详情抽屉**、多选批量重试与批量删除、级联删除、在 Obsidian 打开 |
+| 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数 / Web 端口、分区导航、连通性测试、**原生目录选择器**、**未保存改动守卫**、退出应用 |
+| 公众号管理 | 订阅列表（含封面）、按链接添加订阅、取消订阅（需数据源访问令牌，否则列表为空并说明原因） |
+| 数据源状态 | we-mp-rss 可达性、上游返回详情、Docker 启动命令 |
+| 账号管理 | 登录状态、扫码登录地址、令牌有效期与倒计时（需数据源访问令牌，否则显示「查不到」） |
+| 定时任务 | 间隔抓取（1/2/6/12/24h）与保活任务、下次触发倒计时、立即执行、删除；**设定写进 config.json，重启自动恢复** |
+
+界面通用能力：
+
+- **任务坞**：右下角常驻，任何页面都能看到抓取进度、阶段与日志；切页面不会断流。
+- **命令面板**（`⌘K` / `Ctrl+K`）：跳页面、发起/取消抓取、切主题、搜文章标题；列表页按 `/` 聚焦搜索框。
+- **深浅双主题**：默认跟随系统，顶栏一键切换（浅色 → 深色 → 跟随系统），选择记在浏览器本地。
+- 筛选、分页、排序**写进 URL**：刷新、后退、把链接发给别人都不丢状态。
+- 空态 / 加载骨架 / 错误重试三态齐全；`prefers-reduced-motion` 下所有动效自动关闭。
 
 几个要点：
 
@@ -414,7 +422,7 @@ wx-obsidian/
     │   ├── scheduling.py        # 定时任务：设定持久化到 config.json，重启自动恢复
     │   ├── logging_setup.py     # 日志落盘 + 轮转 + 密钥掩码 + stdout/stderr 接管
     │   ├── __main__.py          # 启动器（选端口 / 单实例交接 / 开浏览器 / 退出接口）
-    │   ├── frontend/            # Vue 3 + Vite + Element Plus 源码
+    │   ├── frontend/            # Vue 3 + Vite + Tailwind v4 + Reka UI 源码（自建设计系统）
     │   └── static/              # 前端构建产物（pnpm build 生成，不入库）
     ├── sources/
     │   ├── base.py              # ArticleSource 协议（编排层只依赖此抽象）
@@ -593,6 +601,30 @@ python validate_markdown.py --dir <directory>
 - 原子写入：持久化文件使用 `tempfile + os.replace`
 - 异常规范：禁止裸 `except:`，外部 API 必须有 timeout
 - 依赖隔离：`sources/`、`processing/`、`output/` 之间不互相依赖
+
+### 前端开发（`wx_obsidian/web/frontend`）
+
+```bash
+cd wx_obsidian/web/frontend
+pnpm install                 # pnpm 12；构建脚本白名单在 pnpm-workspace.yaml
+
+pnpm dev                     # Vite 开发服务器（5173），/api 代理到 127.0.0.1:8765
+pnpm type-check              # vue-tsc，0 error 是硬门槛
+pnpm test                    # vitest：API 客户端、任务事件归约、格式化、配置 patch
+pnpm style-guard             # 风格守卫：禁 element-plus / 裸色值 / emoji / 100vh / 散落的 /api 字面量
+pnpm build                   # 产物落 wx_obsidian/web/static/，由 FastAPI 同源托管
+
+# 对正在运行的服务跑一遍浏览器冒烟（8 个页面 + 关键交互 + 截图）
+node scripts/ui-smoke.mjs --base http://127.0.0.1:8765 --token "$WX_WEB_TOKEN" --out /tmp/shots
+```
+
+- **设计系统**：token 在 `src/styles/tokens.css`（三层：原始 → 语义 → 组件，深浅两套）；
+  业务代码只用语义类（`bg-panel` / `text-ink` / `border-hairline`），不写裸色值。
+- **接口路径唯一事实来源**：`src/lib/api/endpoints.ts`；`tests/test_web/test_frontend_contract.py`
+  会拿它比对 FastAPI 路由表，后端改路由而前端没跟上会直接红灯。
+- 设计文档与实施记录：`docs/design-docs/web-ui-redesign/`（审计、token 规范、逐页方案、验收清单）。
+- 改动界面后请跑：`pnpm type-check && pnpm style-guard && pnpm test && pnpm build`，
+  再按需跑 `ui-smoke`；容器路径改动则额外跑 `docker compose build wx-obsidian`。
 
 ## License
 
