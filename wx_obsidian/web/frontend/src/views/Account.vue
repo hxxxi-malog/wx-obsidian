@@ -3,18 +3,23 @@ import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { apiGet, apiPost, errorMessage } from '../api/client'
-import type { AccountStatus } from '../api/types'
+import type { AccountStatus, ConfigSnapshot } from '../api/types'
 
 const account = ref<AccountStatus | null>(null)
 const loading = ref(false)
 const refreshing = ref(false)
 const error = ref('')
+const tokenConfigured = ref(true)
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
     account.value = await apiGet<AccountStatus>('/api/source/account')
+    // 上游查询登录态同样需要 Bearer Token；未配置时适配器只能返回「未登录」，
+    // 这里必须区分「真的没登录」和「查不到」，否则用户会去排查一个不存在的问题
+    const config = await apiGet<ConfigSnapshot>('/api/config')
+    tokenConfigured.value = Boolean(config.source.token)
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
@@ -95,6 +100,15 @@ onMounted(load)
         <el-button @click="openLogin">打开授权页面</el-button>
       </div>
 
+      <el-alert
+        v-if="account && !account.is_logged_in && !tokenConfigured"
+        class="mt"
+        type="info"
+        :closable="false"
+        show-icon
+        title="未配置数据源访问令牌，无法查询真实登录态（显示为「未登录」并不代表登录已失效）"
+      />
+
       <div class="hint">
         登录态由 we-mp-rss 自行维护（微信读书 Cookie）。这里只做探测与提示，
         失败时请到 <code>http://localhost:8001</code> 重新登录。
@@ -130,6 +144,10 @@ onMounted(load)
   margin-top: 16px;
   display: flex;
   gap: 8px;
+}
+
+.mt {
+  margin-top: 12px;
 }
 
 .hint {
