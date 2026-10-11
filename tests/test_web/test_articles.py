@@ -81,6 +81,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))
     return {
         "client": TestClient(app),
+        "cm": cm,
         "note": note,
         "records": records,
         "vault": vault,
@@ -127,6 +128,102 @@ def test_detail_and_404(env: dict[str, Any]) -> None:
         assert client.get("/api/articles/nope", headers=AUTH).status_code == 404
 
 
+# --- N1 排序：白名单、缺字段排最后、同键跨页稳定 ---------------------------------------
+
+
+def _sort_records() -> dict[str, Any]:
+    """排序用例：a3/c1/e5 同键（processed_at 相同），d4 缺 processed_at，a3 缺 category。"""
+    return {
+        "b2": {"title": "Beta", "category": "LLM", "processed_at": "2026-05-02T10:00:00"},
+        "a3": {"title": "Alpha", "category": "", "processed_at": "2026-05-01T10:00:00"},
+        "c1": {"title": "Gamma", "category": "Agent", "processed_at": "2026-05-01T10:00:00"},
+        "d4": {"title": "Alpha", "category": "LLM", "processed_at": ""},
+        "e5": {"title": "Delta", "category": "Agent", "processed_at": "2026-05-01T10:00:00"},
+    }
+
+
+@pytest.fixture
+def sort_env(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """只关心排序的隔离环境（不需要 vault）。"""
+    records = _sort_records()
+    monkeypatch.setattr(articles_api, "load_processed", lambda *a, **k: records)
+    runtime, _ = make_runtime(orchestrator=FakeOrchestrator(steps=[]))
+    app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))
+    return TestClient(app)
+
+
+def _article_ids(client: TestClient, query: str = "") -> list[str]:
+    payload = client.get(f"/api/articles{query}", headers=AUTH).json()
+    return [item["article_id"] for item in payload["items"]]
+
+
+def test_sort_default_order_is_unchanged(sort_env: TestClient) -> None:
+    """不传 sort/order：与改动前逐条一致——processed_at 降序，同键保持 processed.json 顺序。"""
+    with sort_env as client:
+        assert _article_ids(client) == ["b2", "a3", "c1", "e5", "d4"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "?sort=unknown",
+        "?order=sideways",
+        "?sort=unknown&order=asc",
+        "?sort=&order=",
+        "?sort=Title&order=asc",  # 大小写敏感：Title 不在白名单
+        "?sort=title&order=sideways",  # order 非法 → 整对回落
+        "?sort=processed_at&order=",
+    ],
+)
+def test_sort_invalid_values_fall_back_to_default(sort_env: TestClient, query: str) -> None:
+    with sort_env as client:
+        assert _article_ids(client, query) == _article_ids(client)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("?sort=processed_at&order=desc", ["b2", "e5", "c1", "a3", "d4"]),
+        ("?sort=processed_at&order=asc", ["a3", "c1", "e5", "b2", "d4"]),
+        ("?sort=title&order=asc", ["a3", "d4", "b2", "e5", "c1"]),
+        ("?sort=title&order=desc", ["c1", "e5", "b2", "d4", "a3"]),
+        ("?sort=category&order=asc", ["c1", "e5", "b2", "d4", "a3"]),
+        ("?sort=category&order=desc", ["d4", "b2", "e5", "c1", "a3"]),
+    ],
+)
+def test_sort_whitelist_orders(sort_env: TestClient, query: str, expected: list[str]) -> None:
+    """升/降序都对；同键用 article_id 做次级键；缺字段的项两个方向都排最后。"""
+    with sort_env as client:
+        assert _article_ids(client, query) == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",  # 默认顺序
+        "?sort=processed_at&order=desc",
+        "?sort=processed_at&order=asc",
+        "?sort=title&order=asc",
+        "?sort=category&order=desc",
+    ],
+)
+def test_sort_is_stable_across_pages(sort_env: TestClient, query: str) -> None:
+    """同键数据跨页切分不重不漏：排序必须发生在分页切片之前。"""
+    separator = "&" if query else "?"
+    with sort_env as client:
+        full = _article_ids(client, query)
+        paged: list[str] = []
+        for offset in range(0, len(full), 2):
+            page = client.get(
+                f"/api/articles{query}{separator}limit=2&offset={offset}", headers=AUTH
+            ).json()
+            assert page["total"] == len(full)  # total 与分页无关
+            paged.extend(item["article_id"] for item in page["items"])
+
+    assert paged == full
+    assert len(set(paged)) == len(full)  # 无重复
+
+
 def test_delete_cascades_and_returns_actions(env: dict[str, Any]) -> None:
     note: Path = env["note"]
     assert note.exists()
@@ -141,6 +238,152 @@ def test_delete_cascades_and_returns_actions(env: dict[str, Any]) -> None:
 def test_delete_unknown_article_is_404(env: dict[str, Any]) -> None:
     with env["client"] as client:
         assert client.delete("/api/articles/nope", headers=AUTH).status_code == 404
+
+
+# --- N2 批量删除：部分失败、上限、vault 未配置、任务运行中、去重 ------------------------
+
+
+def _bulk_client(env: dict[str, Any], orchestrator: FakeOrchestrator) -> TestClient:
+    """用 env 的 vault/记录配置另建一个 app（用于换 orchestrator）。"""
+    runtime, _ = make_runtime(orchestrator=orchestrator, config_manager=env["cm"])
+    app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))
+    return TestClient(app)
+
+
+def test_bulk_delete_all_success(env: dict[str, Any]) -> None:
+    second = env["vault"] / "公众号文章" / "LLM" / "第二篇.md"
+    second.write_text("# 第二篇\n", encoding="utf-8")
+    env["records"]["a4"] = {
+        "title": "第二篇",
+        "status": "done",
+        "category": "LLM",
+        "file": str(second),
+        "processed_at": "2026-10-04T10:00:00",
+    }
+
+    with env["client"] as client:
+        response = client.post(
+            "/api/articles/bulk-delete", json={"article_ids": ["a1", "a4"]}, headers=AUTH
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["deleted"] == 2
+    assert body["failed"] == []
+    assert body["actions"]  # 至少有「删除文件」/「从 processed.json 移除」
+    assert not env["note"].exists()
+    assert not second.exists()
+
+
+def test_bulk_delete_reports_missing_ids_without_failing_batch(env: dict[str, Any]) -> None:
+    with env["client"] as client:
+        response = client.post(
+            "/api/articles/bulk-delete",
+            json={"article_ids": ["nope-1", "a1", "nope-2"]},
+            headers=AUTH,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] == 1  # 未知 id 不整体失败
+    assert body["failed"] == [
+        {"article_id": "nope-1", "error": "article_not_found"},
+        {"article_id": "nope-2", "error": "article_not_found"},
+    ]
+    assert not env["note"].exists()  # a1 依然被删掉
+
+
+def test_bulk_delete_dedups_ids(env: dict[str, Any]) -> None:
+    """重复 id 只删一次：不去重的话第二次会变成 article_not_found。"""
+    with env["client"] as client:
+        body = client.post(
+            "/api/articles/bulk-delete",
+            json={"article_ids": ["a1", "a1", "a1"]},
+            headers=AUTH,
+        ).json()
+
+    assert body["deleted"] == 1
+    assert body["failed"] == []
+
+
+def test_bulk_delete_dedups_actions(env: dict[str, Any]) -> None:
+    """每条成功项都会产出「已从 processed.json 移除记录」；摘要里只留一条。"""
+    with env["client"] as client:
+        body = client.post(
+            "/api/articles/bulk-delete", json={"article_ids": ["a1", "a3"]}, headers=AUTH
+        ).json()
+
+    assert body["deleted"] == 2
+    assert body["actions"].count("已从 processed.json 移除记录") == 1
+    assert len(body["actions"]) == len(set(body["actions"]))
+
+
+def test_bulk_delete_rejects_empty_oversized_and_malformed(env: dict[str, Any]) -> None:
+    with env["client"] as client:
+        empty = client.post("/api/articles/bulk-delete", json={"article_ids": []}, headers=AUTH)
+        oversized = client.post(
+            "/api/articles/bulk-delete",
+            json={"article_ids": [f"a{index}" for index in range(501)]},
+            headers=AUTH,
+        )
+        boundary = client.post(
+            "/api/articles/bulk-delete",
+            json={"article_ids": [f"x{index}" for index in range(500)]},
+            headers=AUTH,
+        )
+        malformed = client.post(
+            "/api/articles/bulk-delete", json={"article_ids": "a1"}, headers=AUTH
+        )
+
+    assert empty.status_code == 400
+    assert empty.json()["error"] == "bad_request"
+    assert "不能为空" in empty.json()["detail"]
+
+    assert oversized.status_code == 400
+    assert oversized.json()["error"] == "bad_request"
+    assert "500" in oversized.json()["detail"]
+
+    assert boundary.status_code == 200  # 边界值 500 允许
+    assert len(boundary.json()["failed"]) == 500
+
+    assert malformed.status_code == 400
+    assert malformed.json()["error"] == "bad_request"
+
+
+def test_bulk_delete_requires_vault_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """vault 未配置 → 与单条 DELETE 同样的 400 not_configured。"""
+    records = _records(tmp_path / "not-used.md")
+    monkeypatch.setattr(articles_api, "load_processed", lambda *a, **k: records)
+
+    cm = ConfigManager(config_dir=tmp_path / "cfg-no-vault")
+    cm.load()
+    runtime, _ = make_runtime(orchestrator=FakeOrchestrator(steps=[]), config_manager=cm)
+    app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/articles/bulk-delete", json={"article_ids": ["a1"]}, headers=AUTH
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "not_configured"
+
+
+def test_bulk_delete_is_rejected_while_job_runs(env: dict[str, Any]) -> None:
+    """有任务在跑时拒绝：避免与管线争抢 processed.json / MOC 写入。"""
+    slow = FakeOrchestrator(steps=["文章"] * 20, step_delay=0.05)
+    with _bulk_client(env, slow) as client:
+        job_id = client.post("/api/jobs", json={"kind": "fetch"}, headers=AUTH).json()["job_id"]
+        response = client.post(
+            "/api/articles/bulk-delete", json={"article_ids": ["a1"]}, headers=AUTH
+        )
+        # 等任务跑完，避免上下文退出时留下悬挂任务
+        client.get(f"/api/jobs/{job_id}/events", headers=AUTH)
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "job_busy"
+    assert "processed.json" in response.json()["detail"]
+    assert env["note"].exists()  # 被拒绝时一条都不删
 
 
 def test_open_missing_file_is_400(env: dict[str, Any]) -> None:

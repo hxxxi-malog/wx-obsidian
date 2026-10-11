@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 500
 
+# N1 排序白名单：只认这三个字段与两个方向，其余值一律回落到默认顺序
+_SORT_FIELDS = ("processed_at", "title", "category")
+_SORT_ORDERS = ("asc", "desc")
+
 # Obsidian 的仓库注册表（macOS）；只读，用于判断笔记能否被打开
 _OBSIDIAN_REGISTRY = Path("~/Library/Application Support/obsidian/obsidian.json")
 
@@ -56,6 +60,29 @@ def _project(article_id: str, record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _sort_items(items: list[dict[str, Any]], sort: str, order: str) -> None:
+    """就地排序（必须在分页切片**之前**调用，否则每页各自排序会跨页重复/遗漏）。
+
+    `sort` / `order` 任一缺失或非法 → 完全回落到改动前的默认顺序（`processed_at`
+    降序、稳定排序），老请求逐条不变；合法时缺字段的项一律排最后，排序键相等时用
+    `article_id` 做稳定次级键，保证同一批数据按页切分不重不漏。
+    """
+    if sort not in _SORT_FIELDS or order not in _SORT_ORDERS:
+        # 老的默认：新的在前；processed_at 为空的记录自然排到最后（空串最小）
+        items.sort(key=lambda item: item["processed_at"] or "", reverse=True)
+        return
+
+    descending = order == "desc"
+
+    def key(item: dict[str, Any]) -> tuple[bool, str, str]:
+        value = str(item.get(sort) or "")
+        missing = value == ""
+        # 降序时整个元组被 reverse 翻转，故用「有值」当第一段，缺字段的才会落到最后
+        return (not missing if descending else missing, value, str(item["article_id"]))
+
+    items.sort(key=key, reverse=descending)
+
+
 def list_articles(
     *,
     query: str = "",
@@ -63,9 +90,16 @@ def list_articles(
     status: str = "",
     limit: int = _DEFAULT_LIMIT,
     offset: int = 0,
+    sort: str = "",
+    order: str = "",
     processed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """文章列表（搜索 + 筛选 + 分页）。"""
+    """文章列表（搜索 + 筛选 + 排序 + 分页）。
+
+    Args:
+        sort: 排序字段白名单 `processed_at` / `title` / `category`；其余值走默认顺序。
+        order: `asc` / `desc`；其余值走默认顺序。
+    """
     data = processed if processed is not None else load_processed()
     items = [_project(article_id, record) for article_id, record in _iter_records(data)]
 
@@ -79,8 +113,8 @@ def list_articles(
     if status:
         items = [item for item in items if item["status"] == status]
 
-    # 新的在前；processed_at 为空的记录自然排到最后（空串最小）
-    items.sort(key=lambda item: item["processed_at"] or "", reverse=True)
+    # 排序在分页切片之前；参数非法时这里就是改动前的默认顺序
+    _sort_items(items, sort, order)
 
     total = len(items)
     safe_limit = max(1, min(int(limit or _DEFAULT_LIMIT), _MAX_LIMIT))

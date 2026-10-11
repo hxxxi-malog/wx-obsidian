@@ -55,6 +55,8 @@ _SSE_POLL_SECONDS = 0.25
 # 退出接口：先让响应到达浏览器，再真正停服务
 _SHUTDOWN_DELAY_SECONDS = 0.3
 _SSE_KEEPALIVE_SECONDS = 15.0
+# 批量删除单次上限（超过就分多次调用，避免一次请求长时间占住线程池）
+_BULK_DELETE_MAX = 500
 
 # 允许通过 PUT /api/config 写入的键（白名单：不接受任意配置路径）
 _PLAIN_PATCH_KEYS = frozenset(
@@ -663,9 +665,17 @@ def create_app(
         status: str = "",
         limit: int = 50,
         offset: int = 0,
+        sort: str = "",
+        order: str = "",
     ) -> dict[str, Any]:
         return articles_api.list_articles(
-            query=q, category=category, status=status, limit=limit, offset=offset
+            query=q,
+            category=category,
+            status=status,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            order=order,
         )
 
     @app.get("/api/articles/{article_id}")
@@ -684,6 +694,76 @@ def create_app(
         if actions is None:
             return JSONResponse({"error": "article_not_found"}, status_code=404)
         return JSONResponse({"ok": True, "actions": actions})
+
+    @app.post("/api/articles/bulk-delete")
+    async def bulk_delete_articles(
+        payload: dict[str, Any] = Body(default_factory=dict),
+    ) -> Response:
+        """批量级联删除（去重后按输入顺序串行执行，放工作线程跑，不阻塞事件循环）。
+
+        与单条 DELETE 的两处差别：运行中的任务先拦下（避免争抢 processed.json / MOC），
+        未知 id 不整体失败而是逐条汇报。
+        """
+        raw_ids = (payload or {}).get("article_ids")
+        if not isinstance(raw_ids, list):
+            return JSONResponse(
+                {"error": "bad_request", "detail": "article_ids 必须是数组"}, status_code=400
+            )
+        if not raw_ids:
+            return JSONResponse(
+                {"error": "bad_request", "detail": "article_ids 不能为空"}, status_code=400
+            )
+        if len(raw_ids) > _BULK_DELETE_MAX:
+            return JSONResponse(
+                {
+                    "error": "bad_request",
+                    "detail": f"一次最多删除 {_BULK_DELETE_MAX} 条，收到 {len(raw_ids)} 条",
+                },
+                status_code=400,
+            )
+        if jobs.busy:
+            return JSONResponse(
+                {
+                    "error": "job_busy",
+                    "detail": "有任务在跑，避免争抢 processed.json / MOC 写入；请等任务结束后重试",
+                },
+                status_code=409,
+            )
+
+        article_ids: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_ids:
+            article_id = str(raw)
+            if article_id not in seen:  # 去重且保持输入顺序
+                seen.add(article_id)
+                article_ids.append(article_id)
+
+        deleted = 0
+        failed: list[dict[str, str]] = []
+        actions: list[str] = []
+        for article_id in article_ids:
+            try:
+                result = await asyncio.to_thread(
+                    articles_api.delete_article, article_id, runtime.config_manager
+                )
+            except ValueError as exc:
+                # 与单条 DELETE 一致：vault 未配置 → 400 not_configured
+                return JSONResponse(
+                    {"error": "not_configured", "detail": str(exc)}, status_code=400
+                )
+            except Exception as exc:  # 单条意外失败不影响其余条目，逐条计入 failed
+                logger.warning("批量删除失败: %s", article_id, exc_info=True)
+                failed.append({"article_id": article_id, "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            if result is None:
+                failed.append({"article_id": article_id, "error": "article_not_found"})
+                continue
+            deleted += 1
+            for action in result:  # 摘要去重，保持首次出现的顺序
+                if action not in actions:
+                    actions.append(action)
+
+        return JSONResponse({"ok": True, "deleted": deleted, "failed": failed, "actions": actions})
 
     @app.post("/api/articles/{article_id}/open")
     def open_article(article_id: str) -> Response:
@@ -998,6 +1078,56 @@ def create_app(
     def get_logs(since: int = 0) -> dict[str, Any]:
         entries = [entry.to_dict() for entry in log_buffer.entries_since(since)]
         return {"entries": entries, "last_seq": log_buffer.last_seq}
+
+    @app.get("/api/logs/events")
+    async def log_events(request: Request, since: int = 0) -> Response:
+        """日志 SSE 流：先回放历史，再持续推送新条目，客户端断开即结束。
+
+        断线续传的 seq 优先级：`Last-Event-ID` 头（EventSource 重连自动带）>
+        `?last_id=`（后备）> `?since=`；值不可解析时视为未提供。
+        """
+        start_seq = int(since)
+        for raw in (
+            request.headers.get("last-event-id"),
+            request.query_params.get("last_id"),
+        ):
+            if not raw:
+                continue
+            try:
+                start_seq = int(raw)
+                break
+            except ValueError:
+                continue
+
+        async def stream() -> AsyncIterator[str]:
+            # 与 /api/jobs/{job_id}/events 同一套短轮询写法（而不是 asyncio.Event：
+            # Event 有事件循环亲和性，跨请求/跨 loop 复用会炸）
+            buffer: logs_api.LogBuffer = request.app.state.logs
+            last_seq = start_seq
+            idle_ticks = 0
+            while True:
+                if await request.is_disconnected():
+                    return
+                pending = buffer.entries_since(last_seq)
+                for entry in pending:
+                    last_seq = entry.seq
+                    body = json.dumps(entry.to_dict(), ensure_ascii=False)
+                    yield f"id: {entry.seq}\nevent: log\ndata: {body}\n\n"
+
+                await asyncio.sleep(_SSE_POLL_SECONDS)
+                if pending:
+                    idle_ticks = 0
+                else:
+                    idle_ticks += 1
+                    if idle_ticks * _SSE_POLL_SECONDS >= _SSE_KEEPALIVE_SECONDS:
+                        idle_ticks = 0
+                        yield ": keep-alive\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # -- 文件系统 -----------------------------------------------------------
 
