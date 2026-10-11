@@ -136,6 +136,57 @@ python process_articles.py tui
 | Fetch | 手动触发文章抓取与处理 |
 | Scheduler | 应用内定时任务（cron 表达式；需保持 TUI 运行） |
 
+### Web 模式（浏览器界面）
+
+```bash
+python process_articles.py web            # 自动打开浏览器
+python process_articles.py web --port 8765 --no-open
+```
+
+启动后终端会打印带 token 的地址；**这个 token 是必须的**，直接访问 `127.0.0.1:8765` 只能看到页面、调不通接口（服务能写你的硬盘、读你的 API Key，所以不能裸奔）。
+
+| 页面 | 功能 |
+|------|------|
+| 状态总览 | 数据源 / LLM / Vision / Vault 四项健康状态、处理统计、分类分布 |
+| 文章抓取 | 发起抓取（篇数、强制重跑）、实时进度与阶段、逐篇结果、中途取消、重试失败文章 |
+| 文章管理 | 搜索 / 分类 / 状态筛选、分页、双击在 Obsidian 打开、级联删除 |
+| 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数、连通性测试、目录选择器 |
+
+几个要点：
+
+- **只绑 `127.0.0.1`**，且所有 `/api/*` 都需要启动时打印的 token（`X-WX-Token` 头或 `?token=`）。局域网内其它机器访问不到。
+- **密钥只回显掩码**：配置页留空表示「不修改」，不会把已存的 Key 清掉。
+- **任务单飞**：同一时刻只允许一个抓取任务，第二个请求返回 409——`processed.json`、MOC、概念页都不能并发写。
+- **调度器常驻**：定时任务跑在 Web 服务进程里，浏览器关掉也照常执行（TUI 时代的定时任务需要 TUI 一直开着）。
+- ⚠️ **不要同时用 TUI 和 Web 发起抓取**：两者各自持有任务状态，会争抢 `processed.json` 的写入。要跑就开一个。
+- 进度走 SSE；断线或刷新页面会自动重连并按事件序号补齐，不会丢中间的进度。
+
+### 桌面应用（macOS .app）
+
+```bash
+./packaging/build_app.sh --check     # 构建并用冻结包做资源自检
+cp -R dist/wx-obsidian.app /Applications/
+```
+
+双击即可：自动选端口起本地服务、打开浏览器、退出时清理。要点：
+
+- 用**独立的 Python 3.12 构建 venv**（开发 venv 是 3.9，已 EOL），PyInstaller `onedir` 模式，冷启动秒开。
+- 自用只需 ad-hoc 签名（脚本已做）；**要分发给别人**得 Developer ID + 公证，否则对方双击会报「已损坏」。
+- **不要从 `~/Downloads` 运行**，装到 `/Applications`。macOS 15 的 TCC 会拦截 `~/Downloads` 下的读写（本项目早期的 LaunchAgent 就是这么废掉的）。
+- 冻结包不读仓库里的 `.env`（密钥不入包），配置与密钥只认 `~/.wx-obsidian/`。
+- `.app` 里不含 TUI（`--exclude-module textual`），TUI 仍可用源码方式运行。
+
+### 换过 Vault 路径之后
+
+`processed.json` 里记的 `file` 是绝对路径。搬动 Vault 后必须跑一次迁移，否则**级联删除会静默失效**（去重不受影响，因为去重按文章 ID）：
+
+```bash
+python process_articles.py migrate-vault /Users/you/Documents --dry-run   # 先预览
+python process_articles.py migrate-vault /Users/you/Documents             # 再执行
+```
+
+另外 Obsidian 是**按绝对路径**注册仓库的，搬完还要在 Obsidian 里用「打开文件夹作为仓库」重新选一次，否则点「打开」会报 Vault not found。
+
 ### 级联删除
 
 ```bash
@@ -151,7 +202,8 @@ python process_articles.py delete "文章标题或ID"
 ```
 process_articles.py
     ├── CLI 模式 -> wx_obsidian/cli.py -> Orchestrator
-    └── TUI 模式 -> wx_obsidian/tui/   -> Orchestrator
+    ├── TUI 模式 -> wx_obsidian/tui/   -> Orchestrator
+    └── Web 模式 -> wx_obsidian/web/   -> Orchestrator
 
 Orchestrator（核心编排器）
     │
@@ -251,6 +303,16 @@ wx-obsidian/
     ├── models.py                # 全局数据模型（ProcessingResult, HealthStatus, Feed 等）
     ├── batch.py                 # 批量并行处理 + 指数退避重试
     ├── scheduler.py             # 应用内定时调度（APScheduler，仅应用运行期间生效）
+    ├── vault_migration.py       # 换 Vault 路径时修正配置与 processed.json 的绝对路径
+    ├── web/                     # Web 界面（与 tui/、cli.py 平级，只依赖 Orchestrator）
+    │   ├── runtime.py           # 装配 ConfigManager + 数据源 + Orchestrator + Scheduler
+    │   ├── api.py               # FastAPI 应用工厂（REST + SSE + 安全中间件 + 静态托管）
+    │   ├── jobs.py              # 管线任务单飞 + 事件缓冲（线程安全的进度桥接）
+    │   ├── articles.py          # 文章列表投影 / 级联删除 / Obsidian 跳转
+    │   ├── fs.py                # 目录浏览（浏览器的目录树数据源）
+    │   ├── __main__.py          # 启动器（选端口 / 防重复实例 / 开浏览器）
+    │   ├── frontend/            # Vue 3 + Vite + Element Plus 源码
+    │   └── static/              # 前端构建产物（pnpm build 生成，不入库）
     ├── sources/
     │   ├── base.py              # ArticleSource 协议（编排层只依赖此抽象）
     │   ├── factory.py           # 数据源工厂（按 WX_SOURCE / source.type 选择）

@@ -18,6 +18,12 @@ python process_articles.py --limit 5
 # TUI mode (terminal UI)
 python process_articles.py tui
 
+# Web mode (browser UI; prints a token-bearing URL)
+python process_articles.py web
+
+# Build the macOS .app (separate Python 3.12 build venv)
+./packaging/build_app.sh --check
+
 # Cascade delete an article and all its associated data
 python process_articles.py delete "文章标题或ID"
 
@@ -55,11 +61,13 @@ wx_obsidian/
 │   ├── vault.py           ← Obsidian Vault 操作（MOC、概念页面、分类、子目录）
 │   ├── validator.py       ← Markdown 格式校验与自动修复
 │   └── cleanup.py         ← 文章级联删除（MOC、概念、归档、processed.json）
+├── web/                   ← Web 层（FastAPI + Vue），与 tui/、cli.py 平级
+├── vault_migration.py     ← 换 Vault 路径时修正配置与 processed.json
 └── cli.py                 ← CLI 入口，编排完整流程
 ```
 
 顶层入口：
-- `process_articles.py` — 薄 CLI 入口，调用 `wx_obsidian.cli.main()`
+- `process_articles.py` — 薄 CLI 入口，调用 `wx_obsidian.cli.main()`；子命令：`cli`（默认）/ `tui` / `web` / `delete` / `migrate-vault`
 - `validate_markdown.py` — 向后兼容入口，转发到 `wx_obsidian.output.validator`
 
 ### Dependency Flow
@@ -136,6 +144,10 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `output/vault.py` | Obsidian Vault 操作 | 文件系统操作，改动影响 cli.py |
 | `output/validator.py` | Markdown 格式校验与修复 | 校验规则变更可能影响已生成的文件 |
 | `cli.py` | 流程编排 | 串联所有模块，改动需验证完整流程 |
+| `web/api.py` | Web 接口 + 安全中间件 | 端点签名禁用 `X \| None`：py3.9 下 FastAPI 会运行时求值注解 |
+| `web/jobs.py` | 任务单飞 + SSE 事件 | `on_progress` 在工作线程调用，状态只能在事件循环线程内改 |
+| `web/frontend/` | Vue 界面 | 改动后必须 `pnpm build`；产物由 FastAPI 同源托管 |
+| `vault_migration.py` | Vault 路径迁移 | 影响 processed.json 的 `file` 字段与级联删除 |
 | `prompts/summarize_article.txt` | Prompt 模板 | 改动直接影响 LLM 输出质量 |
 | `skills/*/SKILL.md` | LLM 输出风格控制 | 改动影响所有新生成的笔记 |
 
@@ -150,7 +162,10 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | 调整图片插入逻辑 | `processing/images.py` |
 | 修改 Vault 目录结构 | `output/vault.py`, `~/.wx-obsidian/config.json` |
 | 新增数据源 | `sources/` 下新建模块 + 实现 ArticleSource, `sources/factory.py`, `cli.py` |
-| 文章级联删除 | `output/cleanup.py`, `tui/screens/articles.py`, `process_articles.py` |
+| 文章级联删除 | `output/cleanup.py`, `tui/screens/articles.py`, `web/articles.py`, `process_articles.py` |
+| 修改 Web 界面 | `web/frontend/src/views/`, 然后 `pnpm build` |
+| 新增 Web 接口 | `web/api.py`, `web/frontend/src/api/` |
+| 调整 macOS 打包 | `packaging/wx-obsidian.spec`, `packaging/build_app.sh` |
 
 ### 关键常量速查
 
@@ -163,6 +178,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 ## Development Notes
 
 - Python 3.9+ required (uses `from __future__ import annotations` for type hints).
+- FastAPI 端点签名里**不要**用 `X | None`：FastAPI 会在运行时求值端点注解，而 py3.9 不支持 PEP 604 联合类型，会直接建路由失败。可省 body 用 `Body(default_factory=dict)` 表达。
 - Ruff config: line-length 100, target py39, E501 ignored (f-string prompt templates can't be split).
 - `MAX_PROMPT_CONTENT = 100000` and `MAX_ARTICLE_LENGTH = 100000` cap content sent to the API.
 - Path safety: LLM-returned category/sub_topic names are sanitized with `re.sub(r'[<>:"/\\|?*]', "_", ...)`.
