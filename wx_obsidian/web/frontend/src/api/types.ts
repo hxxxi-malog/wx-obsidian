@@ -146,3 +146,70 @@ export interface FsListing {
   entries: FsEntry[]
   truncated: boolean
 }
+
+export interface FeedItem {
+  id: string
+  name: string
+  intro: string
+  cover: string
+  sync_time: string | null
+  update_time: string | null
+}
+
+export interface AccountStatus {
+  is_logged_in: boolean
+  username: string | null
+  expire_at: string | null
+  need_refresh: boolean
+}
+
+export interface SourceHealth {
+  healthy: boolean
+  type: string
+  base_url: string
+  docker_hint: string
+}
+
+export interface SchedulerJob {
+  job_id: string
+  name: string
+  trigger: string
+  is_running: boolean
+  next_run: string | null
+  last_run: string | null
+  last_error: string | null
+  error_count: number
+}
+
+export interface SchedulerState {
+  fetch_hours: number
+  keepalive_enabled: boolean
+  allowed_hours: number[]
+  keepalive_days: number
+}
+
+export interface SchedulerPayload {
+  jobs: SchedulerJob[]
+  state: SchedulerState
+}
+
+export interface LogEntry {
+  seq: number
+  ts: string
+  level: string
+  logger: string
+  message: string
+}
+
+export interface LogPayload {
+  entries: LogEntry[]
+  last_seq: number
+}
+
+export interface FailedArticle {
+  article_id: string
+  title: string
+  error: string
+  failed_at: string | null
+  retry_count: number
+}

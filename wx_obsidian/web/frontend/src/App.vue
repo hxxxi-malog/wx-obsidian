@@ -7,15 +7,16 @@ interface NavItem {
   hint?: string
 }
 
-// ready=false 的条目是 P2 待落地页面，先只做路线图提示，不注册死路由
+// 与 TUI 的 8 个屏幕一一对应（Container/Account 在 Web 上拆成数据源状态与账号管理）
 const NAV: NavItem[] = [
   { key: 'dashboard', label: '状态总览', path: '/', ready: true },
   { key: 'run', label: '文章抓取', path: '/run', ready: true },
   { key: 'articles', label: '文章管理', path: '/articles', ready: true },
   { key: 'settings', label: '配置管理', path: '/settings', ready: true },
-  { key: 'feeds', label: '公众号管理', path: '/feeds', ready: false, hint: 'P2' },
-  { key: 'source', label: '数据源状态', path: '/source', ready: false, hint: 'P2' },
-  { key: 'scheduler', label: '定时任务', path: '/scheduler', ready: false, hint: 'P2' },
+  { key: 'feeds', label: '公众号管理', path: '/feeds', ready: true },
+  { key: 'source', label: '数据源状态', path: '/source', ready: true },
+  { key: 'account', label: '账号管理', path: '/account', ready: true },
+  { key: 'scheduler', label: '定时任务', path: '/scheduler', ready: true },
 ]
 </script>
 
