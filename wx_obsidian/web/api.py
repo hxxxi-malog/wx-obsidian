@@ -342,11 +342,13 @@ def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
             }
         )
     elif not os.access(path, os.W_OK):
+        # 措辞刻意克制：这一条只说明「本进程写不进去」，不能断言目录本身只读。
+        # 沙箱、TCC 未授权、POSIX 权限都表现为这一种现象，而处置方式不同。
         warnings.append(
             {
                 "code": "vault_readonly",
-                "message": f"Vault 目录不可写：{path}",
-                "action": "检查目录权限；若在系统保护目录下，请迁到用户目录",
+                "message": f"当前进程写不进 Vault：{path}",
+                "action": "先用「选择文件夹」重选一次（顺带完成 macOS 授权）；仍不行再查目录属主与权限",
             }
         )
 
