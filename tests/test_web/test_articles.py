@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from tests.test_web.fakes import FakeOrchestrator, make_runtime
 from wx_obsidian.config_manager import ConfigManager
+from wx_obsidian.output import cleanup
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web.api import create_app
 
@@ -72,6 +73,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     records = _records(note)
     monkeypatch.setattr(articles_api, "load_processed", lambda *a, **k: records)
+    # 删除路径会经 cascade_delete → cleanup.save_processed() 落盘。
+    # conftest 的 autouse 隔离已兜底，这里再显式拦一层，让意图写在测试里。
+    monkeypatch.setattr(cleanup, "save_processed", lambda *a, **k: None)
 
     runtime, _ = make_runtime(orchestrator=FakeOrchestrator(steps=[]), config_manager=cm)
     app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))

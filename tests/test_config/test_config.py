@@ -200,3 +200,57 @@ class TestScanExistingContent:
         articles, concepts = scan_existing_content(tmp_path / "nonexistent", "公众号文章")
         assert articles == []
         assert concepts == []
+
+
+# ---------------------------------------------------------------------------
+# 账本写入护栏（来自一次真事故）
+# ---------------------------------------------------------------------------
+
+
+def test_save_processed_refuses_catastrophic_shrink(tmp_path: Path) -> None:
+    """账本从大量条目塌缩到一小撮时必须拒绝写入。
+
+    真实事故：某个测试走了 cascade_delete → save_processed()（默认路径），
+    把 3 条 fixture 记录写进了用户 373 条的账本，去重状态被抹掉。
+    """
+    target = tmp_path / "processed.json"
+    big = {f"id{i}": {"status": "done"} for i in range(100)}
+    big["last_fetch_date"] = "2026-10-01"
+    save_processed(big, target)
+
+    with pytest.raises(ValueError, match="拒绝写入"):
+        save_processed({"a2": {"status": "done"}, "a3": {"status": "done"}}, target)
+
+    # 原文件必须原样保留
+    assert len(json.loads(target.read_text(encoding="utf-8"))) == 101
+
+    # 显式 force 才允许重建（恢复脚本用）
+    save_processed({"a2": {"status": "done"}}, target, force=True)
+    assert json.loads(target.read_text(encoding="utf-8")) == {"a2": {"status": "done"}}
+
+
+def test_save_processed_allows_normal_growth_and_shrink(tmp_path: Path) -> None:
+    """正常增减（管线追加、级联删除删 1 条）不能被护栏误伤。"""
+    target = tmp_path / "processed.json"
+    records = {f"id{i}": {"status": "done"} for i in range(100)}
+    save_processed(records, target)
+
+    records["new"] = {"status": "done"}
+    save_processed(records, target)
+    assert len(json.loads(target.read_text(encoding="utf-8"))) == 101
+
+    del records[next(iter(records))]
+    save_processed(records, target)  # 删 1 条：正常
+    assert len(json.loads(target.read_text(encoding="utf-8"))) == 100
+
+
+def test_conftest_isolates_real_processed_path(tmp_path: Path) -> None:
+    """autouse 隔离必须生效：否则任何测试都可能写坏用户真实账本。"""
+    import wx_obsidian.config as config_module
+    import wx_obsidian.processing.similarity as similarity_module
+
+    real = Path.home() / ".wx-obsidian"
+    assert real not in config_module.PROCESSED_FILE.parents
+    assert real not in similarity_module._DEFAULT_DB_PATH.parents
+    save_processed({"only": {"status": "done"}})  # 默认路径也必须落在临时目录
+    assert config_module.PROCESSED_FILE.exists()

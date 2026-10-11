@@ -143,15 +143,46 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def save_processed(processed: dict[str, Any], path: Path | None = None) -> None:
+# 账本「灾难性缩水」的判定阈值：既有记录够多、新记录却只剩一小撮时，
+# 几乎一定是调用方传错了数据（例如测试把 fixture 写进了真实路径）。
+_SHRINK_GUARD_MIN_EXISTING = 50
+_SHRINK_GUARD_RATIO = 0.2
+
+
+def _record_count(data: dict[str, Any]) -> int:
+    """数出真正的文章记录条数（排除 last_fetch_date 这类顶层标量）。"""
+    return sum(1 for value in data.values() if isinstance(value, dict))
+
+
+def save_processed(
+    processed: dict[str, Any], path: Path | None = None, *, force: bool = False
+) -> None:
     """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。
 
     Args:
         processed: 完整记录字典。
         path: 指定记录文件；省略时用默认的 ~/.wx-obsidian/processed.json。
+        force: 跳过「灾难性缩水」保护。恢复脚本/手工重建账本时才用。
+
+    Raises:
+        ValueError: 新记录会让账本从大量条目塌缩到不足 20%（疑似传错数据）。
+            这条护栏来自一次真实事故：某个测试走了 cascade_delete →
+            本函数（默认路径），把 3 条假 fixture 记录写进了用户 373 条的账本里。
     """
+    target = path or PROCESSED_FILE
+    if not force and target.exists():
+        try:
+            existing = _record_count(json.loads(target.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            existing = 0
+        incoming = _record_count(processed)
+        if existing >= _SHRINK_GUARD_MIN_EXISTING and incoming < existing * _SHRINK_GUARD_RATIO:
+            raise ValueError(
+                f"拒绝写入 {target}：账本将从 {existing} 条塌缩到 {incoming} 条。"
+                f"这几乎一定是调用方传错了数据；确实要重建请显式传 force=True。"
+            )
     data = json.dumps(processed, ensure_ascii=False, indent=2)
-    atomic_write(path or PROCESSED_FILE, data)
+    atomic_write(target, data)
 
 
 def load_max_workers() -> int:

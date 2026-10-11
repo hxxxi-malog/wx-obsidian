@@ -7,6 +7,25 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_state(tmp_path_factory, monkeypatch):
+    """把「用户真实状态文件」全部重定向到临时目录（对每个测试自动生效）。
+
+    这不是洁癖，是被真事故逼出来的：`tests/test_web/test_articles.py` 的删除测试
+    会走 `cascade_delete` → `save_processed()`（默认路径），把 fixture 里 3 条假
+    记录写进了用户真实的 `~/.wx-obsidian/processed.json`，抹掉 373 条去重账本。
+    只补那一个 fixture 不够——这类「读被 mock 了、写没有」的组合还会再犯，
+    所以在入口处统一掐断。
+    """
+    import wx_obsidian.config as config_module
+    import wx_obsidian.processing.similarity as similarity_module
+
+    sandbox = tmp_path_factory.mktemp("user-state")
+    monkeypatch.setattr(config_module, "PROCESSED_FILE", sandbox / "processed.json")
+    monkeypatch.setattr(similarity_module, "_DEFAULT_DB_PATH", sandbox / "similarity.sqlite")
+    yield
+
+
 @pytest.fixture
 def tmp_vault(tmp_path: Path):
     """创建临时 Obsidian Vault 目录结构。"""
