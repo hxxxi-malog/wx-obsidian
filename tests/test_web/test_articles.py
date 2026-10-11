@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,6 +58,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     articles_dir = vault / "公众号文章"
     category_dir = articles_dir / "LLM"
     category_dir.mkdir(parents=True)
+    # .obsidian 标记「这才是 Obsidian 认的仓库根」，与真实布局一致
+    (articles_dir / ".obsidian").mkdir()
     note = category_dir / "注意力机制详解.md"
     note.write_text("# 注意力机制详解\n", encoding="utf-8")
     (category_dir / "_MOC.md").write_text("# LLM\n\n- [[注意力机制详解]]\n", encoding="utf-8")
@@ -71,7 +75,13 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     runtime, _ = make_runtime(orchestrator=FakeOrchestrator(steps=[]), config_manager=cm)
     app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))
-    return {"client": TestClient(app), "note": note, "records": records, "vault": vault}
+    return {
+        "client": TestClient(app),
+        "note": note,
+        "records": records,
+        "vault": vault,
+        "tmp": tmp_path,
+    }
 
 
 def test_list_skips_non_article_records(env: dict[str, Any]) -> None:
@@ -139,14 +149,12 @@ def test_open_missing_file_is_400(env: dict[str, Any]) -> None:
 def test_open_builds_obsidian_uri(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _Result:
-        returncode = 0
-        stderr = ""
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> _Result:
+    def fake_run(cmd: list[str], **kwargs: Any) -> _OkResult:
         captured["cmd"] = cmd
-        return _Result()
+        return _OkResult()
 
+    # 注册表读不到时不拦人（本机没装 Obsidian 也要能用）
+    monkeypatch.setattr(articles_api, "_OBSIDIAN_REGISTRY", env["tmp"] / "no-registry.json")
     monkeypatch.setattr(articles_api.subprocess, "run", fake_run)
 
     with env["client"] as client:
@@ -154,5 +162,120 @@ def test_open_builds_obsidian_uri(env: dict[str, Any], monkeypatch: pytest.Monke
 
     assert response.status_code == 200
     assert captured["cmd"][0] == "open"
-    assert captured["cmd"][1].startswith("obsidian://open?path=")
-    assert "注意力机制详解.md" in captured["cmd"][1]
+    uri = captured["cmd"][1]
+    assert uri.startswith("obsidian://open?path=")
+    assert "注意力机制详解.md" in unquote(uri.split("path=", 1)[1])
+
+
+# --- Obsidian 仓库注册表：真实踩过的坑（搬 vault 后 open 报 Vault not found）------------
+
+
+def _write_registry(tmp_path: Path, vaults: list[Path]) -> Path:
+    registry = tmp_path / "obsidian.json"
+    registry.write_text(
+        json.dumps({"vaults": {str(i): {"path": str(v)} for i, v in enumerate(vaults)}}),
+        encoding="utf-8",
+    )
+    return registry
+
+
+def test_open_falls_back_when_registry_missing(
+    env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """读不到注册表（非 macOS / Obsidian 未装）时不能拦住用户。"""
+    monkeypatch.setattr(articles_api, "_OBSIDIAN_REGISTRY", tmp_path / "nope.json")
+    monkeypatch.setattr(articles_api.subprocess, "run", lambda *a, **k: _OkResult())
+
+    with env["client"] as client:
+        assert client.post("/api/articles/a1/open", headers=AUTH).status_code == 200
+
+
+def test_open_rejects_note_outside_registered_vaults(
+    env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """笔记不在任何已注册仓库内 → 给可执行指引，而不是让 Obsidian 弹 Vault not found。"""
+    other = tmp_path / "另一个仓库"
+    other.mkdir()
+    monkeypatch.setattr(articles_api, "_OBSIDIAN_REGISTRY", _write_registry(tmp_path, [other]))
+
+    with env["client"] as client:
+        response = client.post("/api/articles/a1/open", headers=AUTH)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "vault_not_registered"
+    assert "打开文件夹作为仓库" in body["detail"]
+    assert "另一个仓库" in body["detail"]  # 顺带列出已注册仓库，便于排查
+
+
+def test_open_accepts_note_inside_registered_vault(
+    env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = env["vault"]
+    monkeypatch.setattr(articles_api, "_OBSIDIAN_REGISTRY", _write_registry(tmp_path, [vault]))
+    monkeypatch.setattr(articles_api.subprocess, "run", lambda *a, **k: _OkResult())
+
+    with env["client"] as client:
+        response = client.post("/api/articles/a1/open", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["vault"] == vault.name
+
+
+def test_find_containing_vault_prefers_longest_match(tmp_path: Path) -> None:
+    outer = tmp_path / "outer"
+    inner = outer / "nested"
+    note = inner / "dir" / "note.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("x", encoding="utf-8")
+
+    assert articles_api.find_containing_vault(note, [outer, inner]) == inner.resolve()
+    assert articles_api.find_containing_vault(note, [outer]) == outer.resolve()
+    assert articles_api.find_containing_vault(note, [tmp_path / "unrelated"]) is None
+
+
+def test_vault_message_points_at_dot_obsidian(tmp_path: Path) -> None:
+    """提示要给出真正的仓库根（带 .obsidian 的那一层），而不是泛泛一句失败。"""
+    vault_root = tmp_path / "公众号文章"
+    note = vault_root / "Agent" / "笔记.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("x", encoding="utf-8")
+    (vault_root / ".obsidian").mkdir()
+
+    assert articles_api.suggest_vault_root(note) == vault_root
+    message = articles_api._vault_required_message(note, [vault_root])
+    assert str(vault_root) in message
+    assert "打开文件夹作为仓库" in message
+
+
+def test_open_percent_encodes_special_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """标题里的 # 不编码会被当成 URI 片段，路径会被截断。"""
+    note = tmp_path / "vault" / "公众号文章" / "话题 #1 & 更多?.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("x", encoding="utf-8")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> _OkResult:
+        captured["uri"] = cmd[1]
+        return _OkResult()
+
+    monkeypatch.setattr(articles_api.subprocess, "run", fake_run)
+    articles_api.open_in_obsidian(str(note), registry_path=tmp_path / "no-registry.json")
+
+    uri = captured["uri"]
+    assert "%23" in uri  # #
+    assert "%26" in uri  # &
+    assert "%3F" in uri  # ?
+    assert "#" not in uri
+    assert uri.endswith(".md")
+    assert unquote(uri.split("path=", 1)[1]) == str(note)
+
+
+class _OkResult:
+    """subprocess.run 的成功替身。"""
+
+    returncode = 0
+    stderr = ""

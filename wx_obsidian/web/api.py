@@ -474,6 +474,11 @@ def create_app(
             return JSONResponse({"error": "article_not_found"}, status_code=404)
         try:
             return JSONResponse(articles_api.open_in_obsidian(str(item["file_path"])))
+        except articles_api.VaultNotRegisteredError as exc:
+            # 单独一个错误码：前端要把「去 Obsidian 注册仓库」的指引完整显示出来
+            return JSONResponse(
+                {"error": "vault_not_registered", "detail": str(exc)}, status_code=400
+            )
         except (FileNotFoundError, RuntimeError) as exc:
             return JSONResponse({"error": "open_failed", "detail": str(exc)}, status_code=400)
 

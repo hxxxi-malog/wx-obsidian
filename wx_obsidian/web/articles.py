@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from wx_obsidian.config import load_processed
 from wx_obsidian.config_manager import ConfigManager
@@ -19,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 500
+
+# Obsidian 的仓库注册表（macOS）；只读，用于判断笔记能否被打开
+_OBSIDIAN_REGISTRY = Path("~/Library/Application Support/obsidian/obsidian.json")
 
 
 def _iter_records(processed: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -125,10 +130,102 @@ def delete_article(article_id: str, config_manager: ConfigManager) -> list[str] 
     )
 
 
-def open_in_obsidian(file_path: str) -> dict[str, Any]:
+class VaultNotRegisteredError(RuntimeError):
+    """笔记不在任何已注册的 Obsidian 仓库内。
+
+    Obsidian 的 `obsidian://open?path=` 只能打开**已注册仓库**里的文件，
+    否则它自己弹一个「Vault not found」对话框——用户根本不知道要做什么。
+    这个异常负责把「该做什么」说清楚。
+    """
+
+
+def load_obsidian_vaults(registry_path: Path | None = None) -> list[Path] | None:
+    """读取 Obsidian 已注册的仓库路径。
+
+    Args:
+        registry_path: 注册表位置；省略时用 macOS 默认位置。
+
+    Returns:
+        仓库路径列表；注册表不存在或不可读时返回 None（表示无法判断，调用方应放行）。
+    """
+    path = (registry_path or _OBSIDIAN_REGISTRY).expanduser()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    vaults = data.get("vaults")
+    if not isinstance(vaults, dict):
+        return None
+
+    result: list[Path] = []
+    for info in vaults.values():
+        if isinstance(info, dict):
+            raw = str(info.get("path") or "").strip()
+            if raw:
+                result.append(Path(raw))
+    return result
+
+
+def find_containing_vault(file_path: Path, vaults: list[Path]) -> Path | None:
+    """找出包含该笔记的仓库；嵌套仓库时取路径最长的那个。"""
+    try:
+        target = file_path.resolve()
+    except OSError:
+        target = file_path
+    best: Path | None = None
+    for vault in vaults:
+        try:
+            resolved = vault.resolve()
+        except OSError:
+            continue
+        if (target == resolved or resolved in target.parents) and (
+            best is None or len(str(resolved)) > len(str(best))
+        ):
+            best = resolved
+    return best
+
+
+def suggest_vault_root(file_path: Path) -> Path | None:
+    """向上找带 `.obsidian` 的目录——那才是 Obsidian 认的仓库根。"""
+    for parent in file_path.parents:
+        if (parent / ".obsidian").is_dir():
+            return parent
+    return None
+
+
+def _vault_required_message(path: Path, vaults: list[Path]) -> str:
+    lines = [
+        "这篇笔记所在的目录还没有在 Obsidian 里注册为仓库，所以打不开。",
+        f"笔记路径：{path}",
+    ]
+    root = suggest_vault_root(path)
+    if root is not None:
+        lines.append(f"请在 Obsidian 里用「打开文件夹作为仓库」，选择：{root}")
+    else:
+        lines.append(f"笔记所在目录：{path.parent}（其中没有 .obsidian，可能已不是仓库根）")
+    if vaults:
+        lines.append("当前已注册的仓库：" + "、".join(str(vault) for vault in vaults[:3]))
+    return "\n".join(lines)
+
+
+def open_in_obsidian(file_path: str, *, registry_path: Path | None = None) -> dict[str, Any]:
     """用 Obsidian 打开笔记（macOS `open obsidian://...`）。
 
-    用 `path=` 绝对路径而不是 `vault=`+文件名：不依赖 vault 在 Obsidian 里的注册名。
+    用 `path=` 绝对路径而不是 `vault=`+文件名：绝对路径无歧义，也不依赖仓库名唯一。
+    但 Obsidian 只认**已注册仓库**里的文件，故先查注册表；查不到就给出可执行的提示，
+    而不是让 Obsidian 弹一个「Vault not found」。
+
+    Args:
+        file_path: 笔记的绝对路径。
+        registry_path: Obsidian 注册表位置（测试用）。
+
+    Returns:
+        {"ok": True, "uri": ..., "vault": ...}
+
+    Raises:
+        FileNotFoundError: 笔记文件不存在。
+        VaultNotRegisteredError: 笔记不在任何已注册仓库内。
+        RuntimeError: 非 macOS，或调用 `open` 失败。
     """
     path = Path(file_path).expanduser()
     if not path.is_file():
@@ -136,8 +233,16 @@ def open_in_obsidian(file_path: str) -> dict[str, Any]:
     if sys.platform != "darwin":
         raise RuntimeError("仅支持 macOS")
 
-    uri = f"obsidian://open?path={path}"
+    vaults = load_obsidian_vaults(registry_path)
+    containing: Path | None = None
+    if vaults is not None:
+        containing = find_containing_vault(path, vaults)
+        if containing is None:
+            raise VaultNotRegisteredError(_vault_required_message(path, vaults))
+
+    # 自己百分号编码：路径里若含 `#`/`?`/`&`，不编码会被当成 URI 的片段或参数而截断
+    uri = f"obsidian://open?path={quote(str(path), safe='/')}"
     result = subprocess.run(["open", uri], check=False, capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "调用 open 失败")
-    return {"ok": True, "uri": uri}
+    return {"ok": True, "uri": uri, "vault": containing.name if containing else ""}

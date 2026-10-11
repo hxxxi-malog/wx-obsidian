@@ -88,7 +88,11 @@ async function openInObsidian(article: ArticleItem): Promise<void> {
     await apiPost(`/api/articles/${article.article_id}/open`)
     ElMessage.success('已在 Obsidian 中打开')
   } catch (err) {
-    ElMessage.error(errorMessage(err))
+    // 失败原因是多行可执行指引（例如「仓库未注册，请选择 …」），用对话框完整展示
+    await ElMessageBox.alert(errorMessage(err), '无法在 Obsidian 中打开', {
+      confirmButtonText: '知道了',
+      customStyle: { whiteSpace: 'pre-line', maxWidth: '560px' },
+    }).catch(() => undefined)
   }
 }
 
