@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -660,6 +661,7 @@ class Orchestrator:
         on_progress: Callable[[str, int, int], None] | None = None,
         force: bool = False,
         article_id: str = "",
+        cancel: threading.Event | None = None,
     ) -> list[ProcessingResult]:
         """核心抓取流程。异步包装，同步逻辑在线程池中执行。
 
@@ -668,9 +670,11 @@ class Orchestrator:
             on_progress: 进度回调 (title, completed, total)。在后台线程中调用。
             force: 强制重新处理已处理过的文章。
             article_id: 只处理指定 ID 的文章。
+            cancel: 置位后停止提交新文章（当前在跑的文章会跑完）。省略则不可取消，
+                行为与之前完全一致。
         """
         return await asyncio.to_thread(
-            self._fetch_and_process_sync, limit, on_progress, force, article_id
+            self._fetch_and_process_sync, limit, on_progress, force, article_id, cancel
         )
 
     def _fetch_and_process_sync(
@@ -679,6 +683,7 @@ class Orchestrator:
         on_progress: Callable[[str, int, int], None] | None = None,
         force: bool = False,
         article_id: str = "",
+        cancel: threading.Event | None = None,
     ) -> list[ProcessingResult]:
         """核心抓取流程（同步实现）。"""
         # 加载 .env 到 os.environ（确保 load_vision_config 等函数正常工作）
@@ -816,6 +821,9 @@ class Orchestrator:
         def on_complete(result: dict[str, Any]) -> None:
             nonlocal completed_count
             article_id = result.get("article_id", "unknown")
+            # 因取消而跳过的文章不写入账本（下次运行照常处理）
+            if result.get("status") == "cancelled":
+                return
             # 携带重试计数：失败时递增，成功时清除
             if result.get("status") in ("error", "skipped", "failed"):
                 prev = prev_retry_counts.get(article_id, 0)
@@ -844,18 +852,30 @@ class Orchestrator:
         max_workers = self._config_manager.get("fetch.max_workers", 5)
         executor = ThreadPoolExecutor(max_workers=max_workers)
         processor = BatchProcessor(executor=executor)
+
+        def _process_one(article: dict[str, Any]) -> dict[str, Any]:
+            """取消检查点：已取消则跳过尚未开始的文章（在跑的文章跑完）。"""
+            if cancel is not None and cancel.is_set():
+                return {
+                    "article_id": str(article.get("id", "")),
+                    "title": article.get("title", "未知"),
+                    "status": "cancelled",
+                    "error": "任务已取消",
+                }
+            return _process_single(
+                article,
+                config,
+                vault_path,
+                articles_dir,
+                existing_articles,
+                existing_concepts,
+                archive_writer,
+            )
+
         with processor:
             results_raw = processor.process_articles(
                 new_articles,
-                lambda article: _process_single(
-                    article,
-                    config,
-                    vault_path,
-                    articles_dir,
-                    existing_articles,
-                    existing_concepts,
-                    archive_writer,
-                ),
+                _process_one,
                 on_complete=on_complete,
             )
 
