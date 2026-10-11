@@ -12,6 +12,7 @@ import logging
 import re
 import secrets
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,9 +24,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from wx_obsidian.web import APP_NAME, APP_VERSION
+from wx_obsidian.web import APP_NAME, APP_VERSION, scheduling
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web import fs as fs_api
+from wx_obsidian.web import logs as logs_api
 from wx_obsidian.web.jobs import JobBusyError, JobManager
 from wx_obsidian.web.runtime import WebRuntime
 
@@ -310,10 +312,32 @@ def create_app(
         可直接交给 uvicorn 的应用实例。
     """
     resolved_token = token or secrets.token_urlsafe(24)
-    app = FastAPI(title=APP_NAME, version=APP_VERSION, docs_url=None, redoc_url=None)
+    log_buffer = logs_api.install_log_buffer()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """启动时恢复用户的定时任务设定；关闭时停掉调度器与日志缓冲。"""
+        try:
+            scheduling.restore_state(runtime, jobs)
+        except Exception:  # 恢复失败不能拦住服务启动
+            logger.warning("恢复定时任务失败", exc_info=True)
+        try:
+            yield
+        finally:
+            runtime.scheduler.stop()
+            logs_api.uninstall_log_buffer(log_buffer)
+
+    app = FastAPI(
+        title=APP_NAME, version=APP_VERSION, docs_url=None, redoc_url=None, lifespan=lifespan
+    )
     jobs = JobManager(runtime.orchestrator)
+    # 日志同时推给正在跑的任务，前端就能在进度面板里看到告警
+    log_buffer.subscribe(
+        lambda entry: jobs.emit_log(entry.message, level=entry.level, logger_name=entry.logger)
+    )
     app.state.runtime = runtime
     app.state.jobs = jobs
+    app.state.logs = log_buffer
     app.state.token = resolved_token
 
     app.add_middleware(
@@ -592,6 +616,179 @@ def create_app(
                 {"error": "test_failed", "detail": f"{type(exc).__name__}: {exc}"}, status_code=200
             )
         return JSONResponse(jsonable(results))
+
+    # -- 数据源 / 公众号 / 账号 ---------------------------------------------
+
+    @app.get("/api/source/health")
+    def source_health() -> dict[str, Any]:
+        """数据源服务探活（同步 def → 由线程池执行，不阻塞事件循环）。"""
+        try:
+            healthy = runtime.orchestrator.is_source_healthy()
+        except Exception as exc:  # 探活失败就是「不健康」，不该 500
+            logger.warning("数据源探活失败: %s", exc)
+            healthy = False
+        return {
+            "healthy": healthy,
+            "type": str(runtime.config_manager.get("source.type", "") or ""),
+            "base_url": str(runtime.config_manager.get("source.base_url", "") or ""),
+            "docker_hint": "cd deploy/we-mp-rss && docker compose up -d --build",
+        }
+
+    @app.get("/api/source/account")
+    def source_account() -> Response:
+        try:
+            return JSONResponse(jsonable(runtime.orchestrator.get_account_status()))
+        except Exception as exc:
+            return JSONResponse(
+                {"error": "account_unavailable", "detail": f"{type(exc).__name__}: {exc}"},
+                status_code=200,
+            )
+
+    @app.get("/api/source/login-url")
+    def source_login_url() -> dict[str, Any]:
+        try:
+            return {"url": runtime.orchestrator.get_login_url()}
+        except Exception as exc:
+            return {"url": "", "error": f"{type(exc).__name__}: {exc}"}
+
+    @app.post("/api/source/refresh")
+    def source_refresh() -> dict[str, Any]:
+        try:
+            return {"ok": bool(runtime.orchestrator.refresh_cookie())}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @app.get("/api/feeds")
+    def list_feeds() -> Response:
+        try:
+            return JSONResponse(jsonable(runtime.orchestrator.get_feeds()))
+        except Exception as exc:
+            return JSONResponse(
+                {"error": "feeds_unavailable", "detail": f"{type(exc).__name__}: {exc}"},
+                status_code=200,
+            )
+
+    @app.post("/api/feeds")
+    def add_feed(payload: dict[str, Any] = Body(default_factory=dict)) -> Response:
+        article_url = str((payload or {}).get("article_url") or "").strip()
+        if not article_url:
+            return JSONResponse(
+                {"error": "bad_request", "detail": "缺少 article_url"}, status_code=400
+            )
+        try:
+            feed = runtime.orchestrator.add_feed(article_url)
+        except Exception as exc:
+            return JSONResponse(
+                {"error": "add_feed_failed", "detail": f"{type(exc).__name__}: {exc}"},
+                status_code=200,
+            )
+        if feed is None:
+            return JSONResponse(
+                {
+                    "error": "not_supported",
+                    "detail": "当前数据源不支持按文章链接添加公众号，请在 we-mp-rss 界面里订阅",
+                },
+                status_code=501,
+            )
+        return JSONResponse(jsonable(feed))
+
+    @app.delete("/api/feeds/{feed_id}")
+    def delete_feed(feed_id: str) -> Response:
+        try:
+            ok = bool(runtime.orchestrator.delete_feed(feed_id))
+        except Exception as exc:
+            return JSONResponse(
+                {"error": "delete_feed_failed", "detail": f"{type(exc).__name__}: {exc}"},
+                status_code=200,
+            )
+        if not ok:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    # -- 定时任务 -----------------------------------------------------------
+
+    @app.get("/api/scheduler/jobs")
+    def scheduler_jobs() -> dict[str, Any]:
+        return {
+            "jobs": scheduling.job_list(runtime),
+            "state": scheduling.read_state(runtime.config_manager).to_dict(),
+        }
+
+    @app.post("/api/scheduler/jobs")
+    async def set_scheduler_job(payload: dict[str, Any] = Body(default_factory=dict)) -> Response:
+        """新增/修改/停止定时任务。
+
+        body: {"kind": "fetch", "interval": "2h"} 或 {"kind": "fetch", "interval": "0"}
+              {"kind": "keepalive", "enabled": true|false}
+        """
+        body = payload or {}
+        kind = str(body.get("kind") or "")
+        fetch_hours: int | None = None
+        keepalive_enabled: bool | None = None
+
+        if kind == "fetch":
+            raw = str(body.get("interval") or "").strip().lower().removesuffix("h")
+            try:
+                fetch_hours = int(raw or 0)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "bad_request", "detail": f"无法解析间隔: {body.get('interval')}"},
+                    status_code=400,
+                )
+        elif kind == "keepalive":
+            keepalive_enabled = bool(body.get("enabled", True))
+        else:
+            return JSONResponse(
+                {"error": "bad_request", "detail": "kind 需为 fetch 或 keepalive"}, status_code=400
+            )
+
+        try:
+            state = scheduling.apply_state(
+                runtime, jobs, fetch_hours=fetch_hours, keepalive_enabled=keepalive_enabled
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": "bad_request", "detail": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"ok": True, "state": state.to_dict(), "jobs": scheduling.job_list(runtime)}
+        )
+
+    @app.delete("/api/scheduler/jobs/{job_id}")
+    def delete_scheduler_job(job_id: str) -> Response:
+        if job_id == scheduling.FETCH_JOB_ID:
+            state = scheduling.apply_state(runtime, jobs, fetch_hours=0)
+        elif job_id == scheduling.KEEPALIVE_JOB_ID:
+            state = scheduling.apply_state(runtime, jobs, keepalive_enabled=False)
+        else:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse(
+            {"ok": True, "state": state.to_dict(), "jobs": scheduling.job_list(runtime)}
+        )
+
+    @app.post("/api/scheduler/jobs/{job_id}/run-now")
+    async def run_scheduler_job(job_id: str) -> Response:
+        """立即执行一次。
+
+        刻意不走 APScheduler 的 `run_job_now`：直接提交到 JobManager，
+        这样立刻生效、受单飞约束，而且进度能在页面上看到。
+        """
+        if runtime.scheduler.get_job_status(job_id) is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        if job_id == scheduling.FETCH_JOB_ID:
+            if jobs.busy:
+                return JSONResponse(
+                    {"error": "job_busy", "detail": "已有任务在运行"}, status_code=409
+                )
+            new_job_id = await jobs.submit("fetch")
+            return JSONResponse({"ok": True, "job_id": new_job_id})
+        await asyncio.to_thread(runtime.orchestrator.refresh_cookie)
+        return JSONResponse({"ok": True})
+
+    # -- 运行日志 -----------------------------------------------------------
+
+    @app.get("/api/logs")
+    def get_logs(since: int = 0) -> dict[str, Any]:
+        entries = [entry.to_dict() for entry in log_buffer.entries_since(since)]
+        return {"entries": entries, "last_seq": log_buffer.last_seq}
 
     # -- 文件系统 -----------------------------------------------------------
 

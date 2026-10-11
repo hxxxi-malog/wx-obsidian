@@ -201,6 +201,16 @@ class JobManager:
         self._emit_threadsafe(job, "log", message="已请求取消，等待当前文章处理完成")
         return True
 
+    def emit_log(self, message: str, level: str = "WARNING", logger_name: str = "") -> None:
+        """把一条运行日志推给当前正在跑的任务（没有任务则忽略）。
+
+        由日志 handler 调用，可能来自任意线程，故必须走 `_emit_threadsafe`。
+        """
+        job = self._current
+        if job is None:
+            return
+        self._emit_threadsafe(job, "log", message=message, level=level, logger=logger_name)
+
     # -- 事件 ---------------------------------------------------------------
 
     def _emit(self, job: _Job, type_: str, **data: Any) -> None:
