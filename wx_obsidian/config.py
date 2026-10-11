@@ -96,11 +96,16 @@ def load_config() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def load_processed() -> dict[str, Any]:
-    """加载已处理文章记录。"""
-    if PROCESSED_FILE.exists():
+def load_processed(path: Path | None = None) -> dict[str, Any]:
+    """加载已处理文章记录。
+
+    Args:
+        path: 指定记录文件；省略时用默认的 ~/.wx-obsidian/processed.json。
+    """
+    target = path or PROCESSED_FILE
+    if target.exists():
         try:
-            result: dict[str, Any] = json.loads(PROCESSED_FILE.read_text(encoding="utf-8"))
+            result: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
             return result
         except (json.JSONDecodeError, OSError) as e:
             print(f"警告: processed.json 解析失败 ({e})，将重新开始")
@@ -121,10 +126,15 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def save_processed(processed: dict[str, Any]) -> None:
-    """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。"""
+def save_processed(processed: dict[str, Any], path: Path | None = None) -> None:
+    """保存已处理文章记录（原子写入，防止进程中断导致文件损坏）。
+
+    Args:
+        processed: 完整记录字典。
+        path: 指定记录文件；省略时用默认的 ~/.wx-obsidian/processed.json。
+    """
     data = json.dumps(processed, ensure_ascii=False, indent=2)
-    atomic_write(PROCESSED_FILE, data)
+    atomic_write(path or PROCESSED_FILE, data)
 
 
 def load_max_workers() -> int:
