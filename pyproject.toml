@@ -17,7 +17,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff>=0.4.0",
-    "mypy>=1.10.0",
+    # 上界刻意的：mypy 2.x 已移除 Python 3.9 目标，会静默按 3.12 检查，
+    # 于是 `[tool.mypy] python_version = "3.9"` 形同虚设（PEP 604 之类
+    # 的写法不会被拦下）。本包仍声明 requires-python >= 3.9，故钉住 1.x。
+    "mypy>=1.10,<2",
     "pytest>=8.0.0",
 ]
 

@@ -102,6 +102,12 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "fetch_cron": "0 */2 * * *",
         "keepalive_interval_days": 7,
     },
+    # Web 模式（`process_articles.py web` / 打包后的 .app）
+    "web": {
+        "port": 8765,
+        "open_browser": True,
+        "log_level": "INFO",
+    },
 }
 
 

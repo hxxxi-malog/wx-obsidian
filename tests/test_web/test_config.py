@@ -148,3 +148,27 @@ def test_fs_list_error_cases(tmp_path: Path, env: dict[str, Any]) -> None:
         response = client.get(f"/api/fs/list?path={file_path}", headers=AUTH)
         assert response.status_code == 400
         assert response.json()["error"] == "not_a_directory"
+
+
+def test_web_settings_round_trip(env: dict[str, Any]) -> None:
+    """web.port / web.open_browser 必须可读可写（启动器读的就是这两项）。"""
+    with env["client"] as client:
+        response = client.put(
+            "/api/config",
+            json={"patch": {"web.port": "8877", "web.open_browser": "false"}},
+            headers=AUTH,
+        )
+        assert response.json()["saved"] is True
+        snapshot = client.get("/api/config", headers=AUTH).json()["web"]
+
+    assert snapshot == {"port": 8877, "open_browser": False}
+    cm: ConfigManager = env["cm"]
+    assert cm.get("web.port") == 8877
+    assert cm.get("web.open_browser") is False
+
+
+def test_web_defaults_come_from_default_config() -> None:
+    """旧配置（没有 web 段）加载后必须补齐默认值，否则启动器读不到端口。"""
+    from wx_obsidian.config_manager import _DEFAULT_CONFIG
+
+    assert _DEFAULT_CONFIG["web"] == {"port": 8765, "open_browser": True, "log_level": "INFO"}

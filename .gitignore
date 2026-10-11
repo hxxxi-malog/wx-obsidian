@@ -33,6 +33,8 @@ wx_obsidian/web/static/
 
 # 打包
 .build-venv/
+# 3.12 兼容性验证用的独立 venv（T-15a：与 3.9 dev venv 对照跑门禁）
+.venv312/
 build/
 dist/
 

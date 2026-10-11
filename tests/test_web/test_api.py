@@ -90,3 +90,41 @@ def test_spa_fallback_blocks_path_traversal(tmp_path: Path, monkeypatch) -> None
     with _client() as client:
         response = client.get("/..%2Fsecret.txt")
     assert "SECRET" not in response.text
+
+
+def test_health_reports_first_run_and_vault_warning(tmp_path) -> None:
+    """空配置目录 = 首启，且直接给出「还没设 Vault」的可操作提示。"""
+    with _client() as client:
+        payload = client.get("/api/health", headers=AUTH).json()
+
+    assert payload["first_run"] is True
+    assert [item["code"] for item in payload["warnings"]] == ["vault_unset"]
+
+
+def test_health_warns_about_tcc_sensitive_vault(tmp_path) -> None:
+    """Vault 落在 ~/Downloads 时必须提示迁移（原 LaunchAgent 就栽在这）。"""
+    downloads = str(Path.home() / "Downloads")
+    with _client() as client:
+        saved = client.put(
+            "/api/config",
+            json={"patch": {"obsidian.vault_path": downloads}},
+            headers=AUTH,
+        )
+        assert saved.status_code == 200
+        payload = client.get("/api/health", headers=AUTH).json()
+
+    codes = [item["code"] for item in payload["warnings"]]
+    assert "vault_in_tcc_dir" in codes
+    assert all(item["action"] for item in payload["warnings"])
+
+
+def test_health_warns_when_vault_missing(tmp_path) -> None:
+    with _client() as client:
+        client.put(
+            "/api/config",
+            json={"patch": {"obsidian.vault_path": str(tmp_path / "nope")}},
+            headers=AUTH,
+        )
+        payload = client.get("/api/health", headers=AUTH).json()
+
+    assert "vault_missing" in [item["code"] for item in payload["warnings"]]

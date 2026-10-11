@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -48,6 +49,8 @@ MASK = "****"
 
 # SSE 轮询与心跳（进度实时性要求 ≤2s，0.25s 轮询留足余量）
 _SSE_POLL_SECONDS = 0.25
+# 退出接口：先让响应到达浏览器，再真正停服务
+_SHUTDOWN_DELAY_SECONDS = 0.3
 _SSE_KEEPALIVE_SECONDS = 15.0
 
 # 允许通过 PUT /api/config 写入的键（白名单：不接受任意配置路径）
@@ -70,6 +73,7 @@ _PLAIN_PATCH_KEYS = frozenset(
         "fetch.max_workers",
         "fetch.feed_limit",
         "web.port",
+        "web.open_browser",
     }
 )
 _PROVIDER_PATCH_RE = re.compile(
@@ -87,7 +91,7 @@ _INT_PATCH_KEYS = frozenset(
         "web.port",
     }
 )
-_BOOL_PATCH_KEYS = frozenset({"vision.enabled"})
+_BOOL_PATCH_KEYS = frozenset({"vision.enabled", "web.open_browser"})
 _ALLOWED_ENV_KEYS = frozenset(
     {"DEEPSEEK_API_KEY", "VISION_API_KEY", "DEEPSEEK_BASE_URL", "MODEL_NAME"}
 )
@@ -263,7 +267,10 @@ def _config_snapshot(runtime: WebRuntime) -> dict[str, Any]:
             "max_workers": int(cm.get("fetch.max_workers", 5) or 5),
             "feed_limit": int(cm.get("fetch.feed_limit", 300) or 300),
         },
-        "web": {"port": int(cm.get("web.port", 8765) or 8765)},
+        "web": {
+            "port": int(cm.get("web.port", 8765) or 8765),
+            "open_browser": bool(cm.get("web.open_browser", True)),
+        },
     }
 
 
@@ -295,11 +302,71 @@ def _coerce(key: str, raw: Any) -> Any:
     return str(raw)
 
 
+# macOS 的 TCC 隐私保护会拦住后台进程读这些目录——
+# 原 LaunchAgent 方案就是栽在「读不到 ~/Downloads」上（见 README）。
+_TCC_RISKY_DIRS = frozenset({"Downloads", "Desktop"})
+
+
+def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
+    """Vault 路径的可操作告警：未设置 / 不存在 / 不可写 / 落在 TCC 敏感目录。
+
+    这些不是运行时错误，而是「必须先处理」的前置条件，所以进 `/api/health`
+    让首屏就能提示，而不是等用户抓取失败后才发现 vault 根本写不进去。
+    """
+    vault = str(runtime.config_manager.get("obsidian.vault_path", "") or "").strip()
+    if not vault:
+        return [
+            {
+                "code": "vault_unset",
+                "message": "尚未设置 Obsidian Vault 路径，抓到的文章无处落盘",
+                "action": "在「配置管理」里设置，或用「选择文件夹」挑一个",
+            }
+        ]
+
+    path = Path(vault).expanduser()
+    warnings: list[dict[str, str]] = []
+    if not path.exists():
+        warnings.append(
+            {
+                "code": "vault_missing",
+                "message": f"Vault 路径不存在：{path}",
+                "action": "检查路径拼写，或重新用「选择文件夹」选一次",
+            }
+        )
+    elif not path.is_dir():
+        warnings.append(
+            {
+                "code": "vault_not_dir",
+                "message": f"Vault 路径不是目录：{path}",
+                "action": "改成目录，或用「选择文件夹」重选",
+            }
+        )
+    elif not os.access(path, os.W_OK):
+        warnings.append(
+            {
+                "code": "vault_readonly",
+                "message": f"Vault 目录不可写：{path}",
+                "action": "检查目录权限；若在系统保护目录下，请迁到用户目录",
+            }
+        )
+
+    if any(part in _TCC_RISKY_DIRS for part in path.parts):
+        warnings.append(
+            {
+                "code": "vault_in_tcc_dir",
+                "message": f"Vault 位于 {path}：macOS 隐私保护（TCC）会拦住后台任务读取 ~/Downloads、~/Desktop",
+                "action": "建议迁到 ~/Documents 下；用「选择文件夹」重新选一次可即时授权",
+            }
+        )
+    return warnings
+
+
 def create_app(
     runtime: WebRuntime,
     *,
     token: str | None = None,
     extra_allowed_hosts: frozenset[str] = frozenset(),
+    on_quit: Callable[[], None] | None = None,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
@@ -307,6 +374,9 @@ def create_app(
         runtime: 已装配的运行期依赖。
         token: 访问 token；省略时随机生成（生产由启动器生成并写盘）。
         extra_allowed_hosts: 额外放行来源（仅测试用，生产保持回环限制）。
+        on_quit: 「退出应用」回调（启动器传入 stop.set）。省略时该接口返回 501——
+            窗口化的 .app 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了本进程，
+            所以界面上必须有一个能真正退出的入口。
 
     Returns:
         可直接交给 uvicorn 的应用实例。
@@ -359,7 +429,22 @@ def create_app(
         status = runtime.orchestrator.get_health_status()
         payload: dict[str, Any] = jsonable(status)
         payload["overall"] = status.overall
+        # 首启引导与环境告警：前端首屏据此决定是否跳设置页
+        payload["first_run"] = runtime.config_manager.is_first_run()
+        payload["warnings"] = vault_warnings(runtime)
         return payload
+
+    @app.post("/api/shutdown")
+    async def shutdown() -> Response:
+        """退出应用（窗口化的 .app 没有 Cocoa 事件循环，Cmd+Q 到不了本进程）。"""
+        if on_quit is None:
+            return JSONResponse(
+                {"error": "not_supported", "detail": "当前启动方式不支持从页面退出"},
+                status_code=501,
+            )
+        # 先回响应再退出，否则浏览器拿到的是连接被重置
+        asyncio.get_running_loop().call_later(_SHUTDOWN_DELAY_SECONDS, on_quit)
+        return JSONResponse({"ok": True})
 
     @app.get("/api/stats")
     def stats() -> dict[str, Any]:
@@ -804,6 +889,24 @@ def create_app(
             return JSONResponse({"error": "not_a_directory", "detail": str(exc)}, status_code=400)
         except PermissionError as exc:
             return JSONResponse({"error": "forbidden", "detail": str(exc)}, status_code=403)
+
+    @app.post("/api/fs/pick")
+    def fs_pick(payload: dict[str, Any] = Body(default_factory=dict)) -> Response:
+        """弹 macOS 原生「选择文件夹」面板，返回绝对路径。
+
+        这是浏览器沙箱拿不到绝对路径的正解（spec §4.8）：用户在系统面板里
+        主动选中的目录，会顺带为该 app 建立 TCC 访问许可。
+        """
+        prompt = str((payload or {}).get("prompt") or "选择 Obsidian Vault")
+        try:
+            chosen = fs_api.pick_directory(prompt)
+        except fs_api.PickerUnavailableError as exc:
+            return JSONResponse(
+                {"error": "picker_unavailable", "detail": str(exc)}, status_code=501
+            )
+        except fs_api.PickerError as exc:
+            return JSONResponse({"error": "picker_failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse({"path": chosen, "cancelled": not chosen})
 
     _mount_frontend(app)
     return app
