@@ -47,6 +47,11 @@ services:
       - RSS_FULL_CONTEXT=True
       # 微信读书登录态（见 .env），无点号，环境变量方式生效正常
       - WEREAD_COOKIE=${WEREAD_COOKIE:-}
+      # 管理 API 令牌有效期（分钟）。config.yaml 里的 ${TOKEN_EXPIRE_MINUTES} 从
+      # 这里取值——**不写在这一行就等于没设**：本 compose 用的是显式 environment
+      # 列表（没有 env_file），.env 里的变量不会自动进容器。
+      # 默认 4320=3 天；本机自用的 .env 设成了 1 年，免得隔几天就要重取令牌。
+      - TOKEN_EXPIRE_MINUTES=${TOKEN_EXPIRE_MINUTES:-4320}
       # 正文请求间隔（秒），降低风控概率
       - WEREAD_CONTENT_INTERVAL=2
       - WEREAD_PAGE_INTERVAL=1

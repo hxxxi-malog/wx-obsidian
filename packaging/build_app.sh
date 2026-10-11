@@ -3,8 +3,9 @@
 #
 # 用法：
 #   ./packaging/build_app.sh              # 构建 .app
-#   ./packaging/build_app.sh --check      # 构建后跑冻结包资源自检
+#   ./packaging/build_app.sh --check      # 同上（资源自检总是执行）
 #   ./packaging/build_app.sh --dmg        # 额外产出 dist/wx-obsidian.dmg（自用可选）
+#   ./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
 #
 # 为什么用独立 3.12 构建 venv：开发 venv 是 3.9（已 EOL，且新 PyInstaller 对 3.9
 # 支持在退坡）；打包应基于仍在维护的运行时。
@@ -17,16 +18,18 @@ BUILD_VENV="${BUILD_VENV:-.build-venv}"
 UV="${UV:-$HOME/.local/bin/uv}"
 
 WANT_DMG=0
+WANT_INSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --check) ;;  # 资源自检现在总是执行，保留该参数仅为兼容既有调用
     --dmg) WANT_DMG=1 ;;
+    --install) WANT_INSTALL=1 ;;
     -h|--help)
-      sed -n '2,9p' "$0"
+      sed -n '2,10p' "$0"
       exit 0
       ;;
     *)
-      echo "未知参数：$arg（可用：--check / --dmg）" >&2
+      echo "未知参数：$arg（可用：--check / --dmg / --install）" >&2
       exit 2
       ;;
   esac
@@ -79,9 +82,29 @@ if [ "${WANT_DMG}" = "1" ]; then
   echo "dmg: $(pwd)/dist/wx-obsidian.dmg"
 fi
 
+if [ "${WANT_INSTALL}" = "1" ]; then
+  echo "==> 安装到 /Applications"
+  DEST="/Applications/wx-obsidian.app"
+  if [ -e "${DEST}" ]; then
+    # 只删自己：先核对 bundle id，避免手滑删掉别的应用
+    EXISTING="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+      "${DEST}/Contents/Info.plist" 2>/dev/null || echo '')"
+    if [ "${EXISTING}" != "com.malog.wx-obsidian" ]; then
+      echo "拒绝覆盖 ${DEST}：它的 bundle id 是 '${EXISTING}'，不是本项目" >&2
+      exit 1
+    fi
+    # 必须先删干净再拷：ditto 是合并语义，前端产物哈希变了就会留下旧文件，
+    # 那些文件不在新包的 _CodeSignature 里 → 签名校验报「sealed resource missing」
+    rm -rf "${DEST}"
+  fi
+  ditto "${APP}" "${DEST}"
+  codesign --verify --deep --strict "${DEST}" && echo "    安装后签名校验通过"
+  echo "    已安装：${DEST}（重复安装请先退出正在运行的旧实例）"
+fi
+
 echo
 echo "产物: $(pwd)/${APP}（$(du -sh "${APP}" | cut -f1)）"
-echo "安装: cp -R ${APP} /Applications/"
+echo "安装: ./packaging/build_app.sh --install    # 先删旧包再 ditto，别用 cp -R 覆盖"
 echo "日志: ~/Library/Logs/wx-obsidian/app.log"
 echo "冒烟: .venv/bin/python packaging/smoke_frozen.py    # 冻结包端到端自检"
 echo

@@ -151,9 +151,9 @@ python process_articles.py web --port 8765 --no-open
 | 文章抓取 | 发起抓取（篇数、强制重跑）、实时进度与阶段、逐篇结果、失败清单、系统告警、中途取消、重试失败文章 |
 | 文章管理 | 搜索 / 分类 / 状态筛选、分页、双击在 Obsidian 打开、级联删除 |
 | 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数 / Web 端口、连通性测试、**原生目录选择器**、退出应用 |
-| 公众号管理 | 订阅列表、按链接添加订阅、取消订阅 |
+| 公众号管理 | 订阅列表、按链接添加订阅、取消订阅（需数据源访问令牌，否则列表为空） |
 | 数据源状态 | we-mp-rss 可达性、上游返回详情 |
-| 账号管理 | 登录状态、扫码登录地址、刷新 Cookie |
+| 账号管理 | 登录状态、扫码登录地址、令牌有效期（需数据源访问令牌，否则显示「查不到」） |
 | 定时任务 | 间隔抓取（1/2/6/12/24h）与保活任务、立即执行、删除；**设定写进 config.json，重启自动恢复** |
 
 几个要点：
@@ -171,8 +171,12 @@ python process_articles.py web --port 8765 --no-open
 ```bash
 ./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
 ./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg（自用可选）
-cp -R dist/wx-obsidian.app /Applications/
+./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
 ```
+
+> 重新安装**必须**用 `--install`（或手工 `rm -rf` 旧包后再 `ditto`），不要 `cp -R` 覆盖：
+> 合并语义会留下上一次构建的前端产物（哈希变了），旧文件不在新包的签名清单里，
+> `codesign --verify` 会报 `a sealed resource is missing or invalid`。
 
 双击即可：读配置里的端口起本地服务 → 自动打开浏览器 → 常驻。要点：
 
@@ -183,6 +187,14 @@ cp -R dist/wx-obsidian.app /Applications/
 - `.app` 里不含 TUI（`--exclude-module textual`），TUI 仍可用源码方式运行。
 - **端口被占**：先探测是不是自己人——是就只开浏览器（复用 `~/.wx-obsidian/web.token`），不是就立刻报错，不会傻等超时。
 - **退出**：用网页「配置管理 → 退出应用」（`POST /api/shutdown`），或 `pkill -f wx-obsidian`；终端里 Ctrl+C / SIGTERM 同样有效。
+
+### 账号/公众号页显示「查不到」？
+
+`/feed/*.json` 是公开只读接口，**抓取不需要任何凭据**。但「账号管理」「公众号管理」
+读的是 we-mp-rss 的 `/api/v1/wx/*` 管理接口，需要 Bearer 令牌；没配令牌时上游返回
+401，界面只会显示「查不到 / 未登录」，并给出取令牌的命令。令牌是 JWT，配置页会显示
+到期时间——默认有效期见 `deploy/we-mp-rss` 的 `TOKEN_EXPIRE_MINUTES`，取法见
+[`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
 
 ### 排错：日志在哪
 
