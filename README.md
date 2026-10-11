@@ -147,34 +147,59 @@ python process_articles.py web --port 8765 --no-open
 
 | 页面 | 功能 |
 |------|------|
-| 状态总览 | 数据源 / LLM / Vision / Vault 四项健康状态、处理统计、分类分布 |
-| 文章抓取 | 发起抓取（篇数、强制重跑）、实时进度与阶段、逐篇结果、中途取消、重试失败文章 |
+| 状态总览 | 数据源 / LLM / Vision / Vault 四项健康状态、处理统计、分类分布、首启引导与环境告警 |
+| 文章抓取 | 发起抓取（篇数、强制重跑）、实时进度与阶段、逐篇结果、失败清单、系统告警、中途取消、重试失败文章 |
 | 文章管理 | 搜索 / 分类 / 状态筛选、分页、双击在 Obsidian 打开、级联删除 |
-| 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数、连通性测试、目录选择器 |
+| 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数 / Web 端口、连通性测试、**原生目录选择器**、退出应用 |
+| 公众号管理 | 订阅列表、按链接添加订阅、取消订阅 |
+| 数据源状态 | we-mp-rss 可达性、上游返回详情 |
+| 账号管理 | 登录状态、扫码登录地址、刷新 Cookie |
+| 定时任务 | 间隔抓取（1/2/6/12/24h）与保活任务、立即执行、删除；**设定写进 config.json，重启自动恢复** |
 
 几个要点：
 
 - **只绑 `127.0.0.1`**，且所有 `/api/*` 都需要启动时打印的 token（`X-WX-Token` 头或 `?token=`）。局域网内其它机器访问不到。
-- **密钥只回显掩码**：配置页留空表示「不修改」，不会把已存的 Key 清掉。
+- **密钥只回显掩码**：配置页留空表示「不修改」，不会把已存的 Key 清掉。日志同样过掩码过滤器（`sk-`、`token=`、`Bearer`）。
 - **任务单飞**：同一时刻只允许一个抓取任务，第二个请求返回 409——`processed.json`、MOC、概念页都不能并发写。
 - **调度器常驻**：定时任务跑在 Web 服务进程里，浏览器关掉也照常执行（TUI 时代的定时任务需要 TUI 一直开着）。
+- **退出请用页面上的「退出应用」**（配置管理页底部）。窗口化的 `.app` 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了它。
 - ⚠️ **不要同时用 TUI 和 Web 发起抓取**：两者各自持有任务状态，会争抢 `processed.json` 的写入。要跑就开一个。
 - 进度走 SSE；断线或刷新页面会自动重连并按事件序号补齐，不会丢中间的进度。
 
 ### 桌面应用（macOS .app）
 
 ```bash
-./packaging/build_app.sh --check     # 构建并用冻结包做资源自检
+./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
+./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg（自用可选）
 cp -R dist/wx-obsidian.app /Applications/
 ```
 
-双击即可：自动选端口起本地服务、打开浏览器、退出时清理。要点：
+双击即可：读配置里的端口起本地服务 → 自动打开浏览器 → 常驻。要点：
 
-- 用**独立的 Python 3.12 构建 venv**（开发 venv 是 3.9，已 EOL），PyInstaller `onedir` 模式，冷启动秒开。
-- 自用只需 ad-hoc 签名（脚本已做）；**要分发给别人**得 Developer ID + 公证，否则对方双击会报「已损坏」。
-- **不要从 `~/Downloads` 运行**，装到 `/Applications`。macOS 15 的 TCC 会拦截 `~/Downloads` 下的读写（本项目早期的 LaunchAgent 就是这么废掉的）。
+- 用**独立的 Python 3.12 构建 venv**（开发 venv 是 3.9，已 EOL），PyInstaller `onedir` 模式，冷启动秒开；图标由 `packaging/make_icon.py` 生成（无设计稿但至少不是一张白纸）。
+- 自用只需 ad-hoc 签名（脚本已做并校验）；**要分发给别人**得 Developer ID + 公证，否则对方双击会报「已损坏」。
+- **不要从 `~/Downloads` 运行**，装到 `/Applications`。macOS 的 TCC 会拦截 `~/Downloads` 下的读写（本项目早期的 LaunchAgent 就是这么废掉的）；vault 若在 `~/Downloads`，状态总览页会直接提示迁移。
 - 冻结包不读仓库里的 `.env`（密钥不入包），配置与密钥只认 `~/.wx-obsidian/`。
 - `.app` 里不含 TUI（`--exclude-module textual`），TUI 仍可用源码方式运行。
+- **端口被占**：先探测是不是自己人——是就只开浏览器（复用 `~/.wx-obsidian/web.token`），不是就立刻报错，不会傻等超时。
+- **退出**：用网页「配置管理 → 退出应用」（`POST /api/shutdown`），或 `pkill -f wx-obsidian`；终端里 Ctrl+C / SIGTERM 同样有效。
+
+### 排错：日志在哪
+
+`.app` 是 `console=False` 打包的，没有终端——所以日志必须落盘：
+
+```bash
+tail -f ~/Library/Logs/wx-obsidian/app.log     # 2MB × 3 轮转
+```
+
+日志里包含 `print()` 出来的管线进度（冻结包会自动接管 stdout/stderr），并且 `sk-`、`token=`、`Bearer` 都会被掩码 —— 排错通道本身不能变成泄漏面。启动阶段失败（端口冲突、配置损坏）除了写日志还会弹一个系统对话框，不会静默什么都不发生。
+
+冻结包的端到端自检（**不花 API 费用、不碰真实 vault**，用临时 HOME + 本地 stub 上游真跑一轮抓取并断言笔记落盘）：
+
+```bash
+.venv/bin/python packaging/smoke_frozen.py            # 用 dist/wx-obsidian.app
+.venv/bin/python packaging/smoke_frozen.py --keep     # 保留临时目录便于排查
+```
 
 ### 换过 Vault 路径之后
 
@@ -279,9 +304,16 @@ Obsidian Vault/
 
 ```
 wx-obsidian/
-├── process_articles.py          # 统一入口（CLI / TUI / delete 子命令）
+├── process_articles.py          # 统一入口（CLI / TUI / Web / delete / migrate-vault 子命令）
 ├── validate_markdown.py         # Markdown 格式校验（向后兼容入口）
 ├── deploy/we-mp-rss/            # 数据源部署（派生镜像 + 发布时间回填补丁 + 配置）
+├── packaging/                   # macOS 打包
+│   ├── build_app.sh             # 构建 .app（3.12 venv + PyInstaller + ad-hoc 签名 + 自检）
+│   ├── wx-obsidian.spec         # PyInstaller 配置（资源、hiddenimports、Info.plist）
+│   ├── entry_web.py             # 冻结包入口（driving web.main）
+│   ├── make_icon.py             # 生成 AppIcon.icns
+│   ├── AppIcon.icns             # 图标（脚本生成，入库保证可复现）
+│   └── smoke_frozen.py          # 冻结包端到端冒烟（临时 HOME + stub 上游，零费用）
 ├── pyproject.toml               # Python 项目配置 + ruff/mypy 配置
 ├── .env.example                 # 环境变量模板
 ├── run.sh                       # 手动跑一轮的启动脚本（./run.sh [--limit N]）
@@ -309,8 +341,11 @@ wx-obsidian/
     │   ├── api.py               # FastAPI 应用工厂（REST + SSE + 安全中间件 + 静态托管）
     │   ├── jobs.py              # 管线任务单飞 + 事件缓冲（线程安全的进度桥接）
     │   ├── articles.py          # 文章列表投影 / 级联删除 / Obsidian 跳转
-    │   ├── fs.py                # 目录浏览（浏览器的目录树数据源）
-    │   ├── __main__.py          # 启动器（选端口 / 防重复实例 / 开浏览器）
+    │   ├── fs.py                # 目录浏览 + macOS 原生目录选择面板（osascript）
+    │   ├── logs.py              # 日志环形缓冲（WARNING+，供页面看系统告警）
+    │   ├── scheduling.py        # 定时任务：设定持久化到 config.json，重启自动恢复
+    │   ├── logging_setup.py     # 日志落盘 + 轮转 + 密钥掩码 + stdout/stderr 接管
+    │   ├── __main__.py          # 启动器（选端口 / 单实例交接 / 开浏览器 / 退出接口）
     │   ├── frontend/            # Vue 3 + Vite + Element Plus 源码
     │   └── static/              # 前端构建产物（pnpm build 生成，不入库）
     ├── sources/
@@ -456,9 +491,13 @@ Claude Code 采用了"胖核心"设计，query.ts 刻意保持 785KB 单文件..
   "llm":      { "active": "deepseek", "providers": { "deepseek": { "base_url": "https://api.deepseek.com", "model": "deepseek-flash", "api_key_env": "DEEPSEEK_API_KEY" } } },
   "vision":   { "active": "deepseek", "providers": { "deepseek": { "model": "deepseek-flash" } }, "inline_images": true },
   "obsidian": { "vault_path": "/path/to/vault", "articles_dir": "公众号文章" },
+  "web":      { "port": 8765, "open_browser": true, "log_level": "INFO" },
+  "scheduler":{ "fetch_cron": "0 */2 * * *", "keepalive_interval_days": 7 },
   "categories": ["LLM基础", "Agent", "..."]
 }
 ```
+
+> `web.port` / `web.open_browser` 由 .app 启动器读取；`scheduler.*` 由定时任务页写入（重启后自动恢复）。
 
 ## 开发
 

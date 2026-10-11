@@ -14,15 +14,31 @@
 """
 
 import os
+import tomllib
 
 from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))  # noqa: F821 (SPECPATH 由 PyInstaller 注入)
 
+STATIC_DIR = os.path.join(ROOT, "wx_obsidian", "web", "static")
+if not os.path.isfile(os.path.join(STATIC_DIR, "index.html")):
+    raise SystemExit(
+        "缺少 wx_obsidian/web/static/index.html：先构建前端\n"
+        "  cd wx_obsidian/web/frontend && pnpm install && pnpm build"
+    )
+
+# 版本只在 pyproject.toml 里写一份，避免 .app 与实际代码版本漂移
+with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
+    VERSION = tomllib.load(fh)["project"]["version"]
+
+ICON = os.path.join(ROOT, "packaging", "AppIcon.icns")
+if not os.path.isfile(ICON):
+    ICON = None  # 没图标也能构建，只是 Dock 里是一张白纸
+
 datas = [
     (os.path.join(ROOT, "skills"), "skills"),
     (os.path.join(ROOT, "prompts"), "prompts"),
-    (os.path.join(ROOT, "wx_obsidian", "web", "static"), "wx_obsidian/web/static"),
+    (STATIC_DIR, "wx_obsidian/web/static"),
 ]
 datas += collect_data_files("jieba")
 
@@ -98,13 +114,19 @@ coll = COLLECT(  # noqa: F821
 app = BUNDLE(  # noqa: F821
     coll,
     name="wx-obsidian.app",
-    icon=None,
+    icon=ICON,
     bundle_identifier="com.malog.wx-obsidian",
     info_plist={
         "CFBundleName": "wx-obsidian",
         "CFBundleDisplayName": "wx-obsidian",
-        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleShortVersionString": VERSION,
+        "CFBundleVersion": VERSION,
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "11.0",
+        # vault 常在 ~/Documents 或 ~/Downloads 下；声明用途后系统授权弹窗
+        # 才会说明白「这个 app 为什么想读这些目录」，而不是一句无意义的询问。
+        "NSDocumentsFolderUsageDescription": "读取你指定的 Obsidian 知识库目录，用于写入生成的笔记。",
+        "NSDesktopFolderUsageDescription": "读取你指定的 Obsidian 知识库目录，用于写入生成的笔记。",
+        "NSDownloadsFolderUsageDescription": "读取你指定的 Obsidian 知识库目录，用于写入生成的笔记。",
     },
 )
