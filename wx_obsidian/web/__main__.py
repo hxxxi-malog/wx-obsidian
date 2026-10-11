@@ -250,11 +250,18 @@ def _install_signal_handlers(stop: threading.Event) -> None:
             logger.debug("无法注册信号 %s（非主线程）", sig)
 
 
+def _describe_log(log_path: Path) -> str:
+    """日志提示必须诚实：写不进去时不能还指着一个不存在的文件让人去查。"""
+    if log_path.is_file():
+        return f"日志：{log_path}"
+    return f"日志未能落盘（{log_path} 不可写），本次只有终端输出"
+
+
 def _startup_failure(title: str, message: str, log_path: Path) -> int:
     logger.error("%s：%s", title, message)
     _show_dialog(title, message)
     print(f"{title}：{message}", file=sys.stderr, flush=True)
-    print(f"日志：{log_path}", file=sys.stderr, flush=True)
+    print(_describe_log(log_path), file=sys.stderr, flush=True)
     return 1
 
 
@@ -306,7 +313,10 @@ def _serve(args: argparse.Namespace, cm: ConfigManager, port: int, log_path: Pat
     # 终端里给完整地址（含 token）；日志里必须掩码——否则排错通道本身就是泄漏面
     print(f"{APP_NAME} v{APP_VERSION} 已启动：{url}", flush=True)
     logger.info("%s v%s 已启动：%s", APP_NAME, APP_VERSION, mask_secrets(url))
-    logger.info("日志文件：%s", log_path)
+    if log_path.is_file():
+        logger.info("日志文件：%s", log_path)
+    else:
+        logger.warning("日志未落盘（%s 不可写），本次仅输出到终端", log_path)
     print("按 Ctrl+C 退出（网页里的「退出应用」同样有效）", flush=True)
     if open_browser:
         _open_browser(url)

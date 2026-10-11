@@ -318,3 +318,27 @@ def test_main_serves_then_shutdown_exits_cleanly(
     log_text = (tmp_path / "app.log").read_text(encoding="utf-8")
     assert "uvicorn.error" in log_text
     assert "[ERROR] wx_obsidian.stderr: INFO:" not in log_text
+
+
+def test_failure_message_does_not_advertise_unwritable_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """日志写不进去时不能还让人去查一个不存在的文件。"""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    undefined_log = blocker / "app.log"
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    port = int(sock.getsockname()[1])
+    try:
+        monkeypatch.setattr(launcher, "ConfigManager", lambda: _StubConfigManager())
+        code = launcher.main(["--port", str(port), "--no-open", "--log-file", str(undefined_log)])
+    finally:
+        sock.close()
+
+    assert code == 1
+    stderr = capsys.readouterr().err
+    assert "日志未能落盘" in stderr
+    assert f"日志：{undefined_log}" not in stderr
