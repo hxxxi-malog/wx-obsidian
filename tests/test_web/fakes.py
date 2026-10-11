@@ -40,6 +40,7 @@ class FakeOrchestrator:
         add_feed_supported: bool = True,
         source_healthy: bool = True,
         account_logged_in: bool = True,
+        account_queried: bool = True,
     ) -> None:
         self.healthy = healthy
         self.steps = steps if steps is not None else ["第一篇", "第二篇", "第三篇"]
@@ -50,6 +51,7 @@ class FakeOrchestrator:
         self.add_feed_supported = add_feed_supported
         self.source_healthy = source_healthy
         self.account_logged_in = account_logged_in
+        self.account_queried = account_queried
         self.cancelled = threading.Event()
         self.calls: list[dict[str, Any]] = []
         self.opened: list[str] = []
@@ -106,6 +108,7 @@ class FakeOrchestrator:
             is_logged_in=self.account_logged_in,
             username="测试账号" if self.account_logged_in else None,
             need_refresh=not self.account_logged_in,
+            queried=self.account_queried,
         )
 
     def get_login_url(self) -> str:

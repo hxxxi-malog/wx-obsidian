@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -15,7 +17,7 @@ import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -361,6 +363,53 @@ def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
             }
         )
     return warnings
+
+
+def _token_expiry(token: str) -> str:
+    """从一个 Bearer Token 里读 `exp`（只解码不验签，仅用于界面提示有效期）。
+
+    we-mp-rss 的令牌是 JWT，默认有有效期（本项目的部署配方是 3 天）。不把到期
+    时间显示出来的话，它过期后只会表现为「状态突然读不到了」，很难查。
+    """
+    parts = token.split(".")
+    if len(parts) < 2:
+        return ""
+    payload = parts[1]
+    padded = payload + "=" * (-len(payload) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(padded))
+    except (ValueError, TypeError, binascii.Error):
+        return ""
+    exp = decoded.get("exp") if isinstance(decoded, dict) else None
+    if not isinstance(exp, (int, float)):
+        return ""
+    try:
+        return datetime.fromtimestamp(float(exp), timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def source_token_state(runtime: WebRuntime) -> dict[str, Any]:
+    """数据源访问令牌的状态（**不回显令牌本身**，只给是否配置与到期时间）。"""
+    token = str(runtime.config_manager.get("source.token", "") or "").strip()
+    if not token:
+        return {"configured": False, "expires_at": "", "expired": False}
+
+    expires_at = _token_expiry(token)
+    expired = False
+    if expires_at:
+        try:
+            expired = datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc)
+        except ValueError:
+            expired = False
+    return {"configured": True, "expires_at": expires_at, "expired": expired}
+
+
+def _account_payload(runtime: WebRuntime) -> dict[str, Any]:
+    """账号状态 + 令牌状态：界面据此区分「未登录」与「查不到」。"""
+    payload = dict(jsonable(runtime.orchestrator.get_account_status()))
+    payload["token"] = source_token_state(runtime)
+    return payload
 
 
 def create_app(
@@ -724,7 +773,7 @@ def create_app(
     @app.get("/api/source/account")
     def source_account() -> Response:
         try:
-            return JSONResponse(jsonable(runtime.orchestrator.get_account_status()))
+            return JSONResponse(_account_payload(runtime))
         except Exception as exc:
             return JSONResponse(
                 {"error": "account_unavailable", "detail": f"{type(exc).__name__}: {exc}"},
@@ -740,10 +789,25 @@ def create_app(
 
     @app.post("/api/source/refresh")
     def source_refresh() -> dict[str, Any]:
+        """重新探测服务可达性并**重读**登录态。
+
+        刻意不叫「刷新登录态」：微信读书 Cookie 由 we-mp-rss 自己维护，本项目不持有
+        凭据，能做的只有重新读取。返回里带上实际的账号快照，界面才不会把
+        「服务可达」误报成「登录态已刷新」。
+        """
+        healthy = False
+        error = ""
         try:
-            return {"ok": bool(runtime.orchestrator.refresh_cookie())}
+            healthy = bool(runtime.orchestrator.refresh_cookie())
         except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            error = f"{type(exc).__name__}: {exc}"
+
+        account: dict[str, Any] = {}
+        try:
+            account = _account_payload(runtime)
+        except Exception as exc:
+            error = error or f"{type(exc).__name__}: {exc}"
+        return {"ok": healthy, "error": error, "account": account}
 
     @app.get("/api/feeds")
     def list_feeds() -> Response:

@@ -300,17 +300,21 @@ class WeMpRssClient:
         """微信读书登录态。
 
         上游 `GET /api/v1/wx/weread` 需要 Bearer Token；未配置 token 或请求失败时
-        返回「未登录」，调用方据此提示用户去 /weread 扫码授权。
+        拿不到任何数据，此时返回 `queried=False`（**不是**「未登录」），
+        调用方据此区分「真的没登录」与「压根查不到」。
         """
         payload = self._get_json("/api/v1/wx/weread")
         data = payload.get("data")
         if not isinstance(data, dict):
-            return AccountStatus(is_logged_in=False)
+            return AccountStatus(is_logged_in=False, queried=False)
 
         has_cookie = bool(data.get("has_cookie"))
+        # 上游的 name 实测常为空串，vid 才是稳定的账号标识；用它兜底免得界面显示「—」
+        name = str(data.get("name") or "").strip()
+        vid = str(data.get("vid") or "").strip()
         return AccountStatus(
             is_logged_in=has_cookie,
-            username=str(data.get("name") or "") or None,
+            username=name or (f"vid {vid}" if vid else None),
             need_refresh=not has_cookie,
         )
 

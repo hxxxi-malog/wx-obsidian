@@ -98,3 +98,62 @@ def test_add_feed_blank_url_is_rejected(tmp_path: Path, value: str) -> None:
         assert (
             client.post("/api/feeds", json={"article_url": value}, headers=AUTH).status_code == 400
         )
+
+
+def test_account_payload_reports_unqueried_without_token(tmp_path: Path) -> None:
+    """没令牌时必须能区分「查不到」和「未登录」——这正是用户会误判的地方。"""
+    fake = FakeOrchestrator(account_logged_in=False, account_queried=False)
+    with _client(tmp_path, fake) as client:
+        payload = client.get("/api/source/account", headers=AUTH).json()
+
+    assert payload["queried"] is False  # 假 orchestrator 无凭据 → 查不到
+    assert payload["token"] == {"configured": False, "expires_at": "", "expired": False}
+
+
+def test_token_state_decodes_expiry_from_jwt(tmp_path: Path) -> None:
+    import base64
+    import json
+
+    def _jwt(exp: int) -> str:
+        head = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+        body = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        return f"{head}.{body}.sig"
+
+    cm = ConfigManager(config_dir=tmp_path / "cfg")
+    cm.load()
+
+    from wx_obsidian.web.api import _token_expiry, source_token_state
+
+    assert _token_expiry("not-a-jwt") == ""
+    assert _token_expiry("a.b.c") == ""  # payload 不是 JSON
+    assert _token_expiry(_jwt(4102444800)).startswith("2100-01-01")
+
+    cm.set("source.token", _jwt(4102444800))
+    runtime, _ = make_runtime(orchestrator=FakeOrchestrator(), config_manager=cm)
+    state = source_token_state(runtime)
+    assert state["configured"] is True
+    assert state["expired"] is False
+    assert state["expires_at"].startswith("2100-01-01")
+
+
+def test_refresh_reports_what_it_actually_did(tmp_path: Path) -> None:
+    """按钮返回真实快照：不能再把「服务可达」说成「登录态已刷新」。"""
+    fake = FakeOrchestrator(account_logged_in=True, source_healthy=True)
+    with _client(tmp_path, fake) as client:
+        payload = client.post("/api/source/refresh", headers=AUTH).json()
+
+    assert payload["ok"] is True
+    assert payload["account"]["is_logged_in"] is True
+    assert "token" in payload["account"]
+
+
+def test_refresh_survives_probe_failure(tmp_path: Path) -> None:
+    class _Broken(FakeOrchestrator):
+        def refresh_cookie(self) -> bool:
+            raise ConnectionError("连不上")
+
+    with _client(tmp_path, _Broken()) as client:
+        payload = client.post("/api/source/refresh", headers=AUTH).json()
+
+    assert payload["ok"] is False
+    assert "连不上" in payload["error"]

@@ -44,12 +44,19 @@ class VisionConfig:
 
 @dataclass
 class AccountStatus:
-    """数据源账号状态（登录信息与续期标记）。"""
+    """数据源账号状态（登录信息与续期标记）。
+
+    `queried` 区分「查到了，没登录」和「压根查不到」：we-mp-rss 的登录态接口
+    需要 Bearer Token，未配置时只能拿到 401。没有这个字段时两者都表现为
+    `is_logged_in=False`，界面会把「查不到」显示成「未登录」，让人去排查一个
+    根本不存在的问题。
+    """
 
     is_logged_in: bool
     username: str | None = None
     expire_at: datetime | None = None
     need_refresh: bool = False
+    queried: bool = True
 
 
 @dataclass

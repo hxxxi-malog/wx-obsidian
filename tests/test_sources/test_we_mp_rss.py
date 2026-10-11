@@ -439,3 +439,55 @@ class TestLegacyIdRegression:
         # 迁移后新增的 ID 也必须是合法的 22 字符 token
         new_ids = processed - legacy_ids
         assert all(re.fullmatch(r"[A-Za-z0-9_~-]{22}", i) for i in new_ids)
+
+
+# ---------------------------------------------------------------------------
+# get_account_status
+# ---------------------------------------------------------------------------
+
+
+class TestGetAccountStatus:
+    """登录态读取：必须能区分「没登录」与「查不到」。"""
+
+    def _client(self, **kwargs: Any) -> WeMpRssClient:
+        return WeMpRssClient(base_url="http://localhost:8001", timeout=5, **kwargs)
+
+    def test_logged_in_uses_vid_when_name_empty(self) -> None:
+        """上游的 name 实测常为空串，此时用 vid 兜底，免得界面显示「—」。"""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "code": 0,
+            "data": {"has_cookie": True, "name": "", "vid": 399397397},
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            status = self._client(token="t").get_account_status()
+
+        assert status.queried is True
+        assert status.is_logged_in is True
+        assert status.username == "vid 399397397"
+        assert status.need_refresh is False
+
+    def test_unauthorized_is_not_reported_as_logged_out(self) -> None:
+        """401（未配令牌）时 queried=False：这是「查不到」，不是「未登录」。"""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = requests.HTTPError("401 Client Error")
+
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            status = self._client(token="").get_account_status()
+
+        assert status.is_logged_in is False
+        assert status.queried is False
+
+    def test_real_logged_out_is_queried(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"code": 0, "data": {"has_cookie": False, "vid": 1}}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            status = self._client(token="t").get_account_status()
+
+        assert status.queried is True
+        assert status.is_logged_in is False
+        assert status.need_refresh is True

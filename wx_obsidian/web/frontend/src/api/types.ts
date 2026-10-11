@@ -174,11 +174,22 @@ export interface FeedItem {
   update_time: string | null
 }
 
+/** 数据源访问令牌状态（不回显令牌本身） */
+export interface SourceTokenState {
+  configured: boolean
+  /** JWT 的 exp，空串表示解析不出（非 JWT 或未配置） */
+  expires_at: string
+  expired: boolean
+}
+
 export interface AccountStatus {
   is_logged_in: boolean
   username: string | null
   expire_at: string | null
   need_refresh: boolean
+  /** false = 压根查不到（未配置令牌 / 上游 401），**不等于**未登录 */
+  queried: boolean
+  token: SourceTokenState
 }
 
 export interface SourceHealth {
