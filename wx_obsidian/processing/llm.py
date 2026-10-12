@@ -12,7 +12,7 @@ from typing import Any
 
 import requests
 
-from wx_obsidian.config import MAX_PROMPT_CONTENT, PROMPTS_DIR, SCRIPT_DIR, load_skill
+from wx_obsidian.config import MAX_PROMPT_CONTENT, PROMPTS_DIR, SCRIPT_DIR, env_flag, load_skill
 from wx_obsidian.processing.models import ImageDescription
 
 logger = logging.getLogger(__name__)
@@ -210,8 +210,12 @@ def _save_debug_response(article_id: str, text: str) -> None:
 
 def _parse_api_response(text: str, article_id: str = "") -> dict[str, Any] | None:
     """从 API 响应中提取 JSON，处理常见的格式问题。"""
-    if os.environ.get("DEBUG"):
-        (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
+    if env_flag("DEBUG"):
+        # 调试落盘不能反过来把解析打断：只读目录 / 冻结包内不可写都要降级
+        try:
+            (SCRIPT_DIR / "last_response.txt").write_text(text, encoding="utf-8")
+        except OSError as e:
+            logger.debug("写入 last_response.txt 失败: %s", e)
 
     # 去掉可能的 markdown 代码块标记
     clean = re.sub(r"```json\s*", "", text)

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
+
+import wx_obsidian.processing.llm as llm_module
 from wx_obsidian.processing.llm import (
     _build_images_context,
     _fix_json_quotes,
@@ -241,3 +245,37 @@ class TestValidateImagesField:
         ]
         result = validate_images_field(items)
         assert len(result) == 2
+
+
+class TestDebugDump:
+    """DEBUG 开关必须按取值解析：.env 模板写的是 DEBUG=0。"""
+
+    def test_debug_off_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("DEBUG", "0")
+        monkeypatch.setattr(llm_module, "SCRIPT_DIR", tmp_path)
+        _parse_api_response('{"category": "LLM"}')
+        assert not (tmp_path / "last_response.txt").exists()
+
+    def test_debug_on_writes_dump(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("DEBUG", "1")
+        monkeypatch.setattr(llm_module, "SCRIPT_DIR", tmp_path)
+        _parse_api_response('{"category": "LLM"}')
+        assert (tmp_path / "last_response.txt").read_text(encoding="utf-8") == (
+            '{"category": "LLM"}'
+        )
+
+    def test_debug_dump_failure_does_not_break_parsing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """只读目录（冻结包内）下调试落盘失败，不能反过来打断解析。"""
+        monkeypatch.setenv("DEBUG", "1")
+        monkeypatch.setattr(llm_module, "SCRIPT_DIR", tmp_path)
+
+        def _boom(*_args: object, **_kwargs: object) -> int:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(Path, "write_text", _boom)
+        result = _parse_api_response('{"category": "LLM"}')
+        assert result == {"category": "LLM"}

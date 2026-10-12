@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from wx_obsidian.config import (
     MAX_ARTICLE_LENGTH,
     MAX_PROMPT_CONTENT,
     SUB_TOPIC_THRESHOLD,
+    env_flag,
     load_processed,
     load_skill,
     save_processed,
@@ -254,3 +256,55 @@ def test_conftest_isolates_real_processed_path(tmp_path: Path) -> None:
     assert real not in similarity_module._DEFAULT_DB_PATH.parents
     save_processed({"only": {"status": "done"}})  # 默认路径也必须落在临时目录
     assert config_module.PROCESSED_FILE.exists()
+
+
+# ---------------------------------------------------------------------------
+# env_flag：按取值解析，不能按「是否存在」判断
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        (" On ", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+        (" false ", False),
+    ],
+)
+def test_env_flag_parses_value(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    monkeypatch.setenv("WX_TEST_FLAG", raw)
+    assert env_flag("WX_TEST_FLAG") is expected
+
+
+def test_env_flag_missing_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WX_TEST_FLAG", raising=False)
+    assert env_flag("WX_TEST_FLAG") is False
+    assert env_flag("WX_TEST_FLAG", default=True) is True
+
+
+def test_env_flag_unknown_value_falls_back_and_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """拼错的取值必须 fail-closed，且留下告警，不能静默当开启。"""
+    monkeypatch.setenv("WX_TEST_FLAG", "maybe")
+    with caplog.at_level(logging.WARNING):
+        assert env_flag("WX_TEST_FLAG") is False
+        assert env_flag("WX_TEST_FLAG", default=True) is True
+    assert "不是合法布尔值" in caplog.text
+
+
+def test_debug_zero_means_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：.env 模板写的就是 DEBUG=0，存在性判断会把它当成「开启」。"""
+    monkeypatch.setenv("DEBUG", "0")
+    assert env_flag("DEBUG") is False

@@ -211,7 +211,7 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 | `MAX_VISION_CONCURRENCY` / `VISION_TIMEOUT` / `VISION_MAX_RETRIES` | 否 | 默认 `10` / `120` 秒 / `2` |
 | `WX_SOURCE` / `WX_SOURCE_BASE_URL` | 否 | 数据源类型（当前仅 `we_mp_rss`）与地址覆盖 |
 | `WX_WEB_TOKEN` / `WX_WEB_HOST` / `WX_ALLOW_REMOTE` | 否 | Web 启动期开关，容器部署用 |
-| `DEBUG` | 否 | 只要非空就算开启（写 `DEBUG=0` 也会开！），会把 API 原始响应写到 `last_response.txt` |
+| `DEBUG` | 否 | 布尔开关：`1/true/yes/on` 开启，`0/false/no/off`（默认）关闭，认不出的取值按关闭并记一条告警；开启时把 API 原始响应写到 `last_response.txt` |
 
 `~/.wx-obsidian/config.json` 的关键字段（TUI 的 Config 界面可直接编辑）：
 

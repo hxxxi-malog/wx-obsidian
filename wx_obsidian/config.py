@@ -53,6 +53,33 @@ def sanitize_path_segment(text: str, max_len: int = 100) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 环境变量布尔值解析
+# ---------------------------------------------------------------------------
+
+_TRUTHY = frozenset({"1", "true", "yes", "on", "y", "t"})
+_FALSY = frozenset({"", "0", "false", "no", "off", "n", "f"})
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    """把环境变量按布尔值解析，而不是按「是否存在」判断。
+
+    ``os.environ.get(name)`` 返回非空字符串恒为真，而 `.env` 模板里写的是
+    ``DEBUG=0``——存在性判断会把「关闭」当成「开启」。无法识别的取值按
+    ``default`` 处理（fail-closed），并留一条告警，避免拼错时静默变成开启。
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    logger.warning("环境变量 %s=%r 不是合法布尔值，按 %s 处理", name, raw, default)
+    return default
+
+
+# ---------------------------------------------------------------------------
 # .env 加载（不覆盖已有的环境变量）
 # ---------------------------------------------------------------------------
 
