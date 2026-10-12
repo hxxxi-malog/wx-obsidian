@@ -49,6 +49,8 @@ from wx_obsidian.output.vault import (
     _fix_links_batch,
     _parse_moc_content,
     _rebuild_moc,
+    _update_parent_moc,
+    escape_display,
 )
 
 CONCEPT_DIR_NAME = "概念"
@@ -283,6 +285,34 @@ class RecordFix:
 
 
 @dataclass
+class LegacyFix:
+    """分类名与文件位置对不上的历史遗留记录。
+
+    设计约定：category 里出现 "/" 就表示文件已经在子目录里。这类记录名字改了、
+    文件没搬——目标子目录真实存在时把文件搬进去（补完当年的迁移）；目录从未
+    存在时把分类名改回文件实际所在的那一层（不凭空造空壳目录）。
+    """
+
+    article_id: str
+    src: Path
+    #: None 表示只改分类名，不搬文件
+    dst: Path | None
+    old_category: str
+    new_category: str
+    title: str
+    date: str
+
+
+@dataclass
+class MissingMoc:
+    """有文章却没有 _MOC.md 的分类目录。"""
+
+    category: str
+    directory: Path
+    entries: list[tuple[str, str, str]] = field(default_factory=list)  # (date, stem, title)
+
+
+@dataclass
 class Plan:
     file_moves: list[FileMove] = field(default_factory=list)
     moc_merges: list[MocMerge] = field(default_factory=list)
@@ -290,6 +320,8 @@ class Plan:
     dirs_to_remove: list[Path] = field(default_factory=list)
     record_fixes: list[RecordFix] = field(default_factory=list)
     categories_to_fix: list[tuple[str, str]] = field(default_factory=list)
+    legacy_fixes: list[LegacyFix] = field(default_factory=list)
+    missing_mocs: list[MissingMoc] = field(default_factory=list)
     link_pass: LinkPass = field(default_factory=LinkPass)
 
     @property
@@ -299,6 +331,8 @@ class Plan:
             or self.moc_merges
             or self.record_fixes
             or self.categories_to_fix
+            or self.legacy_fixes
+            or self.missing_mocs
             or self.link_pass.files
         )
 
@@ -383,7 +417,88 @@ def build_plan(
     # 4) 待删除的空目录（从深到浅，父目录才不会先被删）
     plan.dirs_to_remove = sorted(nested_dirs, key=lambda p: len(p.parts), reverse=True)
 
-    # 5) 第二遍：链接里残留的嵌套前缀（第一遍只改了最深的一层）
+    # 5) 分类名与位置不一致的历史遗留（嵌套形与已安排搬走的记录在前两阶段处理过）
+    legacy_dst: dict[str, Path] = {}
+    for article_id, record in processed.items():
+        if not isinstance(record, dict) or record.get("status") != "done":
+            continue
+        category = str(record.get("category") or "")
+        file_path = str(record.get("file") or "")
+        if not category or is_nested(category) or file_path in moved_by_src:
+            continue
+        src = Path(file_path)
+        if not src.exists():
+            continue
+        target_dir = articles_dir / category
+        if src.parent == target_dir:
+            continue  # 名字与位置一致
+        parent = category.rsplit("/", 1)[0] if "/" in category else None
+        parent_dir = articles_dir / parent if parent else None
+        dest: Path | None = None
+        if parent_dir is not None and src.parent == parent_dir and target_dir.is_dir():
+            # 文件还在父目录、子目录已存在 → 补完当年没做成的迁移
+            candidate = target_dir / src.name
+            if candidate.exists():
+                plan.collisions.append((src, candidate))
+                continue
+            dest = candidate
+            new_category = category
+        else:
+            # 其余情形（子目录从未建过、文件在另一个同级目录里，或文件比 category
+            # 更深一层）一律只把分类名对齐到文件实际所在目录，绝不跨目录搬文件——
+            # 那属于分类合并，得人来定
+            if src.parent == articles_dir:
+                continue  # 文件在文章根目录，没有可对齐的分类名
+            new_category = src.parent.relative_to(articles_dir).as_posix()
+        if dest is not None:
+            legacy_dst[file_path] = dest
+        plan.legacy_fixes.append(
+            LegacyFix(
+                article_id=str(article_id),
+                src=src,
+                dst=dest,
+                old_category=category,
+                new_category=new_category,
+                title=str(record.get("title") or src.stem),
+                date=str(record.get("processed_at") or "")[:10],
+            )
+        )
+
+    # 6) 有文章却没有 _MOC.md 的目录（按记录修完之后的落点来算）
+    planned_dst = {str(move.src): move.dst for move in plan.file_moves}
+    planned_dst.update(legacy_dst)
+    by_dir: dict[Path, list[tuple[str, str, str]]] = {}
+    for record in processed.values():
+        if not isinstance(record, dict) or record.get("status") != "done":
+            continue
+        file_path = str(record.get("file") or "")
+        src = Path(file_path)
+        if not src.name:
+            continue
+        final = planned_dst.get(file_path, src)
+        directory = final.parent
+        if not directory.is_dir() and directory not in {m.dst.parent for m in plan.file_moves}:
+            continue
+        rel = directory.relative_to(articles_dir)
+        if rel.parts and rel.parts[0] == CONCEPT_DIR_NAME:
+            continue
+        if rel.as_posix() in ("", "."):
+            continue  # 文章根目录的 MOC 不属于分类 MOC
+        by_dir.setdefault(directory, []).append(
+            (str(record.get("processed_at") or "")[:10], final.stem, str(record.get("title") or final.stem))
+        )
+    for directory, entries in sorted(by_dir.items()):
+        if (directory / "_MOC.md").exists():
+            continue
+        plan.missing_mocs.append(
+            MissingMoc(
+                category=directory.relative_to(articles_dir).as_posix(),
+                directory=directory,
+                entries=sorted(entries),
+            )
+        )
+
+    # 7) 第二遍：链接里残留的嵌套前缀（第一遍只改了最深的一层）
     plan.link_pass = scan_residual_links(articles_dir)
     return plan
 
@@ -431,20 +546,43 @@ def _print_plan(plan: Plan, articles_dir: Path, config_file: Path, processed_fil
     if len(plan.dirs_to_remove) > 10:
         print(f"    … 其余 {len(plan.dirs_to_remove) - 10} 个")
 
+    to_move = [f for f in plan.legacy_fixes if f.dst is not None]
+    to_rename = [f for f in plan.legacy_fixes if f.dst is None]
+    print(f"\n[6] 分类名与文件位置不一致的历史遗留：{len(plan.legacy_fixes)} 条")
+    print(f"    (a) 文件还在父目录且子目录已存在 → 补完当年的迁移：{len(to_move)} 条")
+    for fix in to_move:
+        print(
+            f"        {fix.src.name[:52]}\n"
+            f"          {fix.old_category}  →  {fix.new_category}/（文件入子目录）"
+        )
+    print(f"    (b) 其余 → 分类名对齐到文件实际所在目录，文件不动：{len(to_rename)} 条")
+    rename_tally: dict[tuple[str, str], int] = {}
+    for fix in to_rename:
+        key = (fix.old_category, fix.new_category)
+        rename_tally[key] = rename_tally.get(key, 0) + 1
+    for (old, new), count in sorted(rename_tally.items())[:12]:
+        print(f"        {count:3d} 条  {old}  →  {new}")
+    if len(rename_tally) > 12:
+        print(f"        … 其余 {len(rename_tally) - 12} 个分类名")
+
+    print(f"\n[7] 补建缺失的 _MOC.md：{len(plan.missing_mocs)} 个")
+    for moc in plan.missing_mocs:
+        print(f"    {moc.category}/_MOC.md  （写入 {len(moc.entries)} 条已有文章）")
+
     link_pass = plan.link_pass
     print(
-        f"\n[6] 链接清理：{len(link_pass.files)} 个文件 / {link_pass.link_total} 条嵌套前缀链接"
+        f"\n[8] 链接清理：{len(link_pass.files)} 个文件 / {link_pass.link_total} 条嵌套前缀链接"
         f" / {link_pass.dissolved_total} 个自引用文件夹组 / {link_pass.deduped_total} 行重复条目"
     )
-    for fix in link_pass.files[:10]:
+    for link_fix in link_pass.files[:10]:
         detail = []
-        if fix.links:
-            detail.append(f"{fix.links} 条链接")
-        if fix.dissolved:
-            detail.append(f"拆 {fix.dissolved} 个文件夹组")
-        if fix.deduped:
-            detail.append(f"去重 {fix.deduped} 行")
-        print(f"    {fix.path.relative_to(articles_dir)}  （{'，'.join(detail)}）")
+        if link_fix.links:
+            detail.append(f"{link_fix.links} 条链接")
+        if link_fix.dissolved:
+            detail.append(f"拆 {link_fix.dissolved} 个文件夹组")
+        if link_fix.deduped:
+            detail.append(f"去重 {link_fix.deduped} 行")
+        print(f"    {link_fix.path.relative_to(articles_dir)}  （{'，'.join(detail)}）")
     if len(link_pass.files) > 10:
         print(f"    … 其余 {len(link_pass.files) - 10} 个文件")
 
@@ -530,9 +668,34 @@ def apply_plan(plan: Plan, articles_dir: Path, cm: ConfigManager, processed_file
             removed += 1
     print(f"  已清理空目录 {removed}/{len(plan.dirs_to_remove)} 个")
 
+    # 历史遗留：目标子目录存在就把文件搬进去，否则只改分类名（文件不动）
+    legacy_moved = 0
+    legacy_renamed = 0
+    for fix in plan.legacy_fixes:
+        if fix.dst is not None:
+            fix.dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(fix.src), str(fix.dst))
+            set_frontmatter_category(fix.dst, fix.new_category)
+            legacy_moved += 1
+        else:
+            set_frontmatter_category(fix.src, fix.new_category)
+            legacy_renamed += 1
+    print(f"  历史遗留：搬入已有子目录 {legacy_moved} 条，分类名改回实际所在层 {legacy_renamed} 条")
+
+    # 补建缺失的分类 MOC（沿用 app 自己的条目格式）
+    for moc in plan.missing_mocs:
+        lines = [f"# {moc.category.rsplit('/', 1)[-1]}", ""]
+        for date, stem, title in moc.entries:
+            lines.append(f"- {date} [[{moc.category}/{stem}|{escape_display(title)}]]")
+        atomic_write(moc.directory / "_MOC.md", "\n".join(lines) + "\n")
+        parent, _, name = moc.category.rpartition("/")
+        if parent:
+            _update_parent_moc(articles_dir, parent, name)
+    print(f"  已补建 {len(plan.missing_mocs)} 个分类 _MOC.md")
+
     link_files = 0
-    for fix in plan.link_pass.files:
-        path = fix.path
+    for link_fix in plan.link_pass.files:
+        path = link_fix.path
         try:
             content = path.read_text(encoding="utf-8")
             new_text, _l, _d, _dd = _process_markdown(path, articles_dir)
@@ -550,17 +713,24 @@ def apply_plan(plan: Plan, articles_dir: Path, cm: ConfigManager, processed_file
     # processed.json：路径线（file + category 一起改）与分类名线（只改 category）
     processed = load_processed()
     moved_by_src = {str(move.src): move for move in plan.file_moves}
+    legacy_by_src = {str(fix.src): fix for fix in plan.legacy_fixes}
     updated = 0
     warnings: list[str] = []
     for _article_id, record in processed.items():
         if not isinstance(record, dict):
             continue
         file_path = str(record.get("file") or "")
-        category = str(record.get("category") or "")
         moved = moved_by_src.get(file_path)
         if moved is not None:
             record["file"] = str(moved.dst)
             record["category"] = moved.new_category
+            updated += 1
+            continue
+        legacy = legacy_by_src.get(file_path)
+        if legacy is not None:
+            record["category"] = legacy.new_category
+            if legacy.dst is not None:
+                record["file"] = str(legacy.dst)
             updated += 1
             continue
         category = str(record.get("category") or "")

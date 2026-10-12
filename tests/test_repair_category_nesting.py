@@ -168,3 +168,166 @@ class TestBuildPlan:
         assert len(result.files) == 1
         assert result.link_total == 1
         assert result.deduped_total == 1
+
+
+class TestLegacyCategoryMismatch:
+    """分类名与文件位置对不上的历史遗留。"""
+
+    def _record(self, category: str, path: Path, status: str = "done") -> dict[str, object]:
+        return {
+            "status": status,
+            "category": category,
+            "sub_topic": category.rsplit("/", 1)[-1],
+            "title": path.stem,
+            "file": str(path),
+            "processed_at": "2026-07-08T15:12:07",
+        }
+
+    def test_moves_file_into_existing_subdir_when_it_waits_in_parent(self, tmp_path: Path):
+        """文件还在父目录、目标子目录已存在 → 补完当年没做成的迁移。"""
+        articles_dir = tmp_path / "公众号文章"
+        parent = articles_dir / "A"
+        parent.mkdir(parents=True)
+        (parent / "B").mkdir()
+        src = parent / "文.md"
+        src.write_text('---\ncategory: "A/B"\n---\n', encoding="utf-8")
+
+        plan = build_plan(articles_dir, {"a1": self._record("A/B", src)}, [])
+
+        assert len(plan.legacy_fixes) == 1
+        fix = plan.legacy_fixes[0]
+        assert fix.dst == parent / "B" / "文.md"
+        assert fix.new_category == "A/B"
+
+    def test_renames_only_when_subdir_never_existed(self, tmp_path: Path):
+        """子目录从未建过 → 只把分类名对齐到实际所在层，不造空壳目录。"""
+        articles_dir = tmp_path / "公众号文章"
+        parent = articles_dir / "A"
+        parent.mkdir(parents=True)
+        src = parent / "文.md"
+        src.write_text('---\ncategory: "A/从未存在"\n---\n', encoding="utf-8")
+
+        plan = build_plan(articles_dir, {"a1": self._record("A/从未存在", src)}, [])
+
+        assert len(plan.legacy_fixes) == 1
+        fix = plan.legacy_fixes[0]
+        assert fix.dst is None
+        assert fix.new_category == "A"
+        assert not (parent / "从未存在").exists()
+
+    def test_never_moves_between_two_existing_subdirs(self, tmp_path: Path):
+        """回归：文件在「另一个同级子目录」里时，绝不能把它搬去记录声称的那个。
+
+        Loop工程 / Loop Engineering 就是这种双名目录；搬动会清空一侧、混淆另一侧。
+        """
+        articles_dir = tmp_path / "公众号文章"
+        parent = articles_dir / "A"
+        (parent / "中文名").mkdir(parents=True)
+        (parent / "English").mkdir()
+        src = parent / "中文名" / "文.md"
+        src.write_text('---\ncategory: "A/English"\n---\n', encoding="utf-8")
+
+        plan = build_plan(articles_dir, {"a1": self._record("A/English", src)}, [])
+
+        fix = plan.legacy_fixes[0]
+        assert fix.dst is None, "不得跨目录搬文件"
+        assert fix.new_category == "A/中文名"
+
+    def test_aligns_category_when_file_is_deeper_than_category(self, tmp_path: Path):
+        """镜像情形：category 只写了父分类，文件却在子目录里 → 对齐到子目录。
+
+        不对齐的话，管线会往父 MOC 里写一条指向 [[Agent/标题]] 的断链。
+        """
+        articles_dir = tmp_path / "公众号文章"
+        sub = articles_dir / "Agent" / "上下文工程"
+        sub.mkdir(parents=True)
+        src = sub / "文.md"
+        src.write_text('---\ncategory: "Agent"\n---\n', encoding="utf-8")
+
+        plan = build_plan(articles_dir, {"a1": self._record("Agent", src)}, [])
+
+        fix = plan.legacy_fixes[0]
+        assert fix.dst is None
+        assert fix.new_category == "Agent/上下文工程"
+
+    def test_skips_consistent_and_non_done_records(self, tmp_path: Path):
+        articles_dir = tmp_path / "公众号文章"
+        sub = articles_dir / "A" / "B"
+        sub.mkdir(parents=True)
+        ok = sub / "一致.md"
+        ok.write_text('---\ncategory: "A/B"\n---\n', encoding="utf-8")
+        skipped = articles_dir / "A" / "跳过.md"
+        skipped.write_text('---\ncategory: "A/B"\n---\n', encoding="utf-8")
+
+        plan = build_plan(
+            articles_dir,
+            {"ok": self._record("A/B", ok), "bad": self._record("A/B", skipped, status="error")},
+            [],
+        )
+        assert plan.legacy_fixes == []
+
+
+class TestMissingMoc:
+    """有文章却没有 _MOC.md 的目录。"""
+
+    def test_detects_dir_without_moc(self, tmp_path: Path):
+        articles_dir = tmp_path / "公众号文章"
+        cat = articles_dir / "Agent" / "MCP"
+        cat.mkdir(parents=True)
+        for name in ("甲", "乙"):
+            path = cat / f"{name}.md"
+            path.write_text('---\ncategory: "Agent/MCP"\n---\n', encoding="utf-8")
+        with_moc = articles_dir / "Agent" / "RAG"
+        with_moc.mkdir()
+        (with_moc / "文.md").write_text('---\ncategory: "Agent/RAG"\n---\n', encoding="utf-8")
+        (with_moc / "_MOC.md").write_text("# RAG\n\n", encoding="utf-8")
+
+        processed = {
+            "m1": {
+                "status": "done",
+                "category": "Agent/MCP",
+                "file": str(cat / "甲.md"),
+                "title": "甲",
+                "processed_at": "2026-01-02T00:00:00",
+            },
+            "m2": {
+                "status": "done",
+                "category": "Agent/MCP",
+                "file": str(cat / "乙.md"),
+                "title": "乙",
+                "processed_at": "2026-01-01T00:00:00",
+            },
+            "r1": {
+                "status": "done",
+                "category": "Agent/RAG",
+                "file": str(with_moc / "文.md"),
+                "title": "文",
+                "processed_at": "2026-01-01T00:00:00",
+            },
+        }
+        plan = build_plan(articles_dir, processed, [])
+
+        assert [m.category for m in plan.missing_mocs] == ["Agent/MCP"]
+        assert [e[1] for e in plan.missing_mocs[0].entries] == ["乙", "甲"]  # 按日期排序
+
+    def test_counts_file_moved_in_by_legacy_fix(self, tmp_path: Path):
+        """搬进子目录的文件也要计入新 MOC，否则索引会漏。"""
+        articles_dir = tmp_path / "公众号文章"
+        parent = articles_dir / "A"
+        (parent / "B").mkdir(parents=True)
+        src = parent / "等待迁移.md"
+        src.write_text('---\ncategory: "A/B"\n---\n', encoding="utf-8")
+
+        plan = build_plan(articles_dir, {"a1": self._record_for(src)}, [])
+
+        assert [m.category for m in plan.missing_mocs] == ["A/B"]
+        assert len(plan.missing_mocs[0].entries) == 1
+
+    def _record_for(self, path: Path) -> dict[str, object]:
+        return {
+            "status": "done",
+            "category": "A/B",
+            "title": path.stem,
+            "file": str(path),
+            "processed_at": "2026-01-01T00:00:00",
+        }
