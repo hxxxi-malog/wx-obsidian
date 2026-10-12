@@ -1,16 +1,20 @@
 <script setup lang="ts">
 /**
- * 保存条：粘在视口底部的操作条（glass + 上边线），显示未保存项数。
+ * 保存条：粘在视口底部的操作条（渐进模糊遮罩 + 常显），显示未保存项数。
  *
  * 为什么粘底而不是页尾：配置页很长，改动散落在 5 个分区里；保存按钮滚出视口后
  * 用户只能往上找，很容易以为「改完就生效了」。脏值判断在页面里（useDirtyGuard），
  * 这里只负责呈现与转发动作。
+ *
+ * 交界处理与顶栏同一套（styles/veil.css）：表单行从下方经过时是「化开」，
+ * 不是被 1px 上边线切开；这里没有滚动进度可言，所以用 veil--always 常显。
  */
 import { PhArrowCounterClockwise, PhFloppyDisk } from '@phosphor-icons/vue'
 import { computed } from 'vue'
 
 import AppButton from '@/components/ui/AppButton.vue'
 import AppStatusDot from '@/components/ui/AppStatusDot.vue'
+import { VEIL_BANDS } from '@/lib/scroll'
 
 const props = withDefaults(
   defineProps<{
@@ -54,7 +58,14 @@ const statusText = computed(() => {
 </script>
 
 <template>
-  <div class="glass sticky bottom-0 z-20 -mx-4 mt-6 border-t border-hairline px-4 py-3 sm:-mx-6 sm:px-6">
+  <div class="sticky bottom-0 z-20 -mx-4 mt-6 px-4 py-3 sm:-mx-6 sm:px-6">
+    <div class="veil veil--bottom veil--always -z-10" data-savebar-veil aria-hidden="true">
+      <div class="veil__scrim" />
+      <div class="veil__blur">
+        <div v-for="band in VEIL_BANDS" :key="band" data-veil-band />
+      </div>
+    </div>
+
     <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <div class="flex items-center gap-2 text-[13px]">
         <AppStatusDot :tone="dirty ? 'warning' : 'success'" :pulse="dirty" />

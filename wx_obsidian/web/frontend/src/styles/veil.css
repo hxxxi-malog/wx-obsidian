@@ -1,0 +1,156 @@
+/**
+ * 渐进模糊遮罩（progressive blur veil）——粘性条与滚动内容的交界处理。
+ *
+ * 解决什么：粘性条（顶栏、底部保存条）压住页面内容时，1px 边线会把标题、表格行
+ * 齐齐切开；单层 backdrop-filter 又会把内容糊成一片仍可辨认的灰影。参考 iOS 相册的
+ * 工具栏做法：模糊强度自边缘向内递减，内容「化开」而不是「被切」。
+ *
+ * 做法：N 层 backdrop-filter 叠放，每层用 mask 只露出一段带状区域并羽化，模糊半径
+ * 沿纵深递减，叠加起来就是连续的模糊梯度；再叠一层材质色渐变（scrim）保证条内
+ * 文字的对比度不依赖身后的内容。
+ *
+ * 三条硬约束（改之前先读）：
+ *  1. 层数 = DOM 里 [data-veil-band] 的个数（AppTopbar 用 lib/scroll.ts 的 VEIL_BANDS），
+ *     与下面的 nth-child 规则数必须一致，多一层少一层都会出现断档或过曝。
+ *  2. opacity 只能落在**叶子层**（scrim / band）上。给 .veil 容器加 opacity、filter、
+ *     mask 会让它成为 backdrop root，子层的 backdrop-filter 就采不到页面内容了。
+ *  3. 静止时整块 visibility: hidden：浏览器既不绘制也不做 backdrop 采样，滚动才付代价。
+ */
+
+.veil {
+  --veil-progress: 0; /* 0→1，由滚动位移驱动（src/lib/scroll.ts） */
+  --veil-tail: 2.5rem; /* 越过条边缘之后继续渐隐的长度 */
+  --veil-core: calc(100% - var(--veil-tail)); /* 条自身高度：这一段保持完整材质 */
+  --veil-direction: to bottom;
+  /* 兜底材质与兜底层开关：不支持 backdrop-filter 或系统「降低透明度」时用（见文件末尾） */
+  --veil-material: var(--surface-glass);
+  --veil-blur-layer: block;
+  position: absolute;
+  inset-inline: 0;
+  height: calc(100% + var(--veil-tail));
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.veil--top {
+  top: 0;
+}
+
+/* 粘底的条：模糊自下而上递减，尾巴向上伸 */
+.veil--bottom {
+  bottom: 0;
+  --veil-direction: to top;
+}
+
+/* 常显（没有滚动进度可言的位置，比如页面底部的保存条） */
+.veil--always {
+  --veil-progress: 1;
+  visibility: visible;
+}
+
+.veil[data-veil='on'] {
+  visibility: visible;
+}
+
+/* 材质色渐变：条内保持 glass 的完整不透明度，越过边缘后线性淡出 */
+.veil__scrim {
+  position: absolute;
+  inset: 0;
+  opacity: var(--veil-progress);
+  background-image: linear-gradient(
+    var(--veil-direction),
+    var(--veil-material) 0,
+    var(--veil-material) var(--veil-core),
+    transparent 100%
+  );
+}
+
+.veil__blur {
+  position: absolute;
+  inset: 0;
+  display: var(--veil-blur-layer);
+}
+
+.veil__blur > * {
+  --veil-blur: 0px;
+  --veil-band: linear-gradient(var(--veil-direction), transparent 0%, transparent 100%);
+  position: absolute;
+  inset: 0;
+  opacity: var(--veil-progress);
+  -webkit-backdrop-filter: blur(var(--veil-blur));
+  backdrop-filter: blur(var(--veil-blur));
+  -webkit-mask-image: var(--veil-band);
+  mask-image: var(--veil-band);
+}
+
+/* 自边缘（第 1 层）向内递减：28 → 16 → 9 → 5 → 2.5 → 1.2px。
+   每层露出自己那一段（16.67%）并向两侧羽化半段，相邻层交叠处即中间模糊强度。 */
+.veil__blur > :nth-child(1) {
+  --veil-blur: 28px;
+  --veil-band: linear-gradient(var(--veil-direction), black 0%, black 16.67%, transparent 33.33%);
+}
+
+.veil__blur > :nth-child(2) {
+  --veil-blur: 16px;
+  --veil-band: linear-gradient(
+    var(--veil-direction),
+    transparent 0%,
+    black 16.67%,
+    black 33.33%,
+    transparent 50%
+  );
+}
+
+.veil__blur > :nth-child(3) {
+  --veil-blur: 9px;
+  --veil-band: linear-gradient(
+    var(--veil-direction),
+    transparent 16.67%,
+    black 33.33%,
+    black 50%,
+    transparent 66.67%
+  );
+}
+
+.veil__blur > :nth-child(4) {
+  --veil-blur: 5px;
+  --veil-band: linear-gradient(
+    var(--veil-direction),
+    transparent 33.33%,
+    black 50%,
+    black 66.67%,
+    transparent 83.33%
+  );
+}
+
+.veil__blur > :nth-child(5) {
+  --veil-blur: 2.5px;
+  --veil-band: linear-gradient(
+    var(--veil-direction),
+    transparent 50%,
+    black 66.67%,
+    black 83.33%,
+    transparent 100%
+  );
+}
+
+.veil__blur > :nth-child(6) {
+  --veil-blur: 1.2px;
+  --veil-band: linear-gradient(var(--veil-direction), transparent 66.67%, black 83.33%, black 100%);
+}
+
+/* 不支持 backdrop-filter：退回不透明材质。宁可「实心」也不能让内容不模糊地穿过去 */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .veil {
+    --veil-material: var(--surface-panel);
+    --veil-blur-layer: none;
+  }
+}
+
+/* 系统开启「降低透明度」：同样退回不透明材质 */
+@media (prefers-reduced-transparency: reduce) {
+  .veil {
+    --veil-material: var(--surface-panel);
+    --veil-blur-layer: none;
+  }
+}

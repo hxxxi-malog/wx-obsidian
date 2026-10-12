@@ -162,6 +162,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `web/articles.py` | 文章列表/详情/级联删除 | `sort`/`order` 是白名单参数（非法值回落默认顺序），排序必须在分页切片前 |
 | `web/frontend/` | Vue 界面（自建设计系统） | 改动后跑 `pnpm type-check && pnpm style-guard && pnpm test && pnpm build`；产物由 FastAPI 同源托管 |
 | `web/frontend/src/styles/tokens.css` | 设计 token（三层 + 深浅两套） | 改 token 影响全站观感；业务代码只允许语义类，禁裸色值 |
+| `web/frontend/src/styles/veil.css` | 粘性条渐进模糊遮罩（顶栏 / 保存条） | 层数必须 = `lib/scroll.ts` 的 `VEIL_BANDS` = CSS `:nth-child` 规则数；`opacity` 只能落叶子层，否则容器变 backdrop root、模糊失效（spec §3.7） |
 | `web/frontend/src/lib/api/endpoints.ts` | 所有接口路径的唯一事实来源 | 加接口要同步 `tests/test_web/test_frontend_contract.py` 的必选清单 |
 | `web/frontend/src/components/ui/` | 设计系统原子组件（冻结契约） | 改 props 会波及全部页面；新增能力先看 spec §5.3 |
 | `web/frontend/scripts/{style-guard,ui-smoke}.mjs` | 风格守卫 + 浏览器冒烟 | ui-smoke 需要本机 Chrome；无 token 时断言「未授权引导」而不是白屏 |

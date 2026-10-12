@@ -389,6 +389,85 @@ async function main() {
       await screenshot(`light-${route.path === '/' ? 'dashboard' : route.path.slice(1)}`)
     }
     await evaluate('localStorage.removeItem("wx-obsidian-theme")')
+
+    // ── 8. 粘性条毛玻璃：滚动时内容从下方穿过，不能出现硬切边 ────────
+    // 契约：静止（y=0）时遮罩不绘制（零成本）；一旦滚动，遮罩可见且模糊层完全不透明；
+    // 顶栏始终吸顶；底部的保存条遮罩常显。
+    // y=40 是「标题正好卡在栏底」的位置，也正是当初最难看的那一幕；
+    // 深处那一枪打在 /settings（长页面），顺带覆盖保存条。
+    currentStep = '粘性条毛玻璃'
+    const veilProbe = `(() => {
+      const veil = document.querySelector('[data-topbar-veil]')
+      if (!veil) return { missing: true }
+      const band = veil.querySelector('[data-veil-band]')
+      const header = veil.closest('header')
+      return {
+        state: veil.dataset.veil,
+        visibility: getComputedStyle(veil).visibility,
+        bandOpacity: band ? Number(getComputedStyle(band).opacity) : -1,
+        headerTop: header ? Math.round(header.getBoundingClientRect().top) : -1,
+        y: Math.round(window.scrollY),
+      }
+    })()`
+    const saveBarProbe = `(() => {
+      const veil = document.querySelector('[data-savebar-veil]')
+      if (!veil) return { missing: true }
+      const band = veil.querySelector('[data-veil-band]')
+      return {
+        visibility: getComputedStyle(veil).visibility,
+        bandOpacity: band ? Number(getComputedStyle(band).opacity) : -1,
+        height: Math.round(veil.getBoundingClientRect().height),
+      }
+    })()`
+
+    await evaluate('localStorage.setItem("wx-obsidian-theme", "dark")')
+    await goto('/', { expectHeading: '状态总览' })
+    await settle() // 骨架屏没退场时页面还没长高，scrollTo 会被夹到 0
+    const resting = await evaluate(veilProbe)
+    check('静止时顶栏遮罩不绘制', !!resting && resting.visibility === 'hidden', JSON.stringify(resting))
+
+    await evaluate('window.scrollTo(0, 40)')
+    await sleep(350)
+    const scrolled = await evaluate(veilProbe)
+    check(
+      '滚动后顶栏遮罩出现',
+      !!scrolled && scrolled.state === 'on' && scrolled.visibility === 'visible',
+      JSON.stringify(scrolled),
+    )
+    check('滚动后模糊层完全不透明', !!scrolled && scrolled.bandOpacity > 0.95, String(scrolled?.bandOpacity))
+    check('顶栏保持吸顶', !!scrolled && scrolled.headerTop === 0, String(scrolled?.headerTop))
+    await screenshot('scrolled-topbar')
+
+    await goto('/settings', { expectHeading: '配置管理' })
+    await settle()
+    await evaluate('window.scrollTo(0, 600)')
+    await sleep(350)
+    const deep = await evaluate(veilProbe)
+    check('长页面深处遮罩仍可见', !!deep && deep.state === 'on' && deep.visibility === 'visible', JSON.stringify(deep))
+    const saveBar = await evaluate(saveBarProbe)
+    check(
+      '底部保存条遮罩常显',
+      !!saveBar && saveBar.visibility === 'visible' && saveBar.bandOpacity > 0.95 && saveBar.height > 60,
+      JSON.stringify(saveBar),
+    )
+    await screenshot('scrolled-topbar-deep')
+
+    await evaluate('localStorage.setItem("wx-obsidian-theme", "light")')
+    await goto('/', { expectHeading: '状态总览' })
+    await settle()
+    await evaluate('window.scrollTo(0, 40)')
+    await sleep(350)
+    const light = await evaluate(veilProbe)
+    check('浅色主题下遮罩同样生效', !!light && light.state === 'on' && light.visibility === 'visible', JSON.stringify(light))
+    await screenshot('scrolled-topbar-light')
+
+    currentStep = '浅色保存条'
+    await goto('/settings', { expectHeading: '配置管理' })
+    await settle()
+    await evaluate('window.scrollTo(0, 600)')
+    await sleep(350)
+    await screenshot('savebar-light')
+    await evaluate('localStorage.removeItem("wx-obsidian-theme")')
   } catch (err) {
     check(`${currentStep} 执行未抛错`, false, err instanceof Error ? err.message : String(err))
   } finally {

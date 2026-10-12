@@ -1,7 +1,10 @@
 <script setup lang="ts">
 /**
  * 顶栏：面包屑 + 全局搜索入口 + 数据源状态 + 任务胶囊 + 主题切换。
- * 玻璃层（glass）：滚动时内容从下方穿过要有物理感，但要 1px 内缘折射而不是外发光。
+ *
+ * 滚动时内容从下方穿过：不是给顶栏铺一层玻璃，而是挂一块**渐进模糊遮罩**（styles/veil.css）
+ * ——模糊强度自栏底向内递减，标题、表格行是「化开」而不是被 1px 边线齐齐切开。
+ * 遮罩随滚动位移淡入（静止时完全不绘制，零成本），所以静止的页面不会有一条多余的横线。
  */
 import {
   PhCaretRight,
@@ -12,6 +15,7 @@ import {
   PhSidebarSimple,
   PhSun,
 } from '@phosphor-icons/vue'
+import { useWindowScroll } from '@vueuse/core'
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -20,6 +24,7 @@ import AppTooltip from '@/components/ui/AppTooltip.vue'
 import AppKbd from '@/components/ui/AppKbd.vue'
 import type { SourceHealth } from '@/lib/api/types'
 import { NAV_GROUPS, navItemByKey } from '@/lib/navigation'
+import { VEIL_BANDS, veilProgressFor } from '@/lib/scroll'
 import { useJobsStore } from '@/stores/jobs'
 import { useUiStore } from '@/stores/ui'
 
@@ -33,6 +38,12 @@ const emit = defineEmits<{
 const ui = useUiStore()
 const jobs = useJobsStore()
 const route = useRoute()
+
+// 滚动进度：不要传 throttle —— vueuse 的节流是 leading:false，
+// 单次滚动（滚轮一格、程序化 scrollTo）的那一个事件会被直接丢掉，遮罩就永远不出现。
+// 这里只驱动一个小模板的重渲染，Vue 自身按 tick 合并，无需再节流。
+const { y } = useWindowScroll()
+const veil = computed(() => veilProgressFor(y.value))
 
 const navKey = computed(() => (route.meta.navKey as string | undefined) ?? '')
 const currentItem = computed(() => navItemByKey(navKey.value))
@@ -86,7 +97,21 @@ const sourceLabel = computed(() => {
 </script>
 
 <template>
-  <header class="glass sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-hairline px-3 sm:px-4">
+  <header class="sticky top-0 z-20 flex h-14 items-center gap-3 px-3 sm:px-4">
+    <!-- 滚动遮罩：负 z 让它压在栏内文字之下、页面内容之上（-z-10 不会穿出顶栏的层叠上下文） -->
+    <div
+      class="veil veil--top -z-10"
+      data-topbar-veil
+      :data-veil="veil > 0 ? 'on' : 'off'"
+      :style="{ '--veil-progress': veil }"
+      aria-hidden="true"
+    >
+      <div class="veil__scrim" />
+      <div class="veil__blur">
+        <div v-for="band in VEIL_BANDS" :key="band" data-veil-band />
+      </div>
+    </div>
+
     <button
       type="button"
       class="grid size-8 shrink-0 place-items-center rounded-[9px] text-muted transition-colors hover:bg-raised hover:text-ink lg:hidden"
