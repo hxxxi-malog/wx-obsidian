@@ -50,6 +50,7 @@ from wx_obsidian.processing.pipeline import run_pipeline
 from wx_obsidian.processing.similarity import compute_related
 from wx_obsidian.processing.vision import describe_images
 from wx_obsidian.sources.rss import fetch_article_content_and_images, fetch_articles
+from wx_obsidian.taxonomy import canonical_sub_topic
 
 if TYPE_CHECKING:
     from wx_obsidian.sources.base import ArticleSource
@@ -308,6 +309,19 @@ def _normalize_llm_response(data: dict[str, Any]) -> None:
             "LLM 返回的 body_sections 类型异常 (%s)，重置为空列表", type(sections).__name__
         )
         data["body_sections"] = []
+
+    # sub_topic 走分类体系归一化：同一主题的中英混写会分裂出多个二级目录。
+    # 这里是最上游的单一接入点——下游 frontmatter、processed.json 与目录名都取自
+    # 这个字段，归一化一次即可覆盖三处（见 docs/design-docs/taxonomy/spec.md §4.1）。
+    raw_sub_topic = data.get("sub_topic")
+    if isinstance(raw_sub_topic, str):
+        canonical = canonical_sub_topic(raw_sub_topic)
+        if canonical != raw_sub_topic:
+            logger.info("sub_topic %r 归一化为 %r", raw_sub_topic.strip(), canonical)
+        data["sub_topic"] = canonical
+    elif raw_sub_topic is not None:
+        logger.warning("LLM 返回的 sub_topic 类型异常 (%s)，已置空", type(raw_sub_topic).__name__)
+        data["sub_topic"] = ""
 
 
 def _markdown_stage(ctx: PipelineContext) -> PipelineContext:

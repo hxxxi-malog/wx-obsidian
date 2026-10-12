@@ -12,6 +12,7 @@ from wx_obsidian.processing.llm import (
     _build_images_context,
     _fix_json_quotes,
     _parse_api_response,
+    build_prompt,
     validate_images_field,
 )
 from wx_obsidian.processing.models import ImageDescription
@@ -279,3 +280,38 @@ class TestDebugDump:
         monkeypatch.setattr(Path, "write_text", _boom)
         result = _parse_api_response('{"category": "LLM"}')
         assert result == {"category": "LLM"}
+
+
+class TestExistingCategoriesInjection:
+    """L3：把受控主题词表注入 user prompt，让模型复用既有写法。"""
+
+    def _prompt(self) -> str:
+        _system, user = build_prompt(
+            title="测试标题",
+            account_name="测试号",
+            content="正文内容",
+            existing_articles=[],
+            existing_concepts=[],
+        )
+        return user
+
+    def test_contains_vocabulary(self):
+        user = self._prompt()
+        assert "知识库中已有的分类主题" in user
+        assert "多Agent协同" in user
+        assert "Loop Engineering" in user
+
+    def test_tells_model_to_reuse_spelling(self):
+        user = self._prompt()
+        assert "原样写法" in user
+
+    def test_empty_vocabulary_still_renders(self, monkeypatch: pytest.MonkeyPatch):
+        """声明缺失时整段省略，但模板仍必须能 substitute（不留未替换占位符）。"""
+        monkeypatch.setattr(llm_module, "format_vocabulary", lambda: "")
+        user = self._prompt()
+        assert "知识库中已有的分类主题" not in user
+        assert "$existing_categories" not in user
+        assert "测试标题" in user
+
+    def test_no_unsubstituted_placeholder(self):
+        assert "$existing_categories" not in self._prompt()

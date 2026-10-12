@@ -1,0 +1,49 @@
+# 分类体系声明（机器可读）
+#
+# 与 SKILL.md 的「分类与目录的关系」互为镜像：SKILL.md 给人看，本文件给代码看。
+# 设计约定见 docs/design-docs/taxonomy/spec.md。
+#
+# aliases（主题词形归一）
+#   写盘前把别名统一成规范写法，避免同一主题因中英混写分裂出多个二级目录。
+#   只做精确匹配（忽略大小写与空格），不做模糊匹配与翻译推断——避免把本意不同的
+#   主题错误合并。未命中时原样返回，因此新增主题不受阻。
+#
+# sub_topics（受控主题词表）
+#   会注入 LLM 的 user prompt（见 prompts/summarize_user.txt 的 $existing_categories），
+#   让模型优先复用既有写法而不是每次另造近义词。
+#   增删条目时请同步 SKILL.md，避免声明与实现再次漂移（见 tasks.md 的 L5）。
+
+version: 1
+
+aliases:
+  Loop工程: Loop Engineering
+  循环工程: Loop Engineering
+  循环工程学: Loop Engineering
+  Harness工程: Harness Engineering
+  Harness 工程: Harness Engineering
+  多智能体协同: 多Agent协同
+  多agent协同: 多Agent协同
+  上下文管理: 上下文工程
+  提示词工程: Prompt工程
+
+sub_topics:
+  - name: Agent架构
+    scope: 单Agent设计模式/ReAct/工具调用/记忆系统
+  - name: 多Agent协同
+    scope: 多Agent编排/Orchestrator/团队协作/通信协议
+  - name: Loop Engineering
+    scope: 循环工程/反馈循环/自主闭环/刹车与自验证
+  - name: 上下文工程
+    scope: 上下文压缩/知识注入/Context Engineering
+  - name: Prompt工程
+    scope: Prompt技巧/模板/few-shot/思维链
+  - name: RAG
+    scope: 检索增强/向量数据库/Agentic RAG/GraphRAG
+  - name: MCP
+    scope: MCP协议/工具接入规范/A2A
+  - name: Skill
+    scope: Agent Skills/技能封装与演进
+  - name: 推理优化
+    scope: 推理优化/量化/算子优化/推理加速
+  - name: 推理引擎
+    scope: vLLM/SGLang 等推理引擎与模型部署

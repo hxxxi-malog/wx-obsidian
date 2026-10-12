@@ -318,6 +318,34 @@ class TestMaybeCreateSubcategory:
 
         assert not (sub_dir / "多头注意力").exists()
 
+    def test_normalizes_alias_sub_topic_before_creating(self, tmp_vault, monkeypatch):
+        """别名写法必须按规范名建目录，否则同一主题会分裂出多个二级目录。"""
+        vault_path, articles_dir = tmp_vault
+        config = {"categories": ["Agent"], "obsidian": {"articles_dir": "公众号文章"}}
+        monkeypatch.setattr("wx_obsidian.output.vault.save_processed", lambda processed: None)
+
+        agent_dir = articles_dir / "Agent"
+        agent_dir.mkdir()
+        processed = {}
+        for i in range(3):
+            path = agent_dir / f"Loop文{i}.md"
+            path.write_text(f"# Loop文{i}", encoding="utf-8")
+            processed[f"id{i}"] = {
+                "title": f"Loop文{i}",
+                "status": "done",
+                "category": "Agent",
+                # 存量数据里存的就是别名写法，计数也要能命中
+                "sub_topic": "Loop工程",
+                "file": str(path),
+                "processed_at": "2026-01-01T00:00:00",
+            }
+
+        maybe_create_subcategory(vault_path, config, processed, "Agent", "Loop工程")
+
+        assert (articles_dir / "Agent" / "Loop Engineering").is_dir()
+        assert not (articles_dir / "Agent" / "Loop工程").exists()
+        assert all(r["category"] == "Agent/Loop Engineering" for r in processed.values())
+
 
 class TestParseMocContent:
     """_parse_moc_content 测试。"""

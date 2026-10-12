@@ -16,4 +16,6 @@ $content
 
 **重要**：`related_topics` 字段必须从上述已有内容中选取与当前文章相关的，不要凭空创建。无匹配时返回空数组。
 
+$existing_categories
+
 $images_context

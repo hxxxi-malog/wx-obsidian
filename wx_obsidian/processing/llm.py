@@ -14,6 +14,7 @@ import requests
 
 from wx_obsidian.config import MAX_PROMPT_CONTENT, PROMPTS_DIR, SCRIPT_DIR, env_flag, load_skill
 from wx_obsidian.processing.models import ImageDescription
+from wx_obsidian.taxonomy import format_vocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,23 @@ def _build_images_context(
     return "\n".join(lines)
 
 
+def _build_existing_categories() -> str:
+    """渲染「已有主题词表」段，注入 user prompt（空表返回空串，整段省略）。
+
+    目的：让模型优先复用 `skills/classification/taxonomy.yaml` 里的既有写法，
+    而不是每次另造近义词——同一主题的中英混写会分裂出多个二级目录。
+    """
+    vocabulary = format_vocabulary()
+    if not vocabulary:
+        return ""
+    return (
+        "## 知识库中已有的分类主题（优先复用既有写法）\n\n"
+        f"{vocabulary}\n\n"
+        "**重要**：`sub_topic` 必须优先从上述主题中选取**原样写法**（含中英文与大小写），"
+        "只有确实不属于其中任何一项时才另起新词；不要为同一主题另造近义词。"
+    )
+
+
 def build_prompt(
     title: str,
     account_name: str,
@@ -129,6 +147,7 @@ def build_prompt(
             content=content[:MAX_PROMPT_CONTENT],
             articles_str=articles_str,
             concepts_str=concepts_str,
+            existing_categories=_build_existing_categories(),
             images_context=images_context,
         )
     except (KeyError, ValueError) as e:

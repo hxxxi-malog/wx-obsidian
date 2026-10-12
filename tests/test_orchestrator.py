@@ -19,7 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from wx_obsidian.models import AccountStatus, ConnectionTestResult, Feed
-from wx_obsidian.orchestrator import Orchestrator
+from wx_obsidian.orchestrator import Orchestrator, _normalize_llm_response
+
+#: 用于区分「字段缺失」与「字段为 None」
+_MISSING = object()
 
 # ---------------------------------------------------------------------------
 # 测试替身与工具
@@ -399,3 +402,43 @@ class TestFetchAndProcessRetryPolicy:
 
         assert results == []
         assert calls == [], "超出 fetch.max_days 的文章不应处理"
+
+
+class TestNormalizeSubTopic:
+    """sub_topic 归一化接入点：theme 词形统一，避免同主题分裂出多个二级目录。"""
+
+    def _payload(self, sub_topic: Any) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "tags": [],
+            "concepts": [],
+            "body_sections": [],
+        }
+        if sub_topic is not _MISSING:
+            data["sub_topic"] = sub_topic
+        return data
+
+    def test_normalizes_alias(self) -> None:
+        data = self._payload("Loop工程")
+        _normalize_llm_response(data)
+        assert data["sub_topic"] == "Loop Engineering"
+
+    def test_keeps_unknown_topic(self) -> None:
+        """归一化不能妨碍新增主题。"""
+        data = self._payload("某个全新主题")
+        _normalize_llm_response(data)
+        assert data["sub_topic"] == "某个全新主题"
+
+    def test_keeps_canonical_untouched(self) -> None:
+        data = self._payload("多Agent协同")
+        _normalize_llm_response(data)
+        assert data["sub_topic"] == "多Agent协同"
+
+    def test_non_string_reset_to_empty(self) -> None:
+        data = self._payload(["Loop工程"])
+        _normalize_llm_response(data)
+        assert data["sub_topic"] == ""
+
+    def test_missing_field_is_not_invented(self) -> None:
+        data = self._payload(_MISSING)
+        _normalize_llm_response(data)
+        assert "sub_topic" not in data

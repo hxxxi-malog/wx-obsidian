@@ -12,6 +12,7 @@ from wx_obsidian.config import (
     sanitize_path_segment,
     save_processed,
 )
+from wx_obsidian.taxonomy import canonical_sub_topic
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -323,7 +324,9 @@ def _count_sub_topic_articles(processed: dict[str, Any], category: str, sub_topi
         for record in processed.values()
         if isinstance(record, dict)
         and record.get("status") == "done"
-        and record.get("sub_topic") == sub_topic
+        # 记录里的 sub_topic 也归一化后再比：存量数据可能存的是别名写法
+        # （如 "Loop工程"），只归一化入参会让这类记录统计不到
+        and canonical_sub_topic(str(record.get("sub_topic") or "")) == sub_topic
         and record.get("category") in (category, migrated_category)
     )
 
@@ -336,6 +339,9 @@ def maybe_create_subcategory(
     sub_topic: str,
 ) -> None:
     """当同一子主题积累足够文章时，创建子目录并迁移文件。"""
+    # 防御性归一化：正常链路上游（orchestrator._normalize_llm_response）已经归一过，
+    # 但存量数据与其他调用方也可能传进别名写法，这里再兜一次，避免同一主题分裂出新目录
+    sub_topic = canonical_sub_topic(sub_topic)
     if not sub_topic:
         return
     # 分类层级只允许「顶层 / 子主题」两层，且只迁移一次。
@@ -466,7 +472,8 @@ def _migrate_articles_to_subdir(
         if (
             record.get("status") != "done"
             or record.get("category") != category
-            or record.get("sub_topic") != sub_topic
+            # 与 _count_sub_topic_articles 同一口径：记录里可能是别名写法
+            or canonical_sub_topic(str(record.get("sub_topic") or "")) != sub_topic
         ):
             continue
 

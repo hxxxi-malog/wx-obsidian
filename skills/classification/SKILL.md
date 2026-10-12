@@ -51,17 +51,29 @@ description: 公众号文章的分类与子主题提取规范，用于自动归�
 - 必须是能聚合多篇文章的通用概念，非单篇文章标题
 - 粒度适中：太粗（"AI技术"）无区分度，太细（"GPT-4的attention优化"）无法聚合
 - 文章无明显子主题倾向时留空
+- **优先复用 `taxonomy.yaml` 里的既有写法（含中英文与大小写原样）**，不要为同一主题
+  另造近义词——中英混写（如 `Loop工程` / `Loop Engineering`）会让同一主题分裂出多个
+  二级目录，历史上就这样长出过 3 个目录 15 篇
+- 同一主题只用一种写法；确实不属于既有主题时才另起新词
 
-**Agent 分类下的常见 sub_topic：**
+> 受控词表与别名表的唯一来源是 `skills/classification/taxonomy.yaml`（机器可读，会注入
+> prompt）。本文件的表格与它互为镜像，增删条目时两边要同步（见
+> `docs/design-docs/taxonomy/tasks.md` 的 L5）。
+
+**常见 sub_topic（与 `taxonomy.yaml` 同步）：**
 
 | sub_topic | 覆盖范围 |
 | --- | --- |
 | Agent架构 | 单Agent设计模式/ReAct/工具调用/记忆系统 |
 | 多Agent协同 | 多Agent编排/Orchestrator/团队协作/通信协议 |
-| RAG | 检索增强/向量数据库/Agentic RAG/GraphRAG |
-| MCP | MCP协议/工具接入规范/A2A |
+| Loop Engineering | 循环工程/反馈循环/自主闭环/刹车与自验证 |
 | 上下文工程 | 上下文压缩/知识注入/Context Engineering |
 | Prompt工程 | Prompt技巧/模板/few-shot/思维链 |
+| RAG | 检索增强/向量数据库/Agentic RAG/GraphRAG |
+| MCP | MCP协议/工具接入规范/A2A |
+| Skill | Agent Skills/技能封装与演进 |
+| 推理优化 | 推理优化/量化/算子优化/推理加速 |
+| 推理引擎 | vLLM/SGLang 等推理引擎与模型部署 |
 
 **其他示例：**
 
