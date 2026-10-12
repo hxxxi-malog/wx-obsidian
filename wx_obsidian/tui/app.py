@@ -13,7 +13,6 @@ from textual.screen import Screen
 from wx_obsidian.config import resolve_source_base_url
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.orchestrator import Orchestrator
-from wx_obsidian.scheduler import TaskScheduler
 from wx_obsidian.sources.factory import create_article_source, resolve_source_type
 from wx_obsidian.tui.screens.account import AccountScreen
 from wx_obsidian.tui.screens.articles import ArticlesScreen
@@ -22,7 +21,6 @@ from wx_obsidian.tui.screens.container import ContainerScreen
 from wx_obsidian.tui.screens.feeds import FeedsScreen
 from wx_obsidian.tui.screens.fetch import FetchScreen
 from wx_obsidian.tui.screens.home import HomeScreen
-from wx_obsidian.tui.screens.scheduler import SchedulerScreen
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,6 @@ _SCREEN_MAP: dict[str, type[Screen[None]]] = {
     "config": ConfigScreen,
     "fetch": FetchScreen,
     "articles": ArticlesScreen,
-    "scheduler": SchedulerScreen,
 }
 
 
@@ -78,7 +75,6 @@ class WxObsidianApp(App[None]):
             token=self.config_manager.get("source.token", ""),
         )
         self.orchestrator = Orchestrator(self.config_manager, self.source)
-        self.scheduler = TaskScheduler()
 
     @property
     def source_label(self) -> str:
@@ -91,10 +87,6 @@ class WxObsidianApp(App[None]):
         for screen_name, screen_cls in _SCREEN_MAP.items():
             self.install_screen(screen_cls(), name=screen_name)
         self.push_screen("home")
-
-    def on_unmount(self) -> None:
-        """停止调度器。"""
-        self.scheduler.stop()
 
     def update_status_bar(self) -> None:
         """更新状态栏显示。"""

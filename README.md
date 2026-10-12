@@ -24,7 +24,7 @@
 - **改 Skill 就能改笔记风格**：章节结构、分类规则、frontmatter 由 3 个 Skill 文件控制，调风格不用改代码
 - **自动成图**：`[[双向链接]]` + 概念页面 + MOC；文章间相似度用 SQLite FTS5/BM25F + jieba + 概念模糊匹配 + 标签 Jaccard，经 RRF 排名融合
 - **三层格式保障**：自动校验修复 → mistune 结构性检测 → LLM 反馈修正
-- **级联删除 / 应用内调度 / 可换模型渠道**：一条命令删干净一篇文章及其关联数据；定时任务常驻 Web 服务进程；`config.json` 里加一个 provider 即可换模型
+- **级联删除 / 可换模型渠道**：一条命令删干净一篇文章及其关联数据；`config.json` 里加一个 provider 即可换模型
 
 ## 生成的笔记长什么样
 
@@ -137,7 +137,7 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 # 等价的 env 写法：WX_WEB_HOST=0.0.0.0 python process_articles.py web
 ```
 
-八个页面：状态总览 / 文章抓取 / 文章管理 / 配置管理 / 公众号管理 / 数据源状态 / 账号管理 / 定时任务。
+七个页面：状态总览 / 文章抓取 / 文章管理 / 配置管理 / 公众号管理 / 数据源状态 / 账号管理。
 文章管理页有搜索 / 筛选 / 排序 / 分页 / 详情抽屉 / 多选批量删除 / 级联删除 / 在 Obsidian 打开；配置页有原生目录选择器和「未保存改动」守卫；列表页按 `/` 聚焦搜索框。
 通用能力：常驻**任务坞**（切页面不断流）、**命令面板**（`⌘K`）、深浅双主题、筛选与分页状态写进 URL（刷新、后退、发链接都不丢）、空态 / 骨架 / 错误三态齐全、`prefers-reduced-motion` 下动效自动关闭。
 几件必须知道的事：
@@ -222,14 +222,12 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
   "llm":      { "active": "deepseek", "providers": { "deepseek": { "base_url": "https://api.deepseek.com", "model": "deepseek-flash", "api_key_env": "DEEPSEEK_API_KEY" } }, "max_tokens": 4096, "temperature": 0.7 },
   "vision":   { "enabled": true, "active": "deepseek", "max_concurrency": 10, "timeout": 120, "max_tokens": 3072, "inline_images": true },
   "obsidian": { "vault_path": "/path/to/vault", "articles_dir": "公众号文章" },
-  "web":      { "port": 8765, "host": "127.0.0.1", "allow_remote": false, "open_browser": true, "log_level": "INFO" },
-  "scheduler":{ "fetch_interval": 0, "keepalive_enabled": false }  // 由 Web 定时任务页写入；出厂默认文件里是 fetch_cron / keepalive_interval_days
+  "web":      { "port": 8765, "host": "127.0.0.1", "allow_remote": false, "open_browser": true, "log_level": "INFO" }
 }
 ```
 
 - `web.host` / `web.allow_remote` 是**启动期**设置，改了要重启（容器里用 `WX_WEB_HOST` / `WX_ALLOW_REMOTE` 覆盖）
 - `llm.active` / `vision.active` 指向 `providers` 里任意 OpenAI 兼容渠道：加一个 provider 就能换模型，不用改代码
-- `scheduler.fetch_interval`（小时，`0` = 停用，仅接受 1/2/6/12/24）由 Web 定时任务页写入，重启自动恢复
 - `categories` 由程序维护：分类清单本身在 `skills/classification/SKILL.md`，运行中发现新分类会建目录 / MOC 并追加进这个列表
 
 ## 工作原理
@@ -298,9 +296,8 @@ python process_articles.py migrate-vault /Users/you/Documents             # 再�
 
 Obsidian 是**按绝对路径**注册仓库的，搬完还要用「打开文件夹作为仓库」重选一次，否则点「打开」会报 Vault not found。
 
-**有没有系统级定时任务？**
-没有（原 macOS LaunchAgent 因 macOS 15 的 TCC 读不到 `~/Downloads`，已移除）。
-要自动化就用 Web 的「定时任务」页：调度器常驻 Web 服务进程，设定写进 `config.json` 并在启动时恢复，浏览器关掉照常执行。
+**有没有定时抓取？**
+没有，应用内调度功能已整体移除。手动跑 `./run.sh [--limit N]`、`python process_articles.py`，或在 Web 的「文章抓取」页点一次开始。
 
 **想删一篇已经生成的文章？** 见上面 CLI 小节里的 `delete` 子命令：它会清理文章 `.md`、分类 `_MOC.md` 里的条目、概念页面里的相关链接（无剩余链接时删除概念页面）、日归档条目和 `processed.json` 记录。
 

@@ -21,7 +21,6 @@ _SCREEN_TITLES: dict[str, str] = {
     "config": "配置管理",
     "fetch": "文章抓取",
     "articles": "文章管理",
-    "scheduler": "定时任务",
 }
 
 
@@ -36,7 +35,6 @@ class HomeScreen(Screen[None]):
         Binding("4", "navigate('config')", "配置管理"),
         Binding("5", "navigate('fetch')", "文章抓取"),
         Binding("6", "navigate('articles')", "文章管理"),
-        Binding("7", "navigate('scheduler')", "定时任务"),
     ]
 
     def __init__(self) -> None:
@@ -51,7 +49,6 @@ class HomeScreen(Screen[None]):
             yield Static(
                 "\n  [1] 容器管理  [2] 账号管理  [3] 公众号管理\n"
                 "  [4] 配置管理  [5] 文章抓取  [6] 文章管理\n"
-                "  [7] 定时任务\n"
                 "\n  按数字键导航，按 q 退出",
                 id="menu",
             )

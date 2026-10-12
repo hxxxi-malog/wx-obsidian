@@ -54,23 +54,31 @@ Python package `wx_obsidian/` with three layers + CLI:
 
 ```
 wx_obsidian/
-├── config.py              ← 配置/持久化（.env, processed.json, skills）
+├── config.py              ← 底层配置/持久化（.env, processed.json, skills 加载）
+├── config_manager.py      ← 用户级配置（~/.wx-obsidian/config.json, 连通性测试）
+├── models.py              ← 全局数据模型（ProcessingResult, HealthStatus, Feed 等）
+├── orchestrator.py        ← 核心编排器（6-stage pipeline，CLI/TUI/Web 共享）
+├── batch.py               ← 批量并行处理 + 指数退避重试
 ├── sources/               ← 数据获取层
 │   ├── base.py            ← ArticleSource 协议（编排层依赖的抽象）
 │   ├── factory.py         ← 数据源工厂（按 WX_SOURCE / source.type 选择）
 │   ├── we_mp_rss.py       ← we-mp-rss API 客户端（当前唯一数据源）
 │   └── rss.py             ← 取文契约 + 微信文章正文提取
 ├── processing/            ← 处理层
+│   ├── pipeline.py        ← Pipeline 引擎（函数组合式 stage）
+│   ├── vision.py          ← 多模态 Vision API（广告过滤 + 并发调用）
+│   ├── llm.py             ← DeepSeek API 调用 + prompt 构建 + 响应解析
 │   ├── images.py          ← 图片提取 + 语义匹配 + 自动插入
-│   ├── llm.py             ← DeepSeek API 调用 + prompt 模板 + 响应解析
-│   └── markdown.py        ← Markdown 生成（frontmatter + body + 假图片清除）
+│   ├── markdown.py        ← Markdown 生成（frontmatter + body + 假图片清除）
+│   └── similarity.py      ← 文章相似度（SQLite FTS5/BM25F + jieba + RRF）
 ├── output/                ← 输出层
 │   ├── vault.py           ← Obsidian Vault 操作（MOC、概念页面、分类、子目录）
 │   ├── validator.py       ← Markdown 格式校验与自动修复
 │   └── cleanup.py         ← 文章级联删除（MOC、概念、归档、processed.json）
 ├── web/                   ← Web 层（FastAPI + Vue），与 tui/、cli.py 平级
+├── tui/                   ← Textual TUI 界面，与 web/、cli.py 平级
 ├── vault_migration.py     ← 换 Vault 路径时修正配置与 processed.json
-└── cli.py                 ← CLI 入口，编排完整流程
+└── cli.py                 ← CLI 入口，调用 Orchestrator
 ```
 
 顶层入口：
@@ -80,13 +88,17 @@ wx_obsidian/
 ### Dependency Flow
 
 ```
-cli.py → sources/rss.py → processing/{images,llm,markdown}.py → output/{vault,validator}.py
-           ↑                              ↑                              ↑
-           └──────── config.py ───────────┴──────────────────────────────┘
+cli.py / tui/app.py / web/runtime.py
+    └── orchestrator.py        ← 6-stage pipeline
+            ├── sources/*          （数据获取）
+            ├── processing/*       （处理层）
+            ├── output/*           （输出层）
+            └── batch.py           （并行执行 + 指数退避重试）
 ```
 
 - `config.py` 是最底层，被所有模块依赖
-- `sources/`, `processing/`, `output/` 之间不互相依赖（通过 cli.py 编排）
+- `config_manager.py` 提供用户级配置，被 orchestrator / web / tui 依赖
+- `sources/`, `processing/`, `output/` 之间不互相依赖（通过 orchestrator 编排）
 - `processing/images.py` 和 `processing/markdown.py` 是纯函数模块
 
 ### Skill System
@@ -96,12 +108,19 @@ cli.py → sources/rss.py → processing/{images,llm,markdown}.py → output/{va
 | Skill | Path | Controls |
 |-------|------|----------|
 | `article-body` | `skills/article-body/SKILL.md` | Chapter structure (4-6 sections), writing style, table usage |
-| `classification` | `skills/classification/SKILL.md` | category selection (11 presets), sub_topic extraction rules |
+| `classification` | `skills/classification/SKILL.md` | category selection (6 groups / 15 categories), sub_topic extraction rules |
 | `note-metadata` | `skills/note-metadata/SKILL.md` | Frontmatter format, summary, concept extraction, related topics |
 
 ### Prompt Template
 
-`prompts/summarize_article.txt` uses `string.Template` with `$variable` placeholders. Edit that file to change the prompt without touching Python code.
+Prompt 拆成 system / user 两份（`string.Template` + `$variable` 占位符），改文件即可换 prompt，无需动 Python：
+
+| 文件 | 用途 |
+|------|------|
+| `prompts/summarize_system.txt` | 总结 system prompt（静态，所有文章共享，可被 KV cache 复用） |
+| `prompts/summarize_user.txt` | 总结 user prompt（注入正文 + Skill + 图片上下文） |
+| `prompts/refine_system.txt` | 图片修订 system prompt |
+| `prompts/refine_user.txt` | 图片修订 user prompt |
 
 ### Data Flow
 
@@ -135,7 +154,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 3. **原子写入**：持久化文件（processed.json）必须用 tempfile + os.replace 模式，防止中断导致数据损坏
 4. **异常规范**：禁止裸 `except:`，必须指定异常类型；外部 API 调用必须有 timeout
 5. **配置外置**：禁止硬编码路径、密钥、公众号名称，必须走 ~/.wx-obsidian/config.json 或 .env
-6. **依赖隔离**：sources/、processing/、output/ 之间不互相依赖，通过 cli.py 编排
+6. **依赖隔离**：sources/、processing/、output/ 之间不互相依赖，通过 orchestrator.py 编排
 
 ## Dev-Map（开发导航地图）
 
@@ -144,18 +163,22 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | 文件 | 职责 | 改动时需关注 |
 |------|------|-------------|
 | `config.py` | 配置/持久化 | 被所有模块依赖，改动影响全局 |
-| `sources/rss.py` | RSS 抓取 + 文章正文提取 | 返回值格式变更影响 cli.py |
+| `config_manager.py` | 用户级配置 + 连通性测试 | 渠道解析（`resolve_llm_channel`）变更影响 llm/vision |
+| `orchestrator.py` | 流程编排（6-stage pipeline） | 串联所有模块，改动需验证完整流程 |
+| `sources/rss.py` | RSS 抓取 + 文章正文提取 | 返回值格式变更影响 orchestrator.py |
+| `processing/pipeline.py` | Pipeline 引擎（stage 组合） | 改 stage 协议影响 orchestrator 的 6 个 stage |
+| `processing/vision.py` | 多模态 Vision API | 失败必须降级为纯文本，不能中断管线 |
 | `processing/llm.py` | DeepSeek API 调用 + prompt 构建 | 改动 prompt 模板或响应解析影响 markdown.py |
-| `processing/images.py` | 图片提取与插入 | 纯函数，改动影响 cli.py 中的调用 |
+| `processing/images.py` | 图片提取与插入 | 纯函数，改动影响 orchestrator.py 中的调用 |
 | `processing/markdown.py` | Markdown 生成 + 假图片清除 | 纯函数，输出格式影响 validator |
-| `output/vault.py` | Obsidian Vault 操作 | 文件系统操作，改动影响 cli.py |
+| `processing/similarity.py` | 文章相似度（FTS5 + RRF） | 改权重/阈值影响已有关联的推荐质量 |
+| `output/vault.py` | Obsidian Vault 操作 | 文件系统操作，改动影响 orchestrator.py |
 | `output/validator.py` | Markdown 格式校验与修复 | 校验规则变更可能影响已生成的文件 |
-| `cli.py` | 流程编排 | 串联所有模块，改动需验证完整流程 |
+| `cli.py` | CLI 入口 | 薄封装，只负责参数解析与调用 Orchestrator |
 | `web/api.py` | Web 接口 + 安全中间件 | 端点签名禁用 `X \| None`：py3.9 下 FastAPI 会运行时求值注解 |
 | `web/jobs.py` | 任务单飞 + SSE 事件 | `on_progress` 在工作线程调用，状态只能在事件循环线程内改 |
 | `web/frontend/` | Vue 界面 | 改动后必须 `pnpm build`；产物由 FastAPI 同源托管 |
 | `web/logging_setup.py` | 日志落盘 + 密钥掩码 + stdout 接管 | 冻结包唯一的排错通道；掩码过滤器不能漏 |
-| `web/scheduling.py` | 定时任务持久化与恢复 | 设定写入 config.json，服务启动时 `restore_state` |
 | `web/logs.py` | 日志环形缓冲（页面告警面板） | 只收 WARNING+，与文件日志互不影响 |
 | `web/__main__.py` | 启动器（端口/单实例/退出/日志） | 改判定逻辑要同步 `tests/test_web/test_launcher.py` |
 | `packaging/*.spec`, `*.sh` | PyInstaller 打包 | 资源路径 / hiddenimports / Info.plist 一改就重跑 `smoke_frozen.py` |
@@ -163,7 +186,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `deploy/wx-obsidian/Dockerfile` | Web 服务镜像 | 多阶段构建前端；改依赖只改 pyproject（单一来源） |
 | `config.py` 的 `resolve_source_base_url` | 数据源地址解析（env 优先） | 适配器/探活/CLI/TUI 必须共用，否则容器里健康探活会连错地址 |
 | `vault_migration.py` | Vault 路径迁移 | 影响 processed.json 的 `file` 字段与级联删除 |
-| `prompts/summarize_article.txt` | Prompt 模板 | 改动直接影响 LLM 输出质量 |
+| `prompts/summarize_{system,user}.txt`, `prompts/refine_{system,user}.txt` | Prompt 模板 | 改动直接影响 LLM 输出质量 |
 | `skills/*/SKILL.md` | LLM 输出风格控制 | 改动影响所有新生成的笔记 |
 
 ### 常见开发任务 → 涉及文件
@@ -172,14 +195,14 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 |------|---------|
 | 调整笔记输出格式 | `skills/article-body/SKILL.md`, `skills/note-metadata/SKILL.md` |
 | 修改分类体系 | `skills/classification/SKILL.md`, `~/.wx-obsidian/config.json` |
-| 优化 LLM 提示词 | `prompts/summarize_article.txt`, `processing/llm.py` |
+| 优化 LLM 提示词 | `prompts/summarize_{system,user}.txt`, `processing/llm.py` |
 | 修复格式校验问题 | `output/validator.py` |
 | 调整图片插入逻辑 | `processing/images.py` |
 | 修改 Vault 目录结构 | `output/vault.py`, `~/.wx-obsidian/config.json` |
-| 新增数据源 | `sources/` 下新建模块 + 实现 ArticleSource, `sources/factory.py`, `cli.py` |
+| 新增数据源 | `sources/` 下新建模块 + 实现 ArticleSource, `sources/factory.py`, `orchestrator.py` |
 | 文章级联删除 | `output/cleanup.py`, `tui/screens/articles.py`, `web/articles.py`, `process_articles.py` |
 | 修改 Web 界面 | `web/frontend/src/views/`, 然后 `pnpm build` |
-| 新增 Web 接口 | `web/api.py`, `web/frontend/src/api/` |
+| 新增 Web 接口 | `web/api.py`, `web/frontend/src/lib/api/{endpoints,types}.ts`, `tests/test_web/test_frontend_contract.py` |
 | 调整 macOS 打包 | `packaging/wx-obsidian.spec`, `packaging/build_app.sh`, `packaging/make_icon.py` |
 | 调整 Web 启动器行为（端口/单实例/退出） | `web/__main__.py`, `web/logging_setup.py`, `tests/test_web/test_launcher.py` |
 | 冻结包端到端自检 | `packaging/smoke_frozen.py`（临时 HOME + stub 上游，真跑一轮并断言笔记/日志/退出） |
@@ -214,7 +237,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 - 数据源地址走 `config.resolve_source_base_url()`（`WX_SOURCE_BASE_URL` 优先），容器用服务名、宿主用 `localhost`，而 `config.json` 只有一份。**新增任何读 `source.base_url` 的代码都必须走这个函数**，否则会出现「抓取正常但探活失败」这类只在一侧暴露的问题。
 - 容器构建的两个坑：`package.json` 里的 `pnpm.onlyBuiltDependencies` 在 pnpm 12 已失效（10.13+ 移到 `pnpm-workspace.yaml`），`pnpm install --frozen-lockfile` 会直接报错退出，故 Dockerfile 显式带 `--config.strict-dep-builds=false`；`COPY` 会保留源文件权限，而本机检出的文件可能是 0600（git 只记可执行位），必须 `chown -R wx:wx /app`，否则非 root 启动即 `PermissionError`。
 - 构建期默认走国内镜像（npm→npmmirror、pip→腾讯云），可用 `--build-arg NPM_REGISTRY=... / PIP_INDEX_URL=...` 覆盖：实测直连 npmjs 3.1s 且会 ECONNRESET。
-- 没有系统级定时任务（原 macOS LaunchAgent 因 macOS 15 TCC 读不到 `~/Downloads`，已移除）：手动跑 `./run.sh [--limit N]` 或 `python process_articles.py`；应用内 APScheduler 仅在 TUI 运行期间生效。
+- 没有系统级定时任务，应用内调度（TUI 的 Scheduler / Web 的定时任务页）也已整体移除：手动跑 `./run.sh [--limit N]`、`python process_articles.py`，或在 Web 的「文章抓取」页点一次。`_DEFAULT_CONFIG` 里不再有 `scheduler` 段，加载时会自动剔除历史遗留的该配置段。
 - Model channels are switchable through `llm.active` / `vision.active` + `providers`; both default to `deepseek-flash` (supports image input).
 
 ## Harness 开发范式

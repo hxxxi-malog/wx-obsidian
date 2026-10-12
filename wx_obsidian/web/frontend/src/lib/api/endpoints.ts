@@ -85,13 +85,6 @@ export const endpoints = {
     remove: (feedId: string) => `/api/feeds/${seg(feedId)}`,
   },
 
-  scheduler: {
-    jobs: () => '/api/scheduler/jobs',
-    set: () => '/api/scheduler/jobs',
-    remove: (jobId: string) => `/api/scheduler/jobs/${seg(jobId)}`,
-    runNow: (jobId: string) => `/api/scheduler/jobs/${seg(jobId)}/run-now`,
-  },
-
   logs: {
     list: (since = 0) => `/api/logs${buildQuery({ since })}`,
     /** SSE：与任务事件流同一套写法 */

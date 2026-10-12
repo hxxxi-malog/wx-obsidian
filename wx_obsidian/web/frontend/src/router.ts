@@ -56,12 +56,6 @@ export const router = createRouter({
       component: () => import('./views/Account.vue'),
       meta: { navKey: 'account' },
     },
-    {
-      path: '/scheduler',
-      name: 'scheduler',
-      component: () => import('./views/Scheduler.vue'),
-      meta: { navKey: 'scheduler' },
-    },
     // 未匹配路径回首页，避免 404 白屏
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

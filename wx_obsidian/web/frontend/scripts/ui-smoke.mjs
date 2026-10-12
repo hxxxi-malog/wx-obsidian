@@ -34,7 +34,6 @@ const ROUTES = [
   { path: '/feeds', label: '公众号管理' },
   { path: '/source', label: '数据源状态' },
   { path: '/account', label: '账号管理' },
-  { path: '/scheduler', label: '定时任务' },
 ]
 
 function parseArgs(argv) {

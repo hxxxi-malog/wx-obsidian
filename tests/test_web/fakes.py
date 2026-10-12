@@ -17,7 +17,6 @@ from wx_obsidian.models import (
     ProcessingResult,
     Statistics,
 )
-from wx_obsidian.scheduler import TaskScheduler
 from wx_obsidian.web.runtime import WebRuntime
 
 
@@ -190,22 +189,20 @@ class FakeOrchestrator:
 class FakeRuntime:
     """WebRuntime 替身。
 
-    `config_manager` / `scheduler` 必须给真货：应用 lifespan 会读配置恢复定时任务、
-    关闭时停调度器，给 None 会直接崩（这正是测试该暴露的）。
-    config_manager 默认指向独立临时目录，绝不碰用户真实的 ~/.wx-obsidian。
+    `config_manager` 必须给真货：应用 lifespan 会读配置，给 None 会直接崩
+    （这正是测试该暴露的）。config_manager 默认指向独立临时目录，绝不碰用户
+    真实的 ~/.wx-obsidian。
     """
 
     def __init__(
         self,
         orchestrator: FakeOrchestrator,
         config_manager: Any = None,
-        scheduler: Any = None,
     ) -> None:
         self.orchestrator = orchestrator
         self.config_manager = (
             config_manager if config_manager is not None else _temp_config_manager()
         )
-        self.scheduler = scheduler if scheduler is not None else TaskScheduler()
 
 
 def _temp_config_manager() -> ConfigManager:
@@ -219,9 +216,8 @@ def make_runtime(
     *,
     orchestrator: FakeOrchestrator | None = None,
     config_manager: Any = None,
-    scheduler: Any = None,
 ) -> tuple[WebRuntime, FakeOrchestrator]:
     """返回 (WebRuntime, FakeOrchestrator)。"""
     fake = orchestrator or FakeOrchestrator()
-    runtime = FakeRuntime(fake, config_manager, scheduler)
+    runtime = FakeRuntime(fake, config_manager)
     return cast(WebRuntime, cast(Any, runtime)), fake

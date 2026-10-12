@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -18,6 +19,8 @@ import yaml
 from wx_obsidian.config import resolve_source_base_url
 from wx_obsidian.models import ConnectionTestResult, MigrationReport
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -31,6 +34,9 @@ FAILED_FILE = CONFIG_DIR / "failed.json"
 # 旧配置路径（项目目录）
 _OLD_CONFIG_YAML = Path(__file__).parent.parent / "config.yaml"
 _OLD_ENV_FILE = Path(__file__).parent.parent / ".env"
+
+# 已随功能删除的配置段：加载时忽略并剔除，避免旧 config.json 里一直留着死键
+_REMOVED_SECTIONS = ("scheduler",)
 
 # 合法的数据源类型。schema 由本模块定义；具体实现与解析见 sources/factory.py
 # （此处不 import sources，保持配置层不依赖上层模块）。
@@ -99,10 +105,6 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         # 调大会显著增加传输量；调小则可能漏掉窗口外的文章。
         "feed_limit": 300,
     },
-    "scheduler": {
-        "fetch_cron": "0 */2 * * *",
-        "keepalive_interval_days": 7,
-    },
     # Web 模式（`process_articles.py web` / .app / 容器）
     # 注意：host 与 allow_remote 是**启动期**设置（改了要重启），
     # 容器部署通常直接用环境变量 WX_WEB_HOST / WX_ALLOW_REMOTE 覆盖。
@@ -131,6 +133,11 @@ class ConfigManager:
         self._config: dict[str, Any] = {}
         self._loaded = False
 
+    @property
+    def config_file(self) -> Path:
+        """config.json 的实际路径（尊重构造时传入的 config_dir）。"""
+        return self._config_file
+
     # -- 读写 ---------------------------------------------------------------
 
     def load(self) -> dict[str, Any]:
@@ -144,6 +151,7 @@ class ConfigManager:
                 loaded = json.loads(self._config_file.read_text(encoding="utf-8"))
                 self._config = self._merge_with_defaults(loaded)
                 self._migrate_channel_config()
+                self._prune_removed_sections()
                 self._loaded = True
                 return self._config
             except json.JSONDecodeError:
@@ -156,6 +164,7 @@ class ConfigManager:
                     old = yaml.safe_load(f) or {}
                 self._config = self._merge_with_defaults(old)
                 self._migrate_channel_config()
+                self._prune_removed_sections()
                 self._loaded = True
                 return self._config
             except (yaml.YAMLError, OSError):
@@ -163,8 +172,20 @@ class ConfigManager:
 
         self._config = json.loads(json.dumps(_DEFAULT_CONFIG))
         self._migrate_channel_config()
+        self._prune_removed_sections()
         self._loaded = True
         return self._config
+
+    def _prune_removed_sections(self) -> None:
+        """删掉已被移除的功能遗留的配置段（幂等）。
+
+        `_merge_with_defaults` 会保留用户配置里默认模板没有的键，所以功能删掉后
+        旧 config.json 里的残留段落会一直留着。`scheduler` 曾定义
+        `fetch_cron` / `keepalive_interval_days`，但定时任务功能已整体移除。
+        """
+        for section in _REMOVED_SECTIONS:
+            if self._config.pop(section, None) is not None:
+                logger.info("配置段 %s 已随功能移除，忽略", section)
 
     def _migrate_channel_config(self) -> None:
         """把旧的扁平 provider 配置整理为 `active` + `providers` 渠道结构（幂等）。
@@ -387,6 +408,7 @@ class ConfigManager:
 
         # 保存合并后的配置
         self._config = merged
+        self._prune_removed_sections()
         self.save()
         report.migrated_items.append("生成 config.json")
 

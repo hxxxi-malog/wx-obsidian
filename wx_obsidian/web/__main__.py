@@ -66,7 +66,6 @@ _CHECK_MODULES = (
     "starlette",
     "requests",
     "yaml",
-    "apscheduler",
     "jieba",
     "mistune",
 )

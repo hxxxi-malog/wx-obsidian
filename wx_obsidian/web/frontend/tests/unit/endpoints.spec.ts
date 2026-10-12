@@ -33,7 +33,6 @@ describe('endpoints 路径', () => {
     expect(endpoints.articles.remove('x#y')).toBe('/api/articles/x%23y')
     expect(endpoints.feeds.remove('f 1')).toBe('/api/feeds/f%201')
     expect(endpoints.jobs.events('job-1')).toBe('/api/jobs/job-1/events')
-    expect(endpoints.scheduler.runNow('fetch_job')).toBe('/api/scheduler/jobs/fetch_job/run-now')
   })
 
   it('日志流带 since 游标', () => {

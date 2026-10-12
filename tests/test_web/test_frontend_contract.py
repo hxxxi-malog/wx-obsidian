@@ -132,8 +132,6 @@ def test_frontend_covers_the_critical_endpoints(frontend_paths: set[str]) -> Non
         "/api/source/refresh",
         "/api/feeds",
         "/api/feeds/{}",
-        "/api/scheduler/jobs",
-        "/api/scheduler/jobs/{}/run-now",
         "/api/logs",
         "/api/logs/events",
         "/api/fs/list",

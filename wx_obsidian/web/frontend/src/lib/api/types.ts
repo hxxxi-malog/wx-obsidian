@@ -244,29 +244,6 @@ export interface SourceRefreshResult {
   account: AccountStatus
 }
 
-export interface SchedulerJob {
-  job_id: string
-  name: string
-  trigger: string
-  is_running: boolean
-  next_run: string | null
-  last_run: string | null
-  last_error: string | null
-  error_count: number
-}
-
-export interface SchedulerState {
-  fetch_hours: number
-  keepalive_enabled: boolean
-  allowed_hours: number[]
-  keepalive_days: number
-}
-
-export interface SchedulerPayload {
-  jobs: SchedulerJob[]
-  state: SchedulerState
-}
-
 export interface LogEntry {
   seq: number
   ts: string

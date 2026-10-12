@@ -1,4 +1,4 @@
-"""Web 运行期装配：ConfigManager + 数据源 + Orchestrator + 调度器。
+"""Web 运行期装配：ConfigManager + 数据源 + Orchestrator。
 
 装配逻辑与 `tui/app.py:__init__` 一致。刻意复刻而非抽取共享函数：
 P0 不动已跑通的 TUI，避免把 Web 的回归风险带进 TUI。
@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from wx_obsidian.config import resolve_source_base_url
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.orchestrator import Orchestrator
-from wx_obsidian.scheduler import TaskScheduler
 from wx_obsidian.sources.base import ArticleSource
 from wx_obsidian.sources.factory import create_article_source, resolve_source_type
 
@@ -23,7 +22,6 @@ class WebRuntime:
     config_manager: ConfigManager
     source: ArticleSource
     orchestrator: Orchestrator
-    scheduler: TaskScheduler
 
 
 def build_runtime(config_manager: ConfigManager | None = None) -> WebRuntime:
@@ -53,5 +51,4 @@ def build_runtime(config_manager: ConfigManager | None = None) -> WebRuntime:
         config_manager=cm,
         source=source,
         orchestrator=Orchestrator(cm, source),
-        scheduler=TaskScheduler(),
     )

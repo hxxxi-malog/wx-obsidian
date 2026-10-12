@@ -1,8 +1,7 @@
-/** 导航信息架构：8 个页面按用途分组（路由路径保持不变，深链与启动器跳转都依赖它）。 */
+/** 导航信息架构：7 个页面按用途分组（路由路径保持不变，深链与启动器跳转都依赖它）。 */
 
 import {
   PhArticle,
-  PhClock,
   PhCloudArrowDown,
   PhGear,
   PhGauge,
@@ -46,12 +45,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'feeds', label: '公众号管理', path: '/feeds', icon: PhRss, description: '订阅列表与按链接添加' },
       { key: 'source', label: '数据源状态', path: '/source', icon: PhHardDrives, description: 'we-mp-rss 探活与启动指引' },
       { key: 'account', label: '账号管理', path: '/account', icon: PhUserCircle, description: '登录态与访问令牌' },
-    ],
-  },
-  {
-    label: '自动化',
-    items: [
-      { key: 'scheduler', label: '定时任务', path: '/scheduler', icon: PhClock, description: '定时抓取与保活任务' },
     ],
   },
 ]

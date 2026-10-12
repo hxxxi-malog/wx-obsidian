@@ -41,7 +41,6 @@ RUNTIME_DEPS=(
   "uvicorn>=0.29"
   "requests>=2.31.0"
   "pyyaml>=6.0"
-  "apscheduler>=3.10.0"
   "mistune>=3.2.1"
   "jieba>=0.42"
 )

@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from wx_obsidian.web import APP_NAME, APP_VERSION, scheduling
+from wx_obsidian.web import APP_NAME, APP_VERSION
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web import fs as fs_api
 from wx_obsidian.web import logs as logs_api
@@ -495,15 +495,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """启动时恢复用户的定时任务设定；关闭时停掉调度器与日志缓冲。"""
-        try:
-            scheduling.restore_state(runtime, jobs)
-        except Exception:  # 恢复失败不能拦住服务启动
-            logger.warning("恢复定时任务失败", exc_info=True)
+        """关闭时停掉日志缓冲。"""
         try:
             yield
         finally:
-            runtime.scheduler.stop()
             logs_api.uninstall_log_buffer(log_buffer)
 
     app = FastAPI(
@@ -992,84 +987,6 @@ def create_app(
             )
         if not ok:
             return JSONResponse({"error": "not_found"}, status_code=404)
-        return JSONResponse({"ok": True})
-
-    # -- 定时任务 -----------------------------------------------------------
-
-    @app.get("/api/scheduler/jobs")
-    def scheduler_jobs() -> dict[str, Any]:
-        return {
-            "jobs": scheduling.job_list(runtime),
-            "state": scheduling.read_state(runtime.config_manager).to_dict(),
-        }
-
-    @app.post("/api/scheduler/jobs")
-    async def set_scheduler_job(payload: dict[str, Any] = Body(default_factory=dict)) -> Response:
-        """新增/修改/停止定时任务。
-
-        body: {"kind": "fetch", "interval": "2h"} 或 {"kind": "fetch", "interval": "0"}
-              {"kind": "keepalive", "enabled": true|false}
-        """
-        body = payload or {}
-        kind = str(body.get("kind") or "")
-        fetch_hours: int | None = None
-        keepalive_enabled: bool | None = None
-
-        if kind == "fetch":
-            raw = str(body.get("interval") or "").strip().lower().removesuffix("h")
-            try:
-                fetch_hours = int(raw or 0)
-            except ValueError:
-                return JSONResponse(
-                    {"error": "bad_request", "detail": f"无法解析间隔: {body.get('interval')}"},
-                    status_code=400,
-                )
-        elif kind == "keepalive":
-            keepalive_enabled = bool(body.get("enabled", True))
-        else:
-            return JSONResponse(
-                {"error": "bad_request", "detail": "kind 需为 fetch 或 keepalive"}, status_code=400
-            )
-
-        try:
-            state = scheduling.apply_state(
-                runtime, jobs, fetch_hours=fetch_hours, keepalive_enabled=keepalive_enabled
-            )
-        except ValueError as exc:
-            return JSONResponse({"error": "bad_request", "detail": str(exc)}, status_code=400)
-        return JSONResponse(
-            {"ok": True, "state": state.to_dict(), "jobs": scheduling.job_list(runtime)}
-        )
-
-    @app.delete("/api/scheduler/jobs/{job_id}")
-    def delete_scheduler_job(job_id: str) -> Response:
-        if job_id == scheduling.FETCH_JOB_ID:
-            state = scheduling.apply_state(runtime, jobs, fetch_hours=0)
-        elif job_id == scheduling.KEEPALIVE_JOB_ID:
-            state = scheduling.apply_state(runtime, jobs, keepalive_enabled=False)
-        else:
-            return JSONResponse({"error": "not_found"}, status_code=404)
-        return JSONResponse(
-            {"ok": True, "state": state.to_dict(), "jobs": scheduling.job_list(runtime)}
-        )
-
-    @app.post("/api/scheduler/jobs/{job_id}/run-now")
-    async def run_scheduler_job(job_id: str) -> Response:
-        """立即执行一次。
-
-        刻意不走 APScheduler 的 `run_job_now`：直接提交到 JobManager，
-        这样立刻生效、受单飞约束，而且进度能在页面上看到。
-        """
-        if runtime.scheduler.get_job_status(job_id) is None:
-            return JSONResponse({"error": "not_found"}, status_code=404)
-        if job_id == scheduling.FETCH_JOB_ID:
-            if jobs.busy:
-                return JSONResponse(
-                    {"error": "job_busy", "detail": "已有任务在运行"}, status_code=409
-                )
-            new_job_id = await jobs.submit("fetch")
-            return JSONResponse({"ok": True, "job_id": new_job_id})
-        await asyncio.to_thread(runtime.orchestrator.refresh_cookie)
         return JSONResponse({"ok": True})
 
     # -- 运行日志 -----------------------------------------------------------

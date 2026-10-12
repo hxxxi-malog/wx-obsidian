@@ -82,20 +82,6 @@ class Feed:
 
 
 @dataclass
-class JobStatus:
-    """定时任务状态。"""
-
-    job_id: str
-    name: str
-    cron: str
-    is_running: bool = False
-    last_run: datetime | None = None
-    next_run: datetime | None = None
-    error_count: int = 0
-    last_error: str | None = None
-
-
-@dataclass
 class MigrationReport:
     """配置迁移报告。"""
 
