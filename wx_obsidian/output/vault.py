@@ -338,8 +338,11 @@ def maybe_create_subcategory(
     """当同一子主题积累足够文章时，创建子目录并迁移文件。"""
     if not sub_topic:
         return
-    # 已迁移：category 末段已是 sub_topic，防止无限嵌套
-    if category == sub_topic or category.endswith(f"/{sub_topic}"):
+    # 分类层级只允许「顶层 / 子主题」两层，且只迁移一次。
+    # category 里的 "/" 只可能由 _migrate_articles_to_subdir 写入——LLM 返回的 category
+    # 已经过 sanitize_path_segment，"/" 会被替换成 "_"；所以含 "/" 就说明迁移过了，
+    # 再迁移只会一路加深成 "顶层/子主题/子主题/..."（历史上就这么无限嵌套过）。
+    if "/" in category or sub_topic == category:
         return
 
     count = _count_sub_topic_articles(processed, category, sub_topic)

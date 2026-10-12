@@ -254,6 +254,70 @@ class TestMaybeCreateSubcategory:
 
         assert not (articles_dir / "LLM" / "注意力机制" / "注意力机制").exists()
 
+    def test_repeated_calls_never_deepen(self, tmp_vault, monkeypatch):
+        """回归：迁移后反复触发也不得再加深。
+
+        历史事故：迁移把 record["category"] 改成「顶层/子主题」后，下一轮又用这个
+        category + 原 sub_topic 触发迁移，于是长出 顶层/子主题/子主题/... 直到五层。
+        """
+        vault_path, articles_dir = tmp_vault
+        config = {"categories": ["LLM"], "obsidian": {"articles_dir": "公众号文章"}}
+        monkeypatch.setattr("wx_obsidian.output.vault.save_processed", lambda processed: None)
+
+        llm_dir = articles_dir / "LLM"
+        llm_dir.mkdir()
+        processed = {}
+        for i in range(3):
+            path = llm_dir / f"文章{i}.md"
+            path.write_text(f"# 文章{i}", encoding="utf-8")
+            processed[f"id{i}"] = {
+                "title": f"文章{i}",
+                "status": "done",
+                "category": "LLM",
+                "sub_topic": "注意力机制",
+                "file": str(path),
+                "processed_at": "2026-01-01T00:00:00",
+            }
+
+        maybe_create_subcategory(vault_path, config, processed, "LLM", "注意力机制")
+        assert (articles_dir / "LLM" / "注意力机制").is_dir()
+
+        for _ in range(4):
+            for record in processed.values():
+                maybe_create_subcategory(
+                    vault_path, config, processed, record["category"], record["sub_topic"]
+                )
+
+        sub_dir = articles_dir / "LLM" / "注意力机制"
+        assert sub_dir.is_dir()
+        assert not (sub_dir / "注意力机制").exists()
+        assert sorted(p.name for p in sub_dir.iterdir()) == ["_MOC.md", "文章0.md", "文章1.md", "文章2.md"]
+
+    def test_already_migrated_blocks_new_sub_topic(self, tmp_vault, monkeypatch):
+        """已迁移到「顶层/子主题」后，即使换一个新 sub_topic 也不得创建第三层。"""
+        vault_path, articles_dir = tmp_vault
+        config = {"categories": ["LLM"], "obsidian": {"articles_dir": "公众号文章"}}
+        monkeypatch.setattr("wx_obsidian.output.vault.save_processed", lambda processed: None)
+
+        sub_dir = articles_dir / "LLM" / "注意力机制"
+        sub_dir.mkdir(parents=True)
+        processed = {}
+        for i in range(3):
+            path = sub_dir / f"文章{i}.md"
+            path.write_text(f"# 文章{i}", encoding="utf-8")
+            processed[f"id{i}"] = {
+                "title": f"文章{i}",
+                "status": "done",
+                "category": "LLM/注意力机制",
+                "sub_topic": "多头注意力",
+                "file": str(path),
+                "processed_at": "2026-01-01T00:00:00",
+            }
+
+        maybe_create_subcategory(vault_path, config, processed, "LLM/注意力机制", "多头注意力")
+
+        assert not (sub_dir / "多头注意力").exists()
+
 
 class TestParseMocContent:
     """_parse_moc_content 测试。"""
