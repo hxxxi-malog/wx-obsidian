@@ -52,9 +52,22 @@ from wx_obsidian.output.vault import (
     _update_parent_moc,
     escape_display,
 )
+from wx_obsidian.taxonomy import canonical_sub_topic
 
 CONCEPT_DIR_NAME = "概念"
 _CATEGORY_LINE = re.compile(r'(?m)^category:\s*".*"$')
+_SUB_TOPIC_LINE = re.compile(r'(?m)^sub_topic:\s*".*"$')
+
+#: 声明式分类合并表（源分类 → 目标分类）。
+#: 依据见 docs/design-docs/taxonomy/spec.md §4.3：同一主题因「中英混写 + 父分类抖动」
+#: 被拆进多个目录，这里各收敛到一个落点。改这张表后 `--apply` 即可，无需改代码。
+MERGE_CATEGORIES: tuple[tuple[str, str], ...] = (
+    # Loop 主题 15 篇：3 个目录 → Harness Engineering/Loop Engineering
+    ("Agent/Loop工程", "Harness Engineering/Loop Engineering"),
+    ("Harness Engineering/Loop工程", "Harness Engineering/Loop Engineering"),
+    # 多Agent协同：skill 已声明该二级目录属于 Agent，HE 侧的 4 篇并回去
+    ("Harness Engineering/多Agent协同", "Agent/多Agent协同"),
+)
 
 
 def canonical_category(category: str) -> str:
@@ -99,8 +112,26 @@ def canonical_link_target(target: str) -> str | None:
     return f"{canonical_category(category)}/{parts[-1]}"
 
 
-def rewrite_text_links(text: str) -> tuple[str, int]:
-    """把正文里的嵌套前缀链接改到落点，返回 (新文本, 改动条数)。"""
+def rewrite_text_links(text: str, prefix_map: dict[str, str] | None = None) -> tuple[str, int]:
+    """改写正文里的链接，返回 (新文本, 改动条数)。
+
+    两类改写：
+    1. **分类前缀重定向**（`prefix_map`，来自分类合并）：`[[旧分类/…]]` → `[[新分类/…]]`。
+       必须按「前缀」而不是「标题集合」来改——`_fix_links_batch` 会把标题重新 sanitize
+       一次，遇到文件名里带 `：` 等历史字符的笔记就静默跳过（实测有 20 个文件的
+       related_topics 因此断链）。
+    2. **嵌套前缀折叠**：`[[A/B/B/title]]` → `[[A/B/title]]`。
+    """
+    rewritten = 0
+    if prefix_map:
+        for old_prefix, new_prefix in sorted(prefix_map.items(), key=lambda kv: -len(kv[0])):
+            if old_prefix == new_prefix:
+                continue
+            needle = f"[[{old_prefix}/"
+            if needle in text:
+                rewritten += text.count(needle)
+                text = text.replace(needle, f"[[{new_prefix}/")
+
     changed = 0
 
     def _replace(match: re.Match[str]) -> str:
@@ -111,7 +142,8 @@ def rewrite_text_links(text: str) -> tuple[str, int]:
         changed += 1
         return f"[[{new_target}{match.group(2) or ''}]]"
 
-    return _LINK_RE.sub(_replace, text), changed
+    folded = _LINK_RE.sub(_replace, text)
+    return folded, rewritten + changed
 
 
 def dissolve_self_folders(content: str, own_category: str) -> tuple[str, int]:
@@ -194,10 +226,12 @@ class FileFix:
         return bool(self.links or self.dissolved or self.deduped)
 
 
-def _process_markdown(path: Path, articles_dir: Path) -> tuple[str, int, int, int]:
-    """对单个 .md 做「链接折叠 → 拆自引用文件夹组 → MOC 去重」，返回 (新文本, 各计数)。"""
+def _process_markdown(
+    path: Path, articles_dir: Path, prefix_map: dict[str, str] | None = None
+) -> tuple[str, int, int, int]:
+    """对单个 .md 做「链接重定向/折叠 → 拆自引用文件夹组 → MOC 去重」，返回 (新文本, 各计数)。"""
     content = path.read_text(encoding="utf-8")
-    new_text, links = rewrite_text_links(content)
+    new_text, links = rewrite_text_links(content, prefix_map)
     dissolved = deduped = 0
     if path.name == "_MOC.md":
         own_category = path.parent.relative_to(articles_dir).as_posix()
@@ -229,12 +263,14 @@ class LinkPass:
         return not self.files
 
 
-def scan_residual_links(articles_dir: Path) -> LinkPass:
-    """扫描所有 .md（含概念页），找出仍带嵌套前缀的链接、自引用文件夹组与重复条目。"""
+def scan_residual_links(
+    articles_dir: Path, prefix_map: dict[str, str] | None = None
+) -> LinkPass:
+    """扫描所有 .md（含概念页），找出需重定向/折叠的链接、自引用文件夹组与重复条目。"""
     result = LinkPass()
     for path in sorted(articles_dir.rglob("*.md")):
         try:
-            _text, links, dissolved, deduped = _process_markdown(path, articles_dir)
+            _text, links, dissolved, deduped = _process_markdown(path, articles_dir, prefix_map)
         except (OSError, UnicodeDecodeError):
             continue
         fix = FileFix(path=path, links=links, dissolved=dissolved, deduped=deduped)
@@ -243,8 +279,8 @@ def scan_residual_links(articles_dir: Path) -> LinkPass:
     return result
 
 
-def set_frontmatter_category(path: Path, new_category: str) -> bool:
-    """只替换 frontmatter 块里的 category 行；返回是否实际改写。"""
+def _rewrite_frontmatter_line(path: Path, pattern: re.Pattern[str], new_line: str) -> bool:
+    """只替换 frontmatter 块里的某一行；返回是否实际改写。"""
     content = path.read_text(encoding="utf-8")
     if not content.startswith("---"):
         return False
@@ -252,10 +288,58 @@ def set_frontmatter_category(path: Path, new_category: str) -> bool:
     if end == -1:
         return False
     head, rest = content[:end], content[end:]
-    updated, count = _CATEGORY_LINE.subn(f'category: "{new_category}"', head, count=1)
+    updated, count = pattern.subn(new_line, head, count=1)
     if not count or updated == head:
         return False
     atomic_write(path, updated + rest)
+    return True
+
+
+def set_frontmatter_category(path: Path, new_category: str) -> bool:
+    """只替换 frontmatter 块里的 category 行；返回是否实际改写。"""
+    return _rewrite_frontmatter_line(path, _CATEGORY_LINE, f'category: "{new_category}"')
+
+
+def set_frontmatter_sub_topic(path: Path, new_sub_topic: str) -> bool:
+    """只替换 frontmatter 块里的 sub_topic 行；返回是否实际改写。"""
+    return _rewrite_frontmatter_line(path, _SUB_TOPIC_LINE, f'sub_topic: "{new_sub_topic}"')
+
+
+def drop_folder_group(moc_path: Path, category: str) -> bool:
+    """从父 MOC 里删掉指向 `category` 的文件夹组（该子目录已被合并走）。"""
+    if not moc_path.exists():
+        return False
+    content = moc_path.read_text(encoding="utf-8")
+    title, folder_groups, standalone = _parse_moc_content(content)
+    kept = [(line, arts) for line, arts in folder_groups if f"[[{category}/_MOC" not in line]
+    if len(kept) == len(folder_groups):
+        return False
+    atomic_write(moc_path, _rebuild_moc(title, kept, standalone))
+    return True
+
+
+def refresh_folder_group(moc_path: Path, category: str, sub_moc: Path) -> bool:
+    """按子目录 MOC 的当前内容重建父 MOC 里对应的文件夹组（合并后条目会变多）。"""
+    if not moc_path.exists() or not sub_moc.exists():
+        return False
+    content = moc_path.read_text(encoding="utf-8")
+    title, folder_groups, standalone = _parse_moc_content(content)
+    _, sub_groups, sub_standalone = _parse_moc_content(sub_moc.read_text(encoding="utf-8"))
+    children = [article for _line, articles in sub_groups for article in articles]
+    children.extend(sub_standalone)
+
+    changed = False
+    new_groups: list[tuple[str, list[str]]] = []
+    for line, articles in folder_groups:
+        if f"[[{category}/_MOC" in line:
+            if articles != children:
+                changed = True
+            new_groups.append((line, children))
+        else:
+            new_groups.append((line, articles))
+    if not changed:
+        return False
+    atomic_write(moc_path, _rebuild_moc(title, new_groups, standalone))
     return True
 
 
@@ -323,6 +407,14 @@ class Plan:
     legacy_fixes: list[LegacyFix] = field(default_factory=list)
     missing_mocs: list[MissingMoc] = field(default_factory=list)
     link_pass: LinkPass = field(default_factory=LinkPass)
+    #: L0：分类合并的源 → 目标（用于打印与 config 同步）
+    merges: list[tuple[str, str]] = field(default_factory=list)
+    #: 需要从父 MOC 里删掉的文件夹组：(源分类,)
+    merge_parent_cleanups: list[str] = field(default_factory=list)
+    #: 需要按合并后子目录 MOC 重建的父 MOC 文件夹组：(目标分类,)
+    merge_parent_refreshes: list[str] = field(default_factory=list)
+    #: 存量 sub_topic 归一化：(article_id, 原值, 规范值)
+    sub_topic_fixes: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
@@ -334,6 +426,8 @@ class Plan:
             or self.legacy_fixes
             or self.missing_mocs
             or self.link_pass.files
+            or self.sub_topic_fixes
+            or self.merges
         )
 
 
@@ -382,6 +476,39 @@ def build_plan(
                 FileMove(src=entry, dst=dst, old_category=old_category, new_category=new_category)
             )
 
+    # 1.5) 声明式分类合并（L0）：把源目录的文件并入目标目录。
+    # 复用与嵌套修复同一套搬迁 / frontmatter / processed / MOC / 链接机制，
+    # 因此这里只负责「配对」，不引入第二套写盘逻辑。
+    for src_category, dst_category in MERGE_CATEGORIES:
+        src_dir = articles_dir / src_category
+        if src_category == dst_category or not src_dir.is_dir():
+            continue
+        dst_dir = articles_dir / dst_category
+        for entry in sorted(src_dir.iterdir()):
+            if not entry.is_file():
+                continue
+            if entry.name == "_MOC.md":
+                plan.moc_merges.append(
+                    MocMerge(
+                        src=entry,
+                        dst=dst_dir / "_MOC.md",
+                        old_category=src_category,
+                        new_category=dst_category,
+                    )
+                )
+                continue
+            dst = dst_dir / entry.name
+            if dst.exists():
+                plan.collisions.append((entry, dst))
+                continue
+            plan.file_moves.append(
+                FileMove(src=entry, dst=dst, old_category=src_category, new_category=dst_category)
+            )
+        plan.merges.append((src_category, dst_category))
+        plan.dirs_to_remove.append(src_dir)
+        plan.merge_parent_cleanups.append(src_category)
+        plan.merge_parent_refreshes.append(dst_category)
+
     # 2) processed.json：路径线 + 分类名线
     moved_by_src = {str(move.src): move for move in plan.file_moves}
     for article_id, record in processed.items():
@@ -409,13 +536,27 @@ def build_plan(
                 )
             )
 
-    # 3) config.json：categories 需要折叠 + 去重
+    # 3) config.json：categories 需要折叠 + 去重（合并的增删在 apply 阶段处理）
     for category in categories:
         if is_nested(category):
             plan.categories_to_fix.append((category, canonical_category(category)))
 
-    # 4) 待删除的空目录（从深到浅，父目录才不会先被删）
-    plan.dirs_to_remove = sorted(nested_dirs, key=lambda p: len(p.parts), reverse=True)
+    # 4) 待删除的空目录（从深到浅，父目录才不会先被删）；合并后的空源目录一并清理
+    plan.dirs_to_remove = sorted(
+        {*nested_dirs, *plan.dirs_to_remove}, key=lambda p: len(p.parts), reverse=True
+    )
+
+    # 4.5) 存量 sub_topic 归一化（L0-3）：存了别名写法的记录统一到规范写法，
+    # 这样 _count_sub_topic_articles 与迁移筛选才能命中（见 vault.py 的同一口径改动）
+    for article_id, record in processed.items():
+        if not isinstance(record, dict) or record.get("status") != "done":
+            continue
+        raw = str(record.get("sub_topic") or "")
+        if not raw:
+            continue
+        canonical = canonical_sub_topic(raw)
+        if canonical != raw:
+            plan.sub_topic_fixes.append((str(article_id), raw, canonical))
 
     # 5) 分类名与位置不一致的历史遗留（嵌套形与已安排搬走的记录在前两阶段处理过）
     legacy_dst: dict[str, Path] = {}
@@ -499,7 +640,9 @@ def build_plan(
         )
 
     # 7) 第二遍：链接里残留的嵌套前缀（第一遍只改了最深的一层）
-    plan.link_pass = scan_residual_links(articles_dir)
+    # 链接重定向用完整的合并表而不是本次 plan.merges：合并跑过一次之后源目录就没了，
+    # 但存量链接仍指向旧分类，重跑时也要能继续收敛（幂等）
+    plan.link_pass = scan_residual_links(articles_dir, dict(MERGE_CATEGORIES))
     return plan
 
 
@@ -512,6 +655,12 @@ def _print_plan(plan: Plan, articles_dir: Path, config_file: Path, processed_fil
     for move in plan.file_moves:
         by_map.setdefault((move.old_category, move.new_category), []).append(move)
 
+    if plan.merges:
+        print(f"\n[0] 分类合并（MERGE_CATEGORIES）：{len(plan.merges)} 组")
+        for merged_from, merged_to in plan.merges:
+            count = len(by_map.get((merged_from, merged_to), []))
+            print(f"    {merged_from}  →  {merged_to}   （{count} 个文件）")
+
     print(f"\n[1] 移动文件：{len(plan.file_moves)} 个，涉及 {len(by_map)} 组目录")
     for (old, new), moves in sorted(by_map.items()):
         print(f"    {old}\n      → {new}   ({len(moves)} 个文件)")
@@ -519,6 +668,22 @@ def _print_plan(plan: Plan, articles_dir: Path, config_file: Path, processed_fil
     print(f"\n[2] 合并 _MOC.md：{len(plan.moc_merges)} 个")
     for merge in plan.moc_merges:
         print(f"    {merge.src.relative_to(articles_dir)}  →  {merge.new_category}/_MOC.md")
+
+    if plan.merges:
+        print(f"\n[2.5] 父 MOC 文件夹组维护：删 {len(plan.merge_parent_cleanups)} 组、"
+              f"重建 {len(plan.merge_parent_refreshes)} 组")
+        for category in plan.merge_parent_cleanups:
+            print(f"    删除  📁 [[{category}/_MOC]]（源目录已并入别处）")
+        for category in plan.merge_parent_refreshes:
+            print(f"    重建  📁 [[{category}/_MOC]]（按合并后的子目录 MOC）")
+
+    if plan.sub_topic_fixes:
+        print(f"\n[2.6] 存量 sub_topic 归一化：{len(plan.sub_topic_fixes)} 条")
+        tally: dict[tuple[str, str], int] = {}
+        for _aid, old, new in plan.sub_topic_fixes:
+            tally[(old, new)] = tally.get((old, new), 0) + 1
+        for (old, new), count in sorted(tally.items()):
+            print(f"    {count:3d} 条  {old}  →  {new}")
 
     by_path = [f for f in plan.record_fixes if f.by_path]
     by_name = [f for f in plan.record_fixes if not f.by_path]
@@ -668,6 +833,31 @@ def apply_plan(plan: Plan, articles_dir: Path, cm: ConfigManager, processed_file
             removed += 1
     print(f"  已清理空目录 {removed}/{len(plan.dirs_to_remove)} 个")
 
+    # 分类合并的收尾：父 MOC 里指向已删源目录的文件夹组必须删掉，
+    # 目标分类的组要按合并后的子目录 MOC 重建（否则条目数停在合并前）
+    cleaned = 0
+    for src_category in plan.merge_parent_cleanups:
+        parent, _, _leaf = src_category.rpartition("/")
+        if not parent:
+            continue
+        if drop_folder_group(articles_dir / parent / "_MOC.md", src_category):
+            cleaned += 1
+    refreshed = 0
+    for dst_category in plan.merge_parent_refreshes:
+        parent, _, leaf = dst_category.rpartition("/")
+        if not parent:
+            continue
+        parent_moc = articles_dir / parent / "_MOC.md"
+        sub_moc = articles_dir / dst_category / "_MOC.md"
+        if refresh_folder_group(parent_moc, dst_category, sub_moc):
+            refreshed += 1
+        elif parent_moc.exists() and sub_moc.exists():
+            # 父 MOC 里还没有这个分类的文件夹组 → 按 app 自己的方式补一个
+            _update_parent_moc(articles_dir, parent, leaf)
+            refreshed += 1
+    if plan.merges:
+        print(f"  父 MOC 文件夹组：删除 {cleaned} 个、重建 {refreshed} 个")
+
     # 历史遗留：目标子目录存在就把文件搬进去，否则只改分类名（文件不动）
     legacy_moved = 0
     legacy_renamed = 0
@@ -698,7 +888,7 @@ def apply_plan(plan: Plan, articles_dir: Path, cm: ConfigManager, processed_file
         path = link_fix.path
         try:
             content = path.read_text(encoding="utf-8")
-            new_text, _l, _d, _dd = _process_markdown(path, articles_dir)
+            new_text, _l, _d, _dd = _process_markdown(path, articles_dir, dict(MERGE_CATEGORIES))
         except (OSError, UnicodeDecodeError):
             continue
         if new_text != content:
@@ -715,6 +905,7 @@ def apply_plan(plan: Plan, articles_dir: Path, cm: ConfigManager, processed_file
     moved_by_src = {str(move.src): move for move in plan.file_moves}
     legacy_by_src = {str(fix.src): fix for fix in plan.legacy_fixes}
     updated = 0
+    subtopic_updated = 0
     warnings: list[str] = []
     for _article_id, record in processed.items():
         if not isinstance(record, dict):
@@ -725,41 +916,62 @@ def apply_plan(plan: Plan, articles_dir: Path, cm: ConfigManager, processed_file
             record["file"] = str(moved.dst)
             record["category"] = moved.new_category
             updated += 1
-            continue
-        legacy = legacy_by_src.get(file_path)
-        if legacy is not None:
-            record["category"] = legacy.new_category
-            if legacy.dst is not None:
-                record["file"] = str(legacy.dst)
-            updated += 1
-            continue
-        category = str(record.get("category") or "")
-        if not is_nested(category):
-            continue
-        new_category = canonical_category(category)
-        record["category"] = new_category
-        old_file = Path(file_path)
-        if old_file.name:
-            new_path = articles_dir / new_category / old_file.name
-            if new_path.exists():
-                record["file"] = str(new_path)
-                set_frontmatter_category(new_path, new_category)
+        else:
+            legacy = legacy_by_src.get(file_path)
+            if legacy is not None:
+                record["category"] = legacy.new_category
+                if legacy.dst is not None:
+                    record["file"] = str(legacy.dst)
+                updated += 1
             else:
-                warnings.append(f"{old_file} 不在落点 {new_path}，file 字段保持原样待人工确认")
-        updated += 1
-    if updated:
+                category = str(record.get("category") or "")
+                if is_nested(category):
+                    new_category = canonical_category(category)
+                    record["category"] = new_category
+                    old_file = Path(file_path)
+                    if old_file.name:
+                        new_path = articles_dir / new_category / old_file.name
+                        if new_path.exists():
+                            record["file"] = str(new_path)
+                            set_frontmatter_category(new_path, new_category)
+                        else:
+                            warnings.append(
+                                f"{old_file} 不在落点 {new_path}，file 字段保持原样待人工确认"
+                            )
+                    updated += 1
+
+        # 存量 sub_topic 归一化（对已被搬动的记录用新落点改写 frontmatter）
+        raw_sub_topic = str(record.get("sub_topic") or "")
+        canonical_sub = canonical_sub_topic(raw_sub_topic)
+        if raw_sub_topic and canonical_sub != raw_sub_topic:
+            record["sub_topic"] = canonical_sub
+            target = Path(str(record.get("file") or ""))
+            if target.exists():
+                set_frontmatter_sub_topic(target, canonical_sub)
+            subtopic_updated += 1
+    if updated or subtopic_updated:
         save_processed(processed)
-    print(f"  已修正 processed.json 记录 {updated} 条")
+    print(f"  已修正 processed.json 记录 {updated} 条，sub_topic 归一化 {subtopic_updated} 条")
     for message in warnings:
         print(f"  [!] {message}")
 
-    # config.json：categories 折叠 + 去重（ConfigManager.load 已剔除已移除的 scheduler 段）
+    # config.json：categories 折叠 + 去重 + 合并（源分类移除、目标分类保留；
+    # ConfigManager.load 已剔除已移除的 scheduler 段）
     categories = [str(c) for c in (cm.get("categories", []) or [])]
     rebuilt: list[str] = []
     for category in categories:
         canonical = canonical_category(category)
         if canonical and canonical not in rebuilt:
             rebuilt.append(canonical)
+    if plan.merges:
+        merge_sources = {src for src, _dst in plan.merges}
+        merge_targets = {dst for _src, dst in plan.merges}
+        for merged_target in sorted(merge_targets):
+            if merged_target not in rebuilt:
+                rebuilt.append(merged_target)
+        for merged_source in sorted(merge_sources):
+            if merged_source not in merge_targets and merged_source in rebuilt:
+                rebuilt.remove(merged_source)
     cm.set("categories", rebuilt)
     cm.save()
     print(f"  categories：{len(categories)} → {len(rebuilt)} 项")

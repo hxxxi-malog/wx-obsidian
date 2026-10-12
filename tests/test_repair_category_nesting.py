@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repair_category_nesting import (
+    apply_plan,
     build_plan,
     canonical_category,
     canonical_link_target,
@@ -14,6 +15,8 @@ from repair_category_nesting import (
     rewrite_text_links,
     scan_residual_links,
 )
+from wx_obsidian.config import load_processed, save_processed
+from wx_obsidian.config_manager import ConfigManager
 
 
 class TestCanonicalCategory:
@@ -64,6 +67,31 @@ class TestRewriteTextLinks:
         new_text, changed = rewrite_text_links("[[Harness Engineering/Loop Engineering/Loop Engineering/文#节]]")
         assert changed == 1
         assert new_text == "[[Harness Engineering/Loop Engineering/文#节]]"
+
+    def test_retargets_category_prefix_independent_of_title_form(self):
+        """回归：分类合并后的链接重定向必须按「前缀」改。
+
+        `_fix_links_batch` 会把标题重新 sanitize 一次，遇到文件名里带 `：`（历史文件）
+        的笔记就匹配不上，于是 20 个文件的 related_topics 在合并后断链。
+        """
+        prefix_map = {
+            "Agent/Loop工程": "Harness Engineering/Loop Engineering",
+            "Harness Engineering/多Agent协同": "Agent/多Agent协同",
+        }
+        text = "见 [[Agent/Loop工程/甲：乙|甲：乙]] 与 [[Harness Engineering/多Agent协同/丙]]"
+        new_text, changed = rewrite_text_links(text, prefix_map)
+        assert changed == 2
+        assert new_text == (
+            "见 [[Harness Engineering/Loop Engineering/甲：乙|甲：乙]] 与 [[Agent/多Agent协同/丙]]"
+        )
+
+    def test_prefix_map_ignores_identity_and_prefers_longest(self):
+        text = "[[A/B/C/文]] 与 [[A/B/文]]"
+        new_text, changed = rewrite_text_links(
+            text, {"A/B": "X", "A/B/C": "Y", "X": "X"}
+        )
+        assert changed == 2
+        assert new_text == "[[Y/文]] 与 [[X/文]]"
 
 
 class TestDissolveSelfFolders:
@@ -331,3 +359,135 @@ class TestMissingMoc:
             "file": str(path),
             "processed_at": "2026-01-01T00:00:00",
         }
+
+
+class TestCategoryMerge:
+    """L0 声明式分类合并：plan 与 apply 都要可验证。"""
+
+    def _build_vault(self, tmp_path: Path) -> tuple[Path, dict[str, dict[str, object]]]:
+        articles_dir = tmp_path / "公众号文章"
+        src_a = articles_dir / "Agent" / "Loop工程"
+        src_b = articles_dir / "Harness Engineering" / "Loop工程"
+        dst = articles_dir / "Harness Engineering" / "Loop Engineering"
+        for directory in (src_a, src_b, dst, articles_dir / "Agent", articles_dir / "Harness Engineering"):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        (articles_dir / "Agent" / "_MOC.md").write_text(
+            "# Agent\n\n- 📁 [[Agent/Loop工程/_MOC|Loop工程]]\n"
+            "  - 2026-06-14 [[Agent/Loop工程/甲|甲]]\n",
+            encoding="utf-8",
+        )
+        (articles_dir / "Harness Engineering" / "_MOC.md").write_text(
+            "# Harness Engineering\n\n"
+            "- 📁 [[Harness Engineering/Loop Engineering/_MOC|Loop Engineering]]\n"
+            "  - 2026-06-23 [[Harness Engineering/Loop Engineering/丙|丙]]\n"
+            "- 📁 [[Harness Engineering/Loop工程/_MOC|Loop工程]]\n"
+            "  - 2026-06-11 [[Harness Engineering/Loop工程/乙|乙]]\n",
+            encoding="utf-8",
+        )
+
+        processed: dict[str, dict[str, object]] = {}
+        for index, (directory, title, sub_topic) in enumerate(
+            [
+                (src_a, "甲", "Loop工程"),
+                (src_b, "乙", "Loop工程"),
+                (dst, "丙", "Loop Engineering"),
+            ]
+        ):
+            path = directory / f"{title}.md"
+            path.write_text(
+                f'---\ntitle: "{title}"\ncategory: "{directory.relative_to(articles_dir).as_posix()}"\n'
+                f'sub_topic: "{sub_topic}"\n---\n\n见 [[Agent/Loop工程/{title}|{title}]]\n',
+                encoding="utf-8",
+            )
+            processed[f"a{index}"] = {
+                "status": "done",
+                "category": directory.relative_to(articles_dir).as_posix(),
+                "sub_topic": sub_topic,
+                "title": title,
+                "file": str(path),
+                "processed_at": "2026-06-20T00:00:00",
+            }
+
+        (src_a / "_MOC.md").write_text(
+            "# Loop工程\n\n- 2026-06-14 [[Agent/Loop工程/甲|甲]]\n", encoding="utf-8"
+        )
+        (src_b / "_MOC.md").write_text(
+            "# Loop工程\n\n- 2026-06-11 [[Harness Engineering/Loop工程/乙|乙]]\n",
+            encoding="utf-8",
+        )
+        (dst / "_MOC.md").write_text(
+            "# Loop Engineering\n\n"
+            "- 2026-06-23 [[Harness Engineering/Loop Engineering/丙|丙]]\n",
+            encoding="utf-8",
+        )
+        return articles_dir, processed
+
+    def test_plan_pairs_sources_to_destination(self, tmp_path: Path):
+        articles_dir, processed = self._build_vault(tmp_path)
+        plan = build_plan(articles_dir, processed, [])
+
+        assert ("Agent/Loop工程", "Harness Engineering/Loop Engineering") in plan.merges
+        assert ("Harness Engineering/Loop工程", "Harness Engineering/Loop Engineering") in plan.merges
+        moved = {m.src.name for m in plan.file_moves}
+        assert moved == {"甲.md", "乙.md"}
+        assert {m.new_category for m in plan.file_moves} == {"Harness Engineering/Loop Engineering"}
+        # 源目录进清理列表；父 MOC 组要删，目标组要重建
+        assert articles_dir / "Agent" / "Loop工程" in plan.dirs_to_remove
+        assert "Agent/Loop工程" in plan.merge_parent_cleanups
+        assert "Harness Engineering/Loop Engineering" in plan.merge_parent_refreshes
+
+    def test_apply_merges_files_mocs_and_records(self, tmp_path: Path):
+        articles_dir, processed = self._build_vault(tmp_path)
+        dst = articles_dir / "Harness Engineering" / "Loop Engineering"
+        cm = ConfigManager(config_dir=tmp_path / "cfg")
+        cm.load()
+        cm.set("categories", ["Agent", "Agent/Loop工程", "Harness Engineering", "Harness Engineering/Loop Engineering"])
+        cm.save()
+        save_processed(processed)
+
+        plan = build_plan(articles_dir, processed, ["Agent/Loop工程"])
+        apply_plan(plan, articles_dir, cm, tmp_path / "processed.json")
+
+        # 文件已并入目标目录，源目录删除
+        assert {p.name for p in dst.glob("*.md")} == {"_MOC.md", "丙.md", "甲.md", "乙.md"}
+        assert not (articles_dir / "Agent" / "Loop工程").exists()
+        assert not (articles_dir / "Harness Engineering" / "Loop工程").exists()
+
+        # frontmatter：category 与 sub_topic 都已更新
+        moved = (dst / "甲.md").read_text(encoding="utf-8")
+        assert 'category: "Harness Engineering/Loop Engineering"' in moved
+        assert 'sub_topic: "Loop Engineering"' in moved
+
+        # MOC：条目并入且前缀已改写、按目标去重
+        moc = (dst / "_MOC.md").read_text(encoding="utf-8")
+        assert "[[Harness Engineering/Loop Engineering/甲|甲]]" in moc
+        assert "[[Harness Engineering/Loop Engineering/乙|乙]]" in moc
+        assert "[[Agent/Loop工程/" not in moc
+
+        # 父 MOC：源组删除、目标组重建
+        agent_moc = (articles_dir / "Agent" / "_MOC.md").read_text(encoding="utf-8")
+        assert "[[Agent/Loop工程/_MOC" not in agent_moc
+        he_moc = (articles_dir / "Harness Engineering" / "_MOC.md").read_text(encoding="utf-8")
+        assert "[[Harness Engineering/Loop工程/_MOC" not in he_moc
+        assert "[[Harness Engineering/Loop Engineering/甲|甲]]" in he_moc
+
+        # processed.json：file 与 category 都跟着落点走
+        reloaded = load_processed()
+        assert reloaded["a0"]["category"] == "Harness Engineering/Loop Engineering"
+        assert reloaded["a0"]["file"] == str(dst / "甲.md")
+        assert reloaded["a0"]["sub_topic"] == "Loop Engineering"
+
+        # config：源分类移除、目标分类保留
+        assert cm.get("categories") == ["Agent", "Harness Engineering", "Harness Engineering/Loop Engineering"]
+
+    def test_second_run_is_noop(self, tmp_path: Path):
+        articles_dir, processed = self._build_vault(tmp_path)
+        cm = ConfigManager(config_dir=tmp_path / "cfg")
+        cm.load()
+        save_processed(processed)
+        apply_plan(build_plan(articles_dir, processed, []), articles_dir, cm, tmp_path / "p.json")
+
+        again = build_plan(articles_dir, load_processed(), [])
+        assert again.merges == []
+        assert again.file_moves == []
