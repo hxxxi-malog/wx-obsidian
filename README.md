@@ -1,506 +1,32 @@
 # wx-obsidian
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9+-blue" alt="Python">
-  <img src="https://img.shields.io/badge/DeepSeek_API-Compatible-orange" alt="DeepSeek">
-  <img src="https://img.shields.io/badge/DeepSeek_Vision-Multimodal-red" alt="DeepSeek Vision">
+  <img src="https://img.shields.io/badge/Python-3.9+-blue" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/DeepSeek-API-orange" alt="DeepSeek">
   <img src="https://img.shields.io/badge/we--mp--rss-Docker-green" alt="we-mp-rss">
-  <img src="https://img.shields.io/badge/Obsidian-Compatible-purple" alt="Obsidian">
-  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
+  <img src="https://img.shields.io/badge/Obsidian-Vault-purple" alt="Obsidian">
+  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT">
 </p>
 
-微信公众号文章 -> Obsidian 知识库自动化处理器。自动抓取公众号文章，通过 LLM 生成结构化笔记，写入 Obsidian Vault 并维护双向链接知识图谱。
-
-## 核心特性
-
-- **CLI + TUI 双模式**：命令行批量处理 + [Textual](https://textual.textualize.io/) 终端图形界面
-- **增量抓取**：通过 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 拉取公众号文章，按 `processed.json` 去重，不重复处理
-- **批量并行处理**：ThreadPoolExecutor 并行处理多篇文章，指数退避重试（最多 3 次，覆盖 429/5xx/网络错误）
-- **多模态 Vision**：DeepSeek 视觉模型（`deepseek-flash`）识别文章图片，为 LLM 提供语义描述，无 Vision 时自动降级到纯文本 + 关键词匹配
-- **3-Skill 系统**：模块化控制输出风格，写作风格、分类规则、元数据格式独立配置，改 Skill 即改笔记风格
-- **智能分类**：15 个预设分类 + 动态新增，同一子主题积累 3 篇后自动创建子目录
-- **知识图谱**：`[[双向链接]]` 关联已有文章和概念页面，Obsidian Graph View 自动成图
-- **混合关联**：SQLite FTS5 全文检索 + jieba 分词 + 概念模糊匹配 + 标签 Jaccard，自动计算文章间相似度并持久化索引
-- **级联删除**：一键删除文章及其所有关联数据（MOC 条目、概念页面、归档、processed.json）
-- **格式保障**：自动校验修复 + mistune 结构性检测 + LLM 反馈修正，三层格式保障
-- **应用内调度（可选）**：APScheduler 集成，TUI 运行时按 cron 抓取与处理；不跑 TUI 时用 `./run.sh` 手动触发
-- **可切换模型渠道**：`llm.active` / `vision.active` 指向任意 OpenAI 兼容渠道，加一个 provider 即可换模型，无需改代码
-
-## Quick Start
-
-### 前置条件
-
-- Python 3.9+
-- Docker（用于部署 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 数据源）
-- [DeepSeek API Key](https://platform.deepseek.com/)（必填；语言模型与视觉模型默认共用，`deepseek-flash` 支持图像输入）
-
-### 1. 安装
-
-```bash
-git clone https://github.com/yourname/wx-obsidian.git
-cd wx-obsidian
-
-# uv（推荐）
-uv sync
-
-# 或 pip
-pip install -e .
-```
-
-### 2. 启动 we-mp-rss 数据源
-
-原 WeWe RSS 已归档、其闭源中转下线，本项目改用 [we-mp-rss](https://github.com/rachelos/we-mp-rss)。
-部署配置见 `docker-compose.yml`：采集通道固定为 `weread_mp`（微信读书 Web），
-绕开公众平台后台接口的 `ret=200013` 风控；并附带修复「发布时间 = 抓取时间」的派生镜像。
-
-```bash
-# 一条命令把数据源和 Web 服务都拉起来（配方在 deploy/we-mp-rss，由根 compose include 引入）
-cp deploy/we-mp-rss/.env.example deploy/we-mp-rss/.env   # 填写 WERSS_PASS / WEREAD_COOKIE
-docker compose up -d --build
-```
-
-只想单独跑数据源时，仍然可以 `cd deploy/we-mp-rss && docker compose up -d --build`（同一个配方，
-只是不含 Web 服务）。
-
-访问 `http://localhost:8001` 完成初始化并登录微信读书，然后添加要订阅的公众号。
-细节（为什么用派生镜像、如何升级上游补丁）见 [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
-
-### 3. 配置
-
-**方式一：TUI 界面配置（推荐）**
-
-```bash
-python process_articles.py tui
-```
-
-进入 Config 界面，填写配置并点击「测试连通性」确认：
-
-| 配置项 | 必填 | 说明 |
-|--------|------|------|
-| DeepSeek API Key | 是 | [获取地址](https://platform.deepseek.com/) |
-| Vision API Key | 否 | 独立视觉渠道 Key；留空则与 DeepSeek Key 共用 |
-| 知识库路径 | 是 | Obsidian Vault 路径（支持目录选择器） |
-| we-mp-rss 服务地址 | 否 | 默认 `http://localhost:8001` |
-
-**方式二：手动编辑配置文件**
-
-```bash
-cp .env.example ~/.wx-obsidian/.env
-# 编辑 ~/.wx-obsidian/.env 填写 API Key
-# 编辑 ~/.wx-obsidian/config.json 设置 obsidian.vault_path 等
-```
-
-### 4. 抓取并处理文章
-
-```bash
-# 处理所有未处理的文章
-python process_articles.py
-
-# 只处理 5 篇（试跑）
-python process_articles.py --limit 5
-
-# 或者用封装脚本：输出同时追加到 logs/run.log
-./run.sh
-./run.sh --limit 5
-```
-
-> 本项目**没有系统级定时任务**（原 macOS LaunchAgent 因 TCC 无法读取 `~/Downloads`，41 次全部失败，已移除）。
-> 需要自动化就用 TUI 的 Scheduler 界面，它只在应用运行期间生效。
-
-### 5. 查看结果
-
-打开 Obsidian，进入配置的 Vault，找到 `公众号文章/` 目录。每篇文章生成一个 `.md` 文件，包含 frontmatter、结构化正文、`[[双向链接]]` 和图片。Graph View 中可以看到知识图谱。
-
-## 使用方式
-
-### CLI 模式
-
-```bash
-# 处理所有未处理的文章
-python process_articles.py
-
-# 限制处理数量
-python process_articles.py --limit 5
-```
-
-### TUI 模式
-
-```bash
-python process_articles.py tui
-```
-
-| 界面 | 功能 |
-|------|------|
-| Home | 状态概览、快速操作入口 |
-| Container | we-mp-rss 服务状态监控、启停控制 |
-| Account | 微信登录状态、扫码保活 |
-| Feeds | 公众号订阅管理 |
-| Config | LLM / Vision / Obsidian 配置编辑、连通性测试 |
-| Fetch | 手动触发文章抓取与处理 |
-| Scheduler | 应用内定时任务（cron 表达式；需保持 TUI 运行） |
-
-### Web 模式（浏览器界面）
-
-```bash
-python process_articles.py web            # 自动打开浏览器
-python process_articles.py web --port 8765 --no-open
-```
-
-启动后终端会打印带 token 的地址；**这个 token 是必须的**，直接访问 `127.0.0.1:8765` 只能看到页面、调不通接口（服务能写你的硬盘、读你的 API Key，所以不能裸奔）。
-
-| 页面 | 功能 |
-|------|------|
-| 状态总览 | 数据源 / LLM / Vision / Vault 四项健康状态、处理统计指标条、可点击的分类分布、最近任务、首启引导与环境告警 |
-| 文章抓取 | 发起抓取（篇数预设、强制重跑二次确认）、实时进度与阶段时间线、逐篇结果、失败清单、运行日志、系统告警（SSE）、中途取消、重试失败文章 |
-| 文章管理 | 搜索 / 分类（可搜索，149 个分类也挑得动）/ 状态筛选、列排序、分页、**详情抽屉**、多选批量重试与批量删除、级联删除、在 Obsidian 打开 |
-| 配置管理 | LLM / Vision / 数据源 / Vault 路径 / 抓取参数 / Web 端口、分区导航、连通性测试、**原生目录选择器**、**未保存改动守卫**、退出应用 |
-| 公众号管理 | 订阅列表（含封面）、按链接添加订阅、取消订阅（需数据源访问令牌，否则列表为空并说明原因） |
-| 数据源状态 | we-mp-rss 可达性、上游返回详情、Docker 启动命令 |
-| 账号管理 | 登录状态、扫码登录地址、令牌有效期与倒计时（需数据源访问令牌，否则显示「查不到」） |
-| 定时任务 | 间隔抓取（1/2/6/12/24h）与保活任务、下次触发倒计时、立即执行、删除；**设定写进 config.json，重启自动恢复** |
-
-界面通用能力：
-
-- **任务坞**：右下角常驻，任何页面都能看到抓取进度、阶段与日志；切页面不会断流。
-- **命令面板**（`⌘K` / `Ctrl+K`）：跳页面、发起/取消抓取、切主题、搜文章标题；列表页按 `/` 聚焦搜索框。
-- **深浅双主题**：默认跟随系统，顶栏一键切换（浅色 → 深色 → 跟随系统），选择记在浏览器本地。
-- 筛选、分页、排序**写进 URL**：刷新、后退、把链接发给别人都不丢状态。
-- 空态 / 加载骨架 / 错误重试三态齐全；`prefers-reduced-motion` 下所有动效自动关闭。
-
-几个要点：
-
-- **只绑 `127.0.0.1`**，且所有 `/api/*` 都需要启动时打印的 token（`X-WX-Token` 头或 `?token=`）。局域网内其它机器访问不到。
-- **密钥只回显掩码**：配置页留空表示「不修改」，不会把已存的 Key 清掉。日志同样过掩码过滤器（`sk-`、`token=`、`Bearer`）。
-- **任务单飞**：同一时刻只允许一个抓取任务，第二个请求返回 409——`processed.json`、MOC、概念页都不能并发写。
-- **调度器常驻**：定时任务跑在 Web 服务进程里，浏览器关掉也照常执行（TUI 时代的定时任务需要 TUI 一直开着）。
-- **退出请用页面上的「退出应用」**（配置管理页底部）。窗口化的 `.app` 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了它。
-- ⚠️ **不要同时用 TUI 和 Web 发起抓取**：两者各自持有任务状态，会争抢 `processed.json` 的写入。要跑就开一个。
-- 进度走 SSE；断线或刷新页面会自动重连并按事件序号补齐，不会丢中间的进度。
-
-### Docker 部署（推荐）
-
-一条命令拉起数据源 + Web 服务：
-
-```bash
-cd ~/path/to/wx-obsidian
-cp deploy/wx-obsidian/.env.example deploy/wx-obsidian/.env
-# 生成一个稳定令牌；不设的话每次重启 URL 都会变，收藏就失效了
-sed -i '' "s|^WX_WEB_TOKEN=.*|WX_WEB_TOKEN=$(openssl rand -base64 24)|" deploy/wx-obsidian/.env
-
-docker compose up -d --build
-docker compose ps                     # we-mp-rss 与 wx-obsidian 都应为 healthy
-```
-
-然后打开 `http://127.0.0.1:8765/?token=<deploy/wx-obsidian/.env 里的 WX_WEB_TOKEN>`。
-
-> 从旧方式（直接 `cd deploy/we-mp-rss && docker compose up -d`）迁过来，先
-> `cd deploy/we-mp-rss && docker compose down`，否则容器名冲突。数据在挂载卷里，不受影响。
-
-| 事项 | 做法 | 为什么 |
-|---|---|---|
-| 只给本机 | `ports` 默认 `127.0.0.1:8765` | 这套服务能写你的 vault、读你的 API Key，不带鉴权不能对外 |
-| 手机/其它设备访问 | `WX_WEB_BIND=0.0.0.0 docker compose up -d`（先读下面的安全提醒） | 明文 HTTP 里的 token 会走在网线上；优先 Tailscale 或 SSH 隧道 |
-| 令牌稳定 | `WX_WEB_TOKEN`（`deploy/wx-obsidian/.env`） | 容器会重启，随机令牌会让收藏的 URL 失效 |
-| 数据在哪 | `~/.wx-obsidian` 与 vault 都是**绑定挂载** | `processed.json` 必须只有一份，否则容器与宿主会把同一篇各处理一遍 |
-| vault 挂载点 | 与宿主机**同一个绝对路径** | `processed.json` 存的是绝对路径，挂到 `/vault` 会让级联删除静默失效 |
-| 数据源地址 | 容器内 `http://we-mp-rss:8001`（compose 注入 `WX_SOURCE_BASE_URL`） | `config.json` 与宿主共用，地址这类随环境变化的值只能按环境区分 |
-| 看日志 | `docker compose logs -f wx-obsidian` | 容器里没有 `~/Library/Logs`；同时落 `~/.wx-obsidian/logs/app.log` |
-| 重启策略 | `on-failure` | 这样网页上的「退出应用」才真的是「停」，不会被 Docker 立刻拉起 |
-| 换端口 | `WX_WEB_PORT=8766 docker compose up -d` | 与其它实例并存 |
-
-容器里的来源放行开关（`WX_ALLOW_REMOTE=1`）看着像放宽了安全，其实不是：经发布端口进来的连接，
-容器看到的客户端 IP 是**容器网关**（实测 `192.168.117.1`），不放行就连宿主自己的浏览器都会 403。
-真正的边界是上表第一行的宿主端口绑定——容器内这一层本来也拿不到真实来源 IP。
-**token 校验在任何情况下都强制。**
-
-镜像里不含 TUI（构建时排除 `textual`），容器也不写宿主机的 `~/Library/Logs`。
-
-### 可选：桌面应用（macOS .app）
-
-> 现在的主用方式是上面的 Docker。`.app` 仍然可用、代码与脚本都保留，适合不想常驻 Docker 的场景。
-
-```bash
-./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
-./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg（自用可选）
-./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
-```
-
-```bash
-./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
-./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg（自用可选）
-./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
-```
-
-> 重新安装**必须**用 `--install`（或手工 `rm -rf` 旧包后再 `ditto`），不要 `cp -R` 覆盖：
-> 合并语义会留下上一次构建的前端产物（哈希变了），旧文件不在新包的签名清单里，
-> `codesign --verify` 会报 `a sealed resource is missing or invalid`。
-
-双击即可：读配置里的端口起本地服务 → 自动打开浏览器 → 常驻。要点：
-
-- 用**独立的 Python 3.12 构建 venv**（开发 venv 是 3.9，已 EOL），PyInstaller `onedir` 模式，冷启动秒开；图标由 `packaging/make_icon.py` 生成（无设计稿但至少不是一张白纸）。
-- 自用只需 ad-hoc 签名（脚本已做并校验）；**要分发给别人**得 Developer ID + 公证，否则对方双击会报「已损坏」。
-- **不要从 `~/Downloads` 运行**，装到 `/Applications`。macOS 的 TCC 会拦截 `~/Downloads` 下的读写（本项目早期的 LaunchAgent 就是这么废掉的）；vault 若在 `~/Downloads`，状态总览页会直接提示迁移。
-- 冻结包不读仓库里的 `.env`（密钥不入包），配置与密钥只认 `~/.wx-obsidian/`。
-- `.app` 里不含 TUI（`--exclude-module textual`），TUI 仍可用源码方式运行。
-- **端口被占**：先探测是不是自己人——是就只开浏览器（复用 `~/.wx-obsidian/web.token`），不是就立刻报错，不会傻等超时。
-- **退出**：用网页「配置管理 → 退出应用」（`POST /api/shutdown`），或 `pkill -f wx-obsidian`；终端里 Ctrl+C / SIGTERM 同样有效。
-
-### 账号/公众号页显示「查不到」？
-
-`/feed/*.json` 是公开只读接口，**抓取不需要任何凭据**。但「账号管理」「公众号管理」
-读的是 we-mp-rss 的 `/api/v1/wx/*` 管理接口，需要 Bearer 令牌；没配令牌时上游返回
-401，界面只会显示「查不到 / 未登录」，并给出取令牌的命令。令牌是 JWT，配置页会显示
-到期时间——默认有效期见 `deploy/we-mp-rss` 的 `TOKEN_EXPIRE_MINUTES`，取法见
-[`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
-
-### 排错：日志在哪
-
-Docker 部署直接看容器输出（和 `.app` 一样，日志同时落盘并轮转）：
-
-```bash
-docker compose logs -f wx-obsidian              # 实时
-tail -f ~/.wx-obsidian/logs/app.log             # 容器内的落盘日志（随 config 目录挂载到宿主）
-```
-
-`.app` / 源码方式下落在 `~/Library/Logs/wx-obsidian/app.log`（2MB × 3 轮转）；
-冻结包是 `console=False` 打包的、没有终端，所以它还会接管 stdout/stderr，否则管线的 `print()` 全丢。
-
-日志里包含 `print()` 出来的管线进度（冻结包会自动接管 stdout/stderr），并且 `sk-`、`token=`、`Bearer` 都会被掩码 —— 排错通道本身不能变成泄漏面。启动阶段失败（端口冲突、配置损坏）除了写日志还会弹一个系统对话框，不会静默什么都不发生。
-
-冻结包的端到端自检（**不花 API 费用、不碰真实 vault**，用临时 HOME + 本地 stub 上游真跑一轮抓取并断言笔记落盘）：
-
-```bash
-.venv/bin/python packaging/smoke_frozen.py            # 用 dist/wx-obsidian.app
-.venv/bin/python packaging/smoke_frozen.py --keep     # 保留临时目录便于排查
-```
-
-### 换过 Vault 路径之后
-
-`processed.json` 里记的 `file` 是绝对路径。搬动 Vault 后必须跑一次迁移，否则**级联删除会静默失效**（去重不受影响，因为去重按文章 ID）：
-
-```bash
-python process_articles.py migrate-vault /Users/you/Documents --dry-run   # 先预览
-python process_articles.py migrate-vault /Users/you/Documents             # 再执行
-```
-
-另外 Obsidian 是**按绝对路径**注册仓库的，搬完还要在 Obsidian 里用「打开文件夹作为仓库」重新选一次，否则点「打开」会报 Vault not found。
-
-### 级联删除
-
-```bash
-python process_articles.py delete "文章标题或ID"
-```
-
-清理范围：文章 `.md` 文件、分类 `_MOC.md` 中的条目、概念页面中的相关链接（无剩余链接时删除概念页面）、日归档文件中的条目、`processed.json` 中的记录。
-
-## 架构
-
-### 整体流程
-
-```
-process_articles.py
-    ├── CLI 模式 -> wx_obsidian/cli.py -> Orchestrator
-    ├── TUI 模式 -> wx_obsidian/tui/   -> Orchestrator
-    └── Web 模式 -> wx_obsidian/web/   -> Orchestrator
-
-Orchestrator（核心编排器）
-    │
-    ├─ Stage 1: Fetch       <- we-mp-rss 拉取文章 + 正文提取
-    ├─ Stage 2: Vision      <- DeepSeek 视觉模型识别图片（可选，失败自动降级）
-    ├─ Stage 3: LLM         <- DeepSeek 生成结构化笔记（有 Vision 时含图片上下文）
-    ├─ Stage 4: Markdown     <- 生成 Obsidian Markdown + 三层格式校验
-    ├─ Stage 5: Image        <- 替换 [IMG:N] 占位符 / 关键词匹配插入图片
-    ├─ Stage 6: Write        <- 写入 Vault 文件
-    ├─ Related               <- 混合关联算法计算文章间相似度（SQLite FTS5 + jieba）
-    └─ Knowledge Graph       <- 更新 MOC、概念页面、子目录拆分
-```
-
-### 6-Stage Pipeline
-
-每篇文章经过 6 个 stage 串行处理，基于函数组合式 pipeline 引擎（`processing/pipeline.py`）：
-
-| Stage | 模块 | 输入 | 输出 |
-|-------|------|------|------|
-| Fetch | `orchestrator.py` | RSS Feed JSON | 文章正文 + 图片列表 |
-| Vision | `processing/vision.py` | 图片 URL 列表 | 图片语义描述（`ImageDescription[]`） |
-| LLM | `processing/llm.py` | 正文 + Skill 规范 + 图片描述 | 结构化 JSON（分类/摘要/概念/正文） |
-| Markdown | `processing/markdown.py` + `output/validator.py` | 结构化 JSON | Obsidian Markdown（格式校验通过） |
-| Image | `processing/images.py` | Markdown + 图片列表 | 插入图片后的 Markdown |
-| Write | `orchestrator.py` | Markdown + 元数据 | Vault 文件 + processed.json 更新 |
-
-Vision API 不可用时自动跳过 Vision stage，LLM 以纯文本模式生成，Image stage 降级到关键词匹配插入图片。
-
-### 知识图谱
-
-系统自动维护三层关联关系：
-
-| 关联类型 | 机制 | 说明 |
-|---------|------|------|
-| 文章 -> 概念 | LLM 提取关键概念 | 文章底部的 `[[概念名]]` 双向链接 |
-| 概念 -> 文章 | 自动追加 backlink | 概念页面 `## 相关文章` 自动聚合引用该概念的所有文章 |
-| 文章 -> 文章 | 混合关联算法 | 每篇最多关联 3 篇，阈值 0.1 |
-
-混合关联算法公式：
-
-```
-score = 0.50 x BM25 + 0.20 x concept_sim + 0.20 x tag_sim + 0.10 x sub_topic_bonus
-```
-
-- **BM25**：SQLite FTS5 全文检索，jieba 中文分词预处理，sigmoid 归一化
-- **概念模糊匹配**：子串包含 -> 1.0，编辑距离 ratio <= 0.3 -> 0.8，非对称 max-avg
-- **标签 Jaccard**：按 `_` 分割为 token 集合后计算 Jaccard 相似度
-- **子主题加分**：同 `sub_topic` 的文章获得额外加分
-- **RRF k 参数**：随语料库大小线性插值，k = 15 + 45 * min(1, N / 300)
-
-索引持久化在 `~/.wx-obsidian/similarity.sqlite`，支持增量更新和双向关联推荐。
-
-### Vault 目录结构
-
-```
-Obsidian Vault/
-└── 公众号文章/
-    ├── _MOC.md               <- 总目录（自动更新）
-    ├── LLM基础/
-    │   ├── sub_topic/        <- 3 篇同主题后自动创建
-    │   └── *.md              <- 文章笔记
-    ├── Agent/
-    ├── Prompt工程/
-    ├── Z归档/                 <- 按日期归档
-    │   └── 26/06/
-    │       └── 07.md
-    └── 概念/
-        ├── Transformer.md    <- 概念页面（自动聚合相关文章）
-        └── RAG.md
-```
-
-## 项目结构
-
-```
-wx-obsidian/
-├── process_articles.py          # 统一入口（CLI / TUI / Web / delete / migrate-vault 子命令）
-├── validate_markdown.py         # Markdown 格式校验（向后兼容入口）
-├── docker-compose.yml           # 一条命令拉起全部服务（include 引入 we-mp-rss 配方）
-├── .dockerignore               # 上下文瘦身（不带 .venv312/.pnpm-store/dist 进构建）
-├── deploy/we-mp-rss/            # 数据源部署（派生镜像 + 发布时间回填补丁 + 配置）
-├── deploy/wx-obsidian/          # Web 服务镜像（多阶段：node 构建前端 → python 运行）
-├── packaging/                   # macOS 打包
-│   ├── build_app.sh             # 构建 .app（3.12 venv + PyInstaller + ad-hoc 签名 + 自检）
-│   ├── wx-obsidian.spec         # PyInstaller 配置（资源、hiddenimports、Info.plist）
-│   ├── entry_web.py             # 冻结包入口（driving web.main）
-│   ├── make_icon.py             # 生成 AppIcon.icns
-│   ├── AppIcon.icns             # 图标（脚本生成，入库保证可复现）
-│   └── smoke_frozen.py          # 冻结包端到端冒烟（临时 HOME + stub 上游，零费用）
-├── pyproject.toml               # Python 项目配置 + ruff/mypy 配置
-├── .env.example                 # 环境变量模板
-├── run.sh                       # 手动跑一轮的启动脚本（./run.sh [--limit N]）
-│
-├── prompts/
-│   ├── summarize_article.txt    # 主 prompt（string.Template, $variable 占位符）
-│   └── refine_with_images.txt   # 图片修订 prompt
-│
-├── skills/                      # AI 输出控制 Skill（改 Skill 即改笔记风格）
-│   ├── article-body/SKILL.md    # 章节结构（4-6 节）、写作风格、图片规范
-│   ├── classification/SKILL.md  # category 选择（15 个预设）、sub_topic 提取规则
-│   └── note-metadata/SKILL.md   # frontmatter 格式、摘要、概念提取、相关主题
-│
-└── wx_obsidian/                 # 核心 Python 包
-    ├── cli.py                   # CLI 入口（argparse, 调用 Orchestrator）
-    ├── orchestrator.py          # 核心编排器（6-stage pipeline, TUI/CLI 共享）
-    ├── config_manager.py        # 配置管理（~/.wx-obsidian/config.json, 连通性测试）
-    ├── config.py                # 旧版配置读取（processed.json, .env, Skill 加载）
-    ├── models.py                # 全局数据模型（ProcessingResult, HealthStatus, Feed 等）
-    ├── batch.py                 # 批量并行处理 + 指数退避重试
-    ├── scheduler.py             # 应用内定时调度（APScheduler，仅应用运行期间生效）
-    ├── vault_migration.py       # 换 Vault 路径时修正配置与 processed.json 的绝对路径
-    ├── web/                     # Web 界面（与 tui/、cli.py 平级，只依赖 Orchestrator）
-    │   ├── runtime.py           # 装配 ConfigManager + 数据源 + Orchestrator + Scheduler
-    │   ├── api.py               # FastAPI 应用工厂（REST + SSE + 安全中间件 + 静态托管）
-    │   ├── jobs.py              # 管线任务单飞 + 事件缓冲（线程安全的进度桥接）
-    │   ├── articles.py          # 文章列表投影 / 级联删除 / Obsidian 跳转
-    │   ├── fs.py                # 目录浏览 + macOS 原生目录选择面板（osascript）
-    │   ├── logs.py              # 日志环形缓冲（WARNING+，供页面看系统告警）
-    │   ├── scheduling.py        # 定时任务：设定持久化到 config.json，重启自动恢复
-    │   ├── logging_setup.py     # 日志落盘 + 轮转 + 密钥掩码 + stdout/stderr 接管
-    │   ├── __main__.py          # 启动器（选端口 / 单实例交接 / 开浏览器 / 退出接口）
-    │   ├── frontend/            # Vue 3 + Vite + Tailwind v4 + Reka UI 源码（自建设计系统）
-    │   └── static/              # 前端构建产物（pnpm build 生成，不入库）
-    ├── sources/
-    │   ├── base.py              # ArticleSource 协议（编排层只依赖此抽象）
-    │   ├── factory.py           # 数据源工厂（按 WX_SOURCE / source.type 选择）
-    │   ├── we_mp_rss.py         # we-mp-rss API 客户端
-    │   └── rss.py               # 取文契约 + 微信文章正文提取
-    │
-    ├── processing/
-    │   ├── pipeline.py          # Pipeline 引擎（函数组合式 stage）
-    │   ├── models.py            # Pipeline 数据模型（PipelineContext, ImageDescription）
-    │   ├── vision.py            # 多模态 Vision API（广告过滤 + 并发调用）
-    │   ├── llm.py               # DeepSeek API 调用 + prompt 构建 + 响应解析
-    │   ├── images.py            # 图片提取 + 语义匹配 + 自动插入
-    │   ├── markdown.py          # Markdown 生成（frontmatter + body + 假图片清除）
-    │   └── similarity.py        # 文章相似度（SQLite FTS5 + jieba + BM25F + RRF）
-    │
-    ├── output/
-    │   ├── vault.py             # Obsidian Vault 操作（MOC、概念页面、分类、子目录）
-    │   ├── validator.py         # Markdown 格式校验与自动修复
-    │   └── cleanup.py           # 文章级联删除
-    │
-    └── tui/                     # Textual TUI 界面
-        ├── app.py               # TUI 主应用
-        ├── screens/             # Home/Container/Account/Feeds/Config/Fetch/Scheduler
-        └── widgets/             # 自定义组件（状态指示器等）
-```
-
-### 依赖关系
-
-```
-cli.py / tui/app.py
-    └── orchestrator.py        # 核心编排，被 CLI 和 TUI 共享
-            ├── sources/rss.py         # 数据获取
-            ├── processing/*           # 处理层
-            ├── output/*               # 输出层
-            └── batch.py               # 并行执行
-
-config.py（最底层，被所有模块依赖）
-config_manager.py（配置管理 + 连通性测试，被 orchestrator/tui 依赖）
-```
-
-`sources/`、`processing/`、`output/` 之间不互相依赖，通过 orchestrator 编排。
-
-## Skill 系统
-
-3 个 Skill 文件协同控制 AI 输出，修改 Skill 即可调整笔记风格，无需改代码：
-
-| Skill | 路径 | 职责 |
-|-------|------|------|
-| `article-body` | `skills/article-body/SKILL.md` | 章节结构（4-6 节）、写作风格（"拓展思路，而非罗列信息"）、表格使用、图片插入规范 |
-| `classification` | `skills/classification/SKILL.md` | category 选择（15 个预设）、sub_topic 提取规则、分类边界判断 |
-| `note-metadata` | `skills/note-metadata/SKILL.md` | frontmatter 格式、摘要、概念提取、相关主题 |
-
-Prompt 模板 `prompts/summarize_article.txt` 使用 `string.Template` 的 `$variable` 占位符，运行时注入 3 个 Skill 内容 + 已有知识库索引。
-
-## 分类体系
-
-4 组 15 个主分类，支持运行时动态新增：
-
-| 分类组 | 分类 |
-|--------|------|
-| 基础领域 | LLM基础、Agent、多Agent协同、上下文工程、多模态与视觉、具身智能 |
-| 技术专题 | Prompt工程、RAG、训练与微调、AI基础设施、AI编程、MCP |
-| 工程实践 | Harness Engineering |
-| 产业 | AI产业生态 |
-| 兜底 | 其他 |
-
-同一 `sub_topic` 积累 3 篇文章后，自动创建子目录聚合。
-
-## 格式保障
-
-每篇文章生成后经过三层格式保障：
-
-1. **自动修复**（`validate_and_fix`）：frontmatter 校验、代码块闭合、表格语法、全角字符、连续空行
-2. **结构性检测**（`detect_format_issues`）：基于 mistune 解析，检测表格渲染失败、代码块未闭合等自动修复无法处理的问题
-3. **LLM 反馈修正**（`fix_format_issues`）：将结构性问题反馈给 LLM 重新生成，再校验直到通过
-
-## 生成笔记示例
+公众号文章 → Obsidian 知识库自动化流水线：从 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 抓取公众号文章，交给 DeepSeek 生成结构化笔记，写进 Obsidian Vault，并自动维护双向链接与知识图谱。
+提供 CLI、TUI（终端界面）、Web（浏览器界面）三种用法；一条 `docker compose up -d --build` 就能跑起来。
+
+<p align="center">
+  <img src="assets/web-dashboard.png" alt="状态总览页：数据源 / LLM / Vision / Vault 四项连通性检查、处理统计与分类分布" width="860">
+</p>
+
+## 特性
+
+- **三种用法共用一套编排器**：命令行批量处理、[Textual](https://textual.textualize.io/) TUI、FastAPI + Vue 浏览器界面
+- **增量抓取**：按 `processed.json` 去重，处理过的文章不会重复花钱
+- **并行 + 重试**：ThreadPoolExecutor 并行，指数退避重试（最多 3 次，覆盖 429 / 5xx / 网络错误）
+- **多模态 Vision**：视觉模型为 LLM 提供图片语义描述；Vision 不可用时自动降级为纯文本 + 关键词匹配插图，不中断管线
+- **改 Skill 就能改笔记风格**：章节结构、分类规则、frontmatter 由 3 个 Skill 文件控制，调风格不用改代码
+- **自动成图**：`[[双向链接]]` + 概念页面 + MOC；文章间相似度用 SQLite FTS5/BM25F + jieba + 概念模糊匹配 + 标签 Jaccard，经 RRF 排名融合
+- **三层格式保障**：自动校验修复 → mistune 结构性检测 → LLM 反馈修正
+- **级联删除 / 应用内调度 / 可换模型渠道**：一条命令删干净一篇文章及其关联数据；定时任务常驻 Web 服务进程；`config.json` 里加一个 provider 即可换模型
+
+## 生成的笔记长什么样
 
 ```markdown
 ---
@@ -515,14 +41,14 @@ url: "https://mp.weixin.qq.com/..."
 ---
 
 ## 摘要
-本文深度拆解了 Claude Code 的工程架构，核心论点是其竞争力源于 12 层渐进式包装...
+本文深度拆解 Claude Code 的工程架构，核心论点是其竞争力源于 12 层渐进式包装……
 
 ## 核心观点
-- **胖核心设计**：query.ts 刻意保持 785KB 单文件，保证核心循环原子性
-- **开闭原则**：所有扩展不修改核心循环，新增功能 = 新增工具/包装层
+- **胖核心设计**：query.ts 刻意保持单文件，保证核心循环原子性
+- **开闭原则**：所有扩展不修改核心循环，新增功能 = 新增工具 / 包装层
 
 ## 一、核心架构
-Claude Code 采用了"胖核心"设计，query.ts 刻意保持 785KB 单文件...
+Claude Code 采用了「胖核心」设计：query.ts 刻意保持单文件，保证核心循环的原子性……
 
 ![架构全景图](https://mmbiz.qpic.cn/...)
 
@@ -531,101 +57,279 @@ Claude Code 采用了"胖核心"设计，query.ts 刻意保持 785KB 单文件..
 - [[Context Engineering]]：构建高信噪比上下文供给系统的工程方法论
 
 ## 相关主题
-- [[另一篇已有的文章]]
 - [[RAG]]
 ```
 
-> 来源信息（`source`、`url`）已包含在 frontmatter 中，正文不再重复。
+> 来源信息（`source`、`url`）已经在 frontmatter 里，正文不再重复。
 
-## 配置说明
+## 快速开始
 
-### 环境变量（.env）
+需要：Docker、[DeepSeek API Key](https://platform.deepseek.com/)。不想用 Docker 就走源码方式（Python 3.9+），见下面的「运行方式」。
+
+**1. 起服务**
+
+```bash
+git clone https://github.com/hxxxi-malog/wx-obsidian.git
+cd wx-obsidian
+
+# 数据源后台账号
+cp deploy/we-mp-rss/.env.example deploy/we-mp-rss/.env     # 填 WERSS_USER / WERSS_PASS
+
+# Web 访问令牌（留空则每次重启随机生成，收藏的 URL 会失效）
+cp deploy/wx-obsidian/.env.example deploy/wx-obsidian/.env
+openssl rand -base64 24                                    # 把这串填进 WX_WEB_TOKEN=
+
+docker compose up -d --build
+docker compose ps                                          # 两个都应显示 Up 且 (healthy)
+```
+
+默认挂载 `~/Documents/公众号文章` —— 这是 `obsidian.vault_path` 与 `articles_dir` 拼出来的**文章目录**，容器内外用**同一个绝对路径**（`processed.json` 存的就是绝对路径）；你的文章目录在别处就 `export WX_VAULT_DIR=/path/to/公众号文章` 再起。
+
+**2. 初始化数据源**
+
+打开 <http://localhost:8001>，完成初始化 → 扫码登录微信读书 → 添加要订阅的公众号。只想单独跑数据源：`cd deploy/we-mp-rss && docker compose up -d --build`。
+采集通道固定为 `weread_mp`（微信读书 Web），绕开公众平台后台接口的 `ret=200013` 风控；原 WeWe RSS 已归档、其闭源中转下线，所以改用 we-mp-rss —— 为什么用派生镜像、怎么升级补丁见 [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
+
+**3. 配置并抓取**
+
+打开 `http://127.0.0.1:8765/?token=<上一步的 WX_WEB_TOKEN>` —— **token 是必须的**，直接访问只能看到页面、调不通接口（这个服务能写你的硬盘、读你的 API Key）。
+
+1. 「配置管理」填 **DeepSeek API Key** 和 **Vault 路径**，点「测试连通性」
+2. 「文章抓取」发起抓取，可以先只跑 5 篇
+3. 「文章管理」看结果；在 Obsidian 里打开 Vault，Graph View 就是知识图谱
+
+## 运行方式
+
+| 方式 | 入口 | 说明 |
+|------|------|------|
+| Docker（推荐） | `docker compose up -d --build` | 数据源 + Web 界面，见上 |
+| CLI | `python process_articles.py` | 批量跑一轮，不常驻 |
+| TUI | `python process_articles.py tui` | 终端图形界面 |
+| Web | `python process_articles.py web` | 浏览器界面，与容器里那个是同一个 |
+
+源码方式先装依赖：`uv sync`（推荐）或 `pip install -e .`。
+
+**CLI**
+
+```bash
+python process_articles.py                   # 处理所有未处理的文章
+python process_articles.py --limit 5         # 只处理 5 篇
+python process_articles.py --force           # 忽略 processed.json 去重账本，强制重跑
+python process_articles.py --article-id <id> # 只处理指定 ID
+python process_articles.py delete "标题或ID"  # 级联删除一篇文章的全部关联数据
+./run.sh --limit 5                           # 同上，额外把输出追加到 logs/run.log
+```
+
+**TUI**：`python process_articles.py tui`，八个界面 —— Home（概览）/ Container（数据源状态）/ Account（登录与保活）/ Feeds（订阅管理）/ Config（配置 + 连通性测试）/ Fetch（抓取）/ Articles（文章列表 + 级联删除）/ Scheduler（应用内定时，**仅 TUI 运行期间生效**）。
+
+<p align="center">
+  <img src="assets/tui-home.png" alt="TUI 首页：状态、已处理篇数与编号导航" width="820">
+  <br><sub>TUI 首页：健康状态、处理统计与编号导航（数字键切换，底部常驻快捷键）</sub>
+</p>
+
+**Web**
+
+```bash
+python process_articles.py web                  # 自动打开浏览器
+python process_articles.py web --port 8765 --no-open
+# 默认只绑 127.0.0.1；要对外监听得用模块入口（web 子命令只透传 --port / --no-open）
+python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
+# 等价的 env 写法：WX_WEB_HOST=0.0.0.0 python process_articles.py web
+```
+
+八个页面：状态总览 / 文章抓取 / 文章管理 / 配置管理 / 公众号管理 / 数据源状态 / 账号管理 / 定时任务。
+文章管理页有搜索 / 筛选 / 排序 / 分页 / 详情抽屉 / 多选批量删除 / 级联删除 / 在 Obsidian 打开；配置页有原生目录选择器和「未保存改动」守卫；列表页按 `/` 聚焦搜索框。
+通用能力：常驻**任务坞**（切页面不断流）、**命令面板**（`⌘K`）、深浅双主题、筛选与分页状态写进 URL（刷新、后退、发链接都不丢）、空态 / 骨架 / 错误三态齐全、`prefers-reduced-motion` 下动效自动关闭。
+几件必须知道的事：
+
+- **只绑 `127.0.0.1`，除 `/api/ping` 外的所有 `/api/*` 都要启动时打印的 token**（`X-WX-Token` 头或 `?token=`），局域网内其它机器访问不到；进度走 SSE，断线或刷新会自动重连并按事件序号补齐
+- **密钥只回显掩码**：配置页留空表示「不修改」，不会清掉已存的 Key；日志同样过掩码过滤器（`sk-` / `token=` / `Bearer`）
+- **任务单飞**：同一时刻只允许一个抓取任务，第二个请求返回 409 —— `processed.json`、MOC、概念页都不能并发写
+- **⚠️ 不要同时用 TUI 和 Web 发起抓取**：两者各自持有任务状态，会争抢 `processed.json`，要跑就开一个
+- **退出请用页面上的「退出应用」**（`POST /api/shutdown`）：窗口化的 `.app` 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了它；终端里 Ctrl+C / SIGTERM，或 `pkill -f wx-obsidian` 同样有效
+
+<p align="center">
+  <img src="assets/web-run.png" alt="文章抓取页：处理条数预设、强制重跑开关、实时进度与阶段时间线" width="820">
+  <br><sub>文章抓取：处理条数与强制重跑、实时进度、阶段时间线、失败清单</sub>
+</p>
+
+<p align="center">
+  <img src="assets/web-articles.png" alt="文章管理页：搜索、分类与状态筛选、详情抽屉、多选批量删除、在 Obsidian 打开" width="820">
+  <br><sub>文章管理：搜索 / 筛选 / 详情抽屉 / 多选批量删除 / 在 Obsidian 打开</sub>
+</p>
+
+## Docker 部署进阶
+
+| 事项 | 做法 | 为什么 |
+|---|---|---|
+| 只给本机 | `ports` 默认 `127.0.0.1:8765` | 这套服务能写你的 vault、读你的 API Key |
+| 手机 / 其它设备访问 | `WX_WEB_BIND=0.0.0.0 docker compose up -d` | 明文 HTTP 里的 token 会走在网线上，优先 Tailscale 或 SSH 隧道 |
+| 换端口 | `WX_WEB_PORT=8766 docker compose up -d` | 与其它实例并存 |
+| 令牌稳定 | `WX_WEB_TOKEN`（`deploy/wx-obsidian/.env`） | 容器会重启，随机令牌会让收藏的 URL 失效 |
+| 数据在哪 | `~/.wx-obsidian` 与 vault 都是**绑定挂载** | `processed.json` 只能有一份，否则容器与宿主会把同一篇各处理一遍 |
+| vault 挂载点 | 与宿主机**同一个绝对路径** | 记录里存的是绝对路径，挂到 `/vault` 会让级联删除静默失效 |
+| 数据源地址 | 容器内 `http://we-mp-rss:8001`（compose 注入 `WX_SOURCE_BASE_URL`） | `config.json` 与宿主共用，只有地址这类随环境变化的值按环境区分 |
+| 看日志 | `docker compose logs -f wx-obsidian` | 容器里没有 `~/Library/Logs`；同时落盘到 `~/.wx-obsidian/logs/app.log` |
+| 重启策略 | `on-failure` | 这样网页上的「退出应用」才真的是「停」，不会被 Docker 立刻拉起 |
+
+容器里的 `WX_ALLOW_REMOTE=1` 看着像放宽了安全，其实不是：经发布端口进来的连接，容器看到的客户端 IP 是**容器网关**（实测 `192.168.117.1`），不放行连宿主自己的浏览器都会 403。
+**真正的边界是上表第一行的宿主端口绑定；token 校验在任何情况下都强制。**
+
+> 从旧方式（直接 `cd deploy/we-mp-rss && docker compose up -d`）迁过来，先 `cd deploy/we-mp-rss && docker compose down`，否则容器名冲突。数据在挂载卷里，不受影响。
+>
+> 镜像与 `.app` 都不含 TUI（打包时同样排除 `textual` 与 `wx_obsidian.tui`），TUI 只能用源码方式跑。
+
+## 桌面应用（macOS，可选）
+
+主用方式是上面的 Docker；`.app` 仍然可用、脚本都保留，适合不想常驻 Docker 的场景。
+
+```bash
+./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
+./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg
+./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
+```
+
+- 重装**必须**用 `--install`（或先 `rm -rf` 旧包）：`cp -R` 的合并语义会留下上一次构建的前端产物，`codesign --verify` 会报 `a sealed resource is missing or invalid`
+- **不要从 `~/Downloads` 运行**：macOS 的 TCC 会拦截那里的读写，装到 `/Applications`；自用 ad-hoc 签名就够，**要分发给别人**得 Developer ID + 公证
+- 冻结包不读仓库里的 `.env`（密钥不入包），配置与密钥只认 `~/.wx-obsidian/`；端口被占时会先探测是不是自己人，是自己人就只开浏览器，不是就立刻报错
+
+## 配置
+
+| 内容 | 位置 | 谁在用 |
+|------|------|--------|
+| API Key、运行时开关 | `~/.wx-obsidian/.env`（模板 [`.env.example`](.env.example)） | CLI / TUI / `.app`；Web 配置页会代写 |
+| Vault 路径、分类、数据源、模型渠道、端口 | `~/.wx-obsidian/config.json` | 所有入口共用 |
+| 去重账本 / 相似度索引 / 日志 | `~/.wx-obsidian/` 下的 `processed.json` / `similarity.sqlite` / `logs/` | 程序自动维护 |
+
+常用环境变量（密钥类模板见 [`.env.example`](.env.example)，容器开关见 [`deploy/wx-obsidian/.env.example`](deploy/wx-obsidian/.env.example)；`WX_SOURCE_BASE_URL` 由 compose 注入、不在任何模板里）：
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `DEEPSEEK_API_KEY` | 是 | DeepSeek API Key（语言模型与视觉模型默认共用） |
-| `DEEPSEEK_BASE_URL` | 否 | API 地址，默认 `https://api.deepseek.com` |
-| `MODEL_NAME` | 否 | 模型名，默认 `deepseek-flash` |
-| `WX_SOURCE` | 否 | 数据源类型，当前仅 `we_mp_rss`（临时覆盖 `source.type`） |
-| `DEBUG` | 否 | 设为 `1` 开启调试（保存 API 原始响应到 `last_response.txt`） |
-| `VISION_API_KEY` | 否 | 独立视觉渠道 Key，留空则与 LLM 共用 |
-| `VISION_BASE_URL` | 否 | Vision API 地址，默认 `https://api.deepseek.com` |
-| `VISION_MODEL_NAME` | 否 | Vision 模型名，默认 `deepseek-flash` |
-| `MAX_VISION_CONCURRENCY` | 否 | Vision 并发数，默认 `10` |
+| `DEEPSEEK_API_KEY` | 是 | LLM 与 Vision 默认共用这一个 Key |
+| `DEEPSEEK_BASE_URL` / `MODEL_NAME` | 否 | 默认 `https://api.deepseek.com` / `deepseek-flash` |
+| `VISION_API_KEY` / `VISION_BASE_URL` / `VISION_MODEL_NAME` | 否 | 独立视觉渠道，留空即与 LLM 共用 |
+| `MAX_VISION_CONCURRENCY` / `VISION_TIMEOUT` / `VISION_MAX_RETRIES` | 否 | 默认 `10` / `120` 秒 / `2` |
+| `WX_SOURCE` / `WX_SOURCE_BASE_URL` | 否 | 数据源类型（当前仅 `we_mp_rss`）与地址覆盖 |
+| `WX_WEB_TOKEN` / `WX_WEB_HOST` / `WX_ALLOW_REMOTE` | 否 | Web 启动期开关，容器部署用 |
+| `DEBUG` | 否 | 只要非空就算开启（写 `DEBUG=0` 也会开！），会把 API 原始响应写到 `last_response.txt` |
 
-> 模型渠道也可完全绕开 `.env`：在 `config.json` 的 `llm.providers` / `vision.providers`
-> 下新增任意 OpenAI 兼容渠道，再把 `llm.active` / `vision.active` 指过去即可切换。
-
-### 项目配置（`~/.wx-obsidian/config.json`）
-
-由 `ConfigManager` 管理，TUI 的 Config 界面可直接编辑。关键字段：
+`~/.wx-obsidian/config.json` 的关键字段（TUI 的 Config 界面可直接编辑）：
 
 ```jsonc
 {
-  "source":   { "type": "we_mp_rss", "base_url": "http://localhost:8001", "timeout": 15 },
+  "source":   { "type": "we_mp_rss", "base_url": "http://localhost:8001", "timeout": 15, "token": "" },
   "fetch":    { "max_days": 7, "max_workers": 5, "feed_limit": 300 },
-  "llm":      { "active": "deepseek", "providers": { "deepseek": { "base_url": "https://api.deepseek.com", "model": "deepseek-flash", "api_key_env": "DEEPSEEK_API_KEY" } } },
-  "vision":   { "active": "deepseek", "providers": { "deepseek": { "model": "deepseek-flash" } }, "inline_images": true },
+  "llm":      { "active": "deepseek", "providers": { "deepseek": { "base_url": "https://api.deepseek.com", "model": "deepseek-flash", "api_key_env": "DEEPSEEK_API_KEY" } }, "max_tokens": 4096, "temperature": 0.7 },
+  "vision":   { "enabled": true, "active": "deepseek", "max_concurrency": 10, "timeout": 120, "max_tokens": 3072, "inline_images": true },
   "obsidian": { "vault_path": "/path/to/vault", "articles_dir": "公众号文章" },
-  "web":      { "port": 8765, "open_browser": true, "log_level": "INFO" },
-  "scheduler":{ "fetch_cron": "0 */2 * * *", "keepalive_interval_days": 7 },
-  "categories": ["LLM基础", "Agent", "..."]
+  "web":      { "port": 8765, "host": "127.0.0.1", "allow_remote": false, "open_browser": true, "log_level": "INFO" },
+  "scheduler":{ "fetch_interval": 0, "keepalive_enabled": false }  // 由 Web 定时任务页写入；出厂默认文件里是 fetch_cron / keepalive_interval_days
 }
 ```
 
-> `web.port` / `web.open_browser` 由 .app 启动器读取；`scheduler.*` 由定时任务页写入（重启后自动恢复）。
+- `web.host` / `web.allow_remote` 是**启动期**设置，改了要重启（容器里用 `WX_WEB_HOST` / `WX_ALLOW_REMOTE` 覆盖）
+- `llm.active` / `vision.active` 指向 `providers` 里任意 OpenAI 兼容渠道：加一个 provider 就能换模型，不用改代码
+- `scheduler.fetch_interval`（小时，`0` = 停用，仅接受 1/2/6/12/24）由 Web 定时任务页写入，重启自动恢复
+- `categories` 由程序维护：分类清单本身在 `skills/classification/SKILL.md`，运行中发现新分类会建目录 / MOC 并追加进这个列表
+
+## 工作原理
+
+```
+process_articles.py / docker compose
+    └── wx_obsidian/orchestrator.py           # 6-stage 编排器，CLI / TUI / Web 共用
+            ├── sources/     数据获取（we-mp-rss 客户端 + 正文提取）
+            ├── processing/  处理层（Vision / LLM / Markdown / 图片 / 相似度）
+            ├── output/      输出层（Vault 写入 / 格式校验 / 级联删除）
+            └── batch.py     并行执行 + 指数退避重试
+```
+
+| Stage | 模块 | 做什么 |
+|-------|------|--------|
+| 1 Fetch | `orchestrator.py` | 拉取文章 + 正文提取 |
+| 2 Vision | `processing/vision.py` | 图片语义描述（可选，失败自动降级为纯文本） |
+| 3 LLM | `processing/llm.py` | 生成结构化 JSON（分类 / 摘要 / 概念 / 正文） |
+| 4 Markdown | `processing/markdown.py` + `output/validator.py` | 生成并校验 Obsidian Markdown |
+| 5 Image | `processing/images.py` | 替换 `[IMG:N]` 占位符 / 按关键词匹配插入图片 |
+| 6 Write | `orchestrator.py` | 写入 Vault + 更新 `processed.json` |
+
+之后还有两步收尾：算文章间相似度（`processing/similarity.py`），更新 MOC / 概念页面 / 子目录拆分。
+Vault 结构：`_MOC.md`（总目录）→ 各分类目录（`LLM基础/`、`Agent/` …）→ `<sub_topic>/` 子目录（同一子主题满 3 篇后自动建目录并迁移），另有 `Z归档/26/06/07.md` 按日期归档、`概念/` 自动聚合引用它的文章。
+关联关系有三层：文章 → 概念（LLM 提取的 `[[概念名]]`）、概念 → 文章（backlink 自动聚合）、文章 → 文章（混合关联算法，每篇最多 3 篇，阈值 0.05）。
+
+## 定制输出（Skill / Prompt / 分类）
+
+3 个 Skill 文件控制 AI 输出，改 Markdown 就能改风格，不用动 Python：
+
+| Skill | 路径 | 控制 |
+|-------|------|------|
+| `article-body` | `skills/article-body/SKILL.md` | 章节结构（4-6 节）、写作风格、表格与图片规范 |
+| `classification` | `skills/classification/SKILL.md` | category 选择、sub_topic 提取规则 |
+| `note-metadata` | `skills/note-metadata/SKILL.md` | frontmatter 格式、摘要、概念提取、相关主题 |
+
+Prompt 拆成 system / user 两份（`string.Template` 的 `$变量` 占位符），改文件即可换 prompt：`prompts/summarize_system.txt`（静态，可被 KV cache 复用）、`summarize_user.txt`（注入正文 + Skill + 图片上下文）、`refine_system.txt` / `refine_user.txt`（图片修订）。
+
+分类清单的唯一事实来源是 `skills/classification/SKILL.md`（Python 侧不硬编码分类表）；预设 6 组，运行时遇到新分类会自动建目录 / MOC 并追加进 `config.json` 的 `categories`。
+预设分组 —— 模型层：LLM基础、训练与微调、多模态与视觉、具身智能；Agent 层：`Agent`（多 Agent 协同、RAG、MCP、上下文工程、Prompt 工程都归在这里）；应用层：AI编程、后端技术；工程层：Harness Engineering；生态层：AI产业生态；兜底：其他。
+冲突时「专题优先于基础领域」：讲微调 → 训练与微调，讲推理优化 → LLM基础。
+
+## 常见问题
+
+**账号管理 / 公众号管理页显示「查不到」。**
+`/feed/*.json` 是公开只读接口，**抓取不需要任何凭据**；但这两个页面读的是 we-mp-rss 的 `/api/v1/wx/*` 管理接口，需要 Bearer 令牌。
+没配时上游返回 401，界面只会显示「查不到 / 未登录」。令牌是 JWT，配置页会显示到期时间；取令牌的命令见 [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
+
+**日志在哪？**
+Docker 用 `docker compose logs -f wx-obsidian`（同时落盘 `~/.wx-obsidian/logs/app.log`）；源码 / `.app` 落在 `~/Library/Logs/wx-obsidian/app.log`（2MB × 3 轮转）。
+日志里有 `print()` 出来的管线进度（冻结包与容器会接管 stdout，源码方式 `print()` 仍在终端），`sk-` / `token=` / `Bearer` 都会被掩码。冻结包（`.app`）启动失败（端口冲突、配置损坏）还会弹系统对话框，不会静默。
+冻结包的端到端自检（临时 HOME + 本地 stub 上游，**不花 API 费用、不碰真实 vault**）：
+
+```bash
+.venv/bin/python packaging/smoke_frozen.py            # 需要先跑 build_app.sh
+.venv/bin/python packaging/smoke_frozen.py --keep     # 保留临时目录便于排查
+```
+
+**搬过 Vault 之后。**
+`processed.json` 里记的 `file` 是绝对路径，搬完必须迁移一次，否则**级联删除会静默失效**（去重不受影响，按文章 ID）：
+
+```bash
+python process_articles.py migrate-vault /Users/you/Documents --dry-run   # 先预览
+python process_articles.py migrate-vault /Users/you/Documents             # 再执行
+```
+
+Obsidian 是**按绝对路径**注册仓库的，搬完还要用「打开文件夹作为仓库」重选一次，否则点「打开」会报 Vault not found。
+
+**有没有系统级定时任务？**
+没有（原 macOS LaunchAgent 因 macOS 15 的 TCC 读不到 `~/Downloads`，已移除）。
+要自动化就用 Web 的「定时任务」页：调度器常驻 Web 服务进程，设定写进 `config.json` 并在启动时恢复，浏览器关掉照常执行。
+
+**想删一篇已经生成的文章？** 见上面 CLI 小节里的 `delete` 子命令：它会清理文章 `.md`、分类 `_MOC.md` 里的条目、概念页面里的相关链接（无剩余链接时删除概念页面）、日归档条目和 `processed.json` 记录。
 
 ## 开发
 
 ```bash
-# 代码检查
-ruff check .
-
-# 格式化
-ruff format .
-
-# 类型检查
-mypy wx_obsidian/ process_articles.py validate_markdown.py
-
-# 校验 Markdown 文件
-python validate_markdown.py <file.md>
-python validate_markdown.py --dir <directory>
+ruff check .                                                # lint
+ruff format .                                               # format
+mypy wx_obsidian/ process_articles.py validate_markdown.py   # 类型检查
+pytest                                                      # 单元测试
+python validate_markdown.py --dir <directory>                # 校验 Markdown
 ```
 
-### 编码规范
+`tests/conftest.py` 会把 `~/.wx-obsidian/` 下的真实状态文件重定向到临时目录，跑测试不会动你的 `processed.json`。
 
-- Python 3.9+，使用 `from __future__ import annotations`
-- Ruff：line-length 100, target py39, E501 除外（f-string prompt 模板无法拆行）
-- mypy strict 模式
-- 路径安全：LLM 返回的 category/sub_topic 经 `re.sub(r'[<>:"/\\|?*]', "_", ...)` 过滤
-- 原子写入：持久化文件使用 `tempfile + os.replace`
-- 异常规范：禁止裸 `except:`，外部 API 必须有 timeout
-- 依赖隔离：`sources/`、`processing/`、`output/` 之间不互相依赖
+前端（`wx_obsidian/web/frontend`，自建设计系统：Tailwind v4 + Reka UI + Phosphor）：`pnpm install` 后 `pnpm verify`（= `type-check && style-guard && test && build`，四道门缺一不可），开发用 `pnpm dev`（5173，`/api` 代理到 8765）。
 
-### 前端开发（`wx_obsidian/web/frontend`）
+项目结构、依赖流向、编码红线（路径安全 / 原子写入 / 异常规范 / 依赖隔离）、改动影响地图见 [`AGENTS.md`](AGENTS.md)（[`CLAUDE.md`](CLAUDE.md) 是同一份内容的镜像）。
 
-```bash
-cd wx_obsidian/web/frontend
-pnpm install                 # pnpm 12；构建脚本白名单在 pnpm-workspace.yaml
+## 免责声明
 
-pnpm dev                     # Vite 开发服务器（5173），/api 代理到 127.0.0.1:8765
-pnpm type-check              # vue-tsc，0 error 是硬门槛
-pnpm test                    # vitest：API 客户端、任务事件归约、格式化、配置 patch
-pnpm style-guard             # 风格守卫：禁 element-plus / 裸色值 / emoji / 100vh / 散落的 /api 字面量
-pnpm build                   # 产物落 wx_obsidian/web/static/，由 FastAPI 同源托管
+文章正文、图片与生成中的笔记内容会发送到你所配置的 LLM API（默认 DeepSeek）用于生成与修订。
+数据源、Vault、`processed.json` 与相似度索引都只存在你自己的机器上，本项目不上传任何内容到其它第三方。
+请自行确认所抓取内容的版权与使用范围。
 
-# 对正在运行的服务跑一遍浏览器冒烟（8 个页面 + 关键交互 + 截图）
-node scripts/ui-smoke.mjs --base http://127.0.0.1:8765 --token "$WX_WEB_TOKEN" --out /tmp/shots
-```
+## 致谢
 
-- **设计系统**：token 在 `src/styles/tokens.css`（三层：原始 → 语义 → 组件，深浅两套）；
-  业务代码只用语义类（`bg-panel` / `text-ink` / `border-hairline`），不写裸色值。
-- **接口路径唯一事实来源**：`src/lib/api/endpoints.ts`；`tests/test_web/test_frontend_contract.py`
-  会拿它比对 FastAPI 路由表，后端改路由而前端没跟上会直接红灯。
-- 设计文档与实施记录：`docs/design-docs/web-ui-redesign/`（审计、token 规范、逐页方案、验收清单）。
-- 改动界面后请跑：`pnpm type-check && pnpm style-guard && pnpm test && pnpm build`，
-  再按需跑 `ui-smoke`；容器路径改动则额外跑 `docker compose build wx-obsidian`。
+数据源与公众号正文提取依赖 [we-mp-rss](https://github.com/rachelos/we-mp-rss)（部署配方在 `deploy/we-mp-rss/`）；终端界面用 [Textual](https://textual.textualize.io/)，Web 界面用 FastAPI + Vue 3 + Tailwind。
 
-## License
+## 许可
 
 [MIT](LICENSE) © malog
