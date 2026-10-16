@@ -9,9 +9,10 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 _CAPACITY = 300
 
@@ -49,7 +50,7 @@ class LogBuffer(logging.Handler):
         self._seq += 1
         entry = LogEntry(
             seq=self._seq,
-            ts=datetime.fromtimestamp(record.created, tz=timezone.utc)
+            ts=datetime.fromtimestamp(record.created, tz=UTC)
             .astimezone()
             .isoformat(timespec="seconds"),
             level=record.levelname,

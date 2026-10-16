@@ -2,7 +2,7 @@
 name = "wx-obsidian"
 version = "1.0.0"
 description = "公众号文章 → Obsidian 知识库自动化处理器"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31.0",
     "pyyaml>=6.0",
@@ -15,16 +15,16 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff>=0.4.0",
-    # 上界刻意的：mypy 2.x 已移除 Python 3.9 目标，会静默按 3.12 检查，
-    # 于是 `[tool.mypy] python_version = "3.9"` 形同虚设（PEP 604 之类
-    # 的写法不会被拦下）。本包仍声明 requires-python >= 3.9，故钉住 1.x。
-    "mypy>=1.10,<2",
+    # 上界已放开：`mypy>=1.10,<2` 那个上界是为了护住 py3.9 目标（mypy 2.x 移除了
+    # 3.9 目标，会让 `[tool.mypy] python_version = "3.9"` 形同虚设）。底线抬到
+    # 3.12 后，mypy 的目标版本与 requires-python 一致，不再需要钉死。
+    "mypy>=1.10",
     "pytest>=8.0.0",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py312"
 # 上游 we-mp-rss 的整文件副本（仅改了发布时间回填一处）。
 # 保持与上游可 diff 是维护前提，因此不参与本项目的 lint / format。
 extend-exclude = ["deploy/we-mp-rss/patch"]
@@ -41,7 +41,7 @@ known-first-party = ["validate_markdown", "wx_obsidian"]
 extend-immutable-calls = ["fastapi.Body", "fastapi.Query", "fastapi.Depends", "fastapi.Path"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

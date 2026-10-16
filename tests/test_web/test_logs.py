@@ -174,7 +174,7 @@ class _AsgiLogStream:
         while "\n\n" not in self._buffer:
             try:
                 message = await asyncio.wait_for(self._messages.get(), timeout)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise AssertionError(f"{timeout}s 内没有收到新的 SSE 帧") from exc
             if message["type"] == "http.response.start":
                 self.status = int(message["status"])
@@ -198,7 +198,7 @@ class _AsgiLogStream:
             return
         try:
             await asyncio.wait_for(task, timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise AssertionError(f"客户端断开后 SSE 流未在 {timeout}s 内结束") from exc
 
     async def __aexit__(self, *exc_info: Any) -> None:

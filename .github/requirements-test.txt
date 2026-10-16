@@ -5,7 +5,7 @@
 # 干净环境（CI / 新同事）实测缺哪个就报什么错：
 #   pytest-asyncio → tests/test_orchestrator.py 的 2 个 async 用例直接失败
 #                     （"async def functions are not natively supported"）
-#   httpx / httpx2 → tests/test_web/* 的 TestClient 在收集期就报
+#   httpx2        → tests/test_web/* 的 TestClient 在收集期就报
 #                     "starlette.testclient module requires the httpx2 package"
 #   types-PyYAML   → mypy strict 下 `import yaml` 报 import-untyped（3 处）
 #   types-requests → mypy strict 下 `import requests` 报 import-untyped（多处）
@@ -13,10 +13,10 @@
 # 根治办法：把这四项写进 pyproject.toml 的 [project.optional-dependencies] dev，
 # 然后 `uv lock`；那之后本文件即可删除（workflow 里对应的安装步骤一并删掉）。
 #
-# httpx / httpx2 按 Python 版本分叉：uv.lock 在 py3.10+ 解到 starlette 1.8
-# （TestClient 要求 httpx2），py3.9 解到 starlette 0.49（用 httpx）。
-httpx>=0.28; python_version < "3.10"
-httpx2>=2.13; python_version >= "3.10"
+# httpx2 曾经按 Python 版本分叉（3.9 档解到 starlette 0.49 用 httpx、3.10+ 档
+# 解到 starlette 1.8 用 httpx2）；底线抬到 3.12 后锁文件只剩 starlette 1.8，
+# 所以只留 httpx2。
+httpx2>=2.13
 pytest-asyncio>=1.2
 types-PyYAML>=6.0
 types-requests>=2.32

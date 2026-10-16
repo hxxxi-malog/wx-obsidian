@@ -43,7 +43,7 @@ python validate_markdown.py --dir <directory>
 
 # 前端（自建设计系统：Tailwind v4 + Reka UI + Phosphor）
 cd wx_obsidian/web/frontend
-pnpm type-check && pnpm style-guard && pnpm test && pnpm build   # 四道门，缺一不可
+pnpm style-guard && pnpm type-check && pnpm test && pnpm build   # 四道门，缺一不可
 pnpm dev                                                        # 5173，/api 代理到 8765
 node scripts/ui-smoke.mjs --base http://127.0.0.1:8765 --token "$WX_WEB_TOKEN" --out /tmp/shots
 ```
@@ -174,10 +174,10 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `output/vault.py` | Obsidian Vault 操作 | 文件系统操作，改动影响 orchestrator.py |
 | `output/validator.py` | Markdown 格式校验与修复 | 校验规则变更可能影响已生成的文件 |
 | `cli.py` | CLI 入口 | 薄封装，只负责参数解析与调用 Orchestrator |
-| `web/api.py` | Web 接口 + 安全中间件 | 端点签名禁用 `X \| None`：py3.9 下 FastAPI 会运行时求值注解 |
+| `web/api.py` | Web 接口 + 安全中间件 | 端点签名历史上避开 `X \| None`（py3.9 限制，3.12 起已解除） |
 | `web/jobs.py` | 任务单飞 + SSE 事件 | `on_progress` 在工作线程调用，状态只能在事件循环线程内改 |
 | `web/articles.py` | 文章列表/详情/级联删除 | `sort`/`order` 是白名单参数（非法值回落默认顺序），排序必须在分页切片前 |
-| `web/frontend/` | Vue 界面（自建设计系统） | 改动后跑 `pnpm type-check && pnpm style-guard && pnpm test && pnpm build`；产物由 FastAPI 同源托管 |
+| `web/frontend/` | Vue 界面（自建设计系统） | 改动后跑 `pnpm style-guard && pnpm type-check && pnpm test && pnpm build`；产物由 FastAPI 同源托管 |
 | `web/frontend/src/styles/tokens.css` | 设计 token（三层 + 深浅两套） | 改 token 影响全站观感；业务代码只允许语义类，禁裸色值 |
 | `web/frontend/src/styles/veil.css` | 粘性条渐进模糊遮罩（顶栏 / 保存条） | 层数必须 = `lib/scroll.ts` 的 `VEIL_BANDS` = CSS `:nth-child` 规则数；`opacity` 只能落叶子层，否则容器变 backdrop root、模糊失效（spec §3.7） |
 | `web/frontend/src/lib/api/endpoints.ts` | 所有接口路径的唯一事实来源 | 加接口要同步 `tests/test_web/test_frontend_contract.py` 的必选清单 |
@@ -223,9 +223,10 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 
 ## Development Notes
 
-- Python 3.9+ required (uses `from __future__ import annotations` for type hints).
-- FastAPI 端点签名里**不要**用 `X | None`：FastAPI 会在运行时求值端点注解，而 py3.9 不支持 PEP 604 联合类型，会直接建路由失败。可省 body 用 `Body(default_factory=dict)` 表达。
-- Ruff config: line-length 100, target py39, E501 ignored (f-string prompt templates can't be split).
+- Python 3.12+ required (uses `from __future__ import annotations` for type hints；
+  `requires-python` / `[tool.mypy] python_version` / CI / 运行时镜像四者都钉在 3.12).
+- FastAPI 端点签名里 `X | None` 的历史禁令已解除：那是 py3.9 的限制（运行时求值注解 + 无 PEP 604），底线抬到 3.12 后新端点可以正常用。现有签名保持原样；可省 body 仍用 `Body(default_factory=dict)` 表达。
+- Ruff config: line-length 100, target py312, E501 ignored (f-string prompt templates can't be split).
 - `MAX_PROMPT_CONTENT = 100000` and `MAX_ARTICLE_LENGTH = 100000` cap content sent to the API.
 - Path safety: LLM-returned category/sub_topic names are sanitized with `re.sub(r'[<>:"/\\|?*]', "_", ...)`.
 - Images are inserted programmatically (not by LLM) via keyword-overlap matching between image context and markdown sections.
@@ -234,7 +235,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 - Web 启动器读 `web.port` / `web.open_browser` / `web.log_level`（`_DEFAULT_CONFIG` 已补）；端口被占时先 `GET /api/ping` 判断是自己人（只开浏览器后退出）还是别人（立刻报错，不等超时）。
 - `create_app(on_quit=...)` 是「退出应用」的注入点 → `POST /api/shutdown`。容器里没有别的停法（`docker stop` 是硬杀），所以界面上的退出入口是优雅收尾的主路径；省略 `on_quit` 时该接口如实返回 501。
 - 日志必须落盘：源码方式在 macOS 上落 `~/Library/Logs/wx-obsidian/app.log`，其它平台落 `~/.wx-obsidian/logs/app.log`（2MB×3 轮转）；容器、systemd、nohup 下都没有终端，启动期失败只能靠日志回溯。日志统一过 `MaskSecretsFilter`（`sk-` / `token=` / `Bearer`），写日志失败只降级不拦启动。
-- 打包仍以 **`requires-python = ">=3.9"`** 为准，所以 dev 依赖钉 `mypy>=1.10,<2`：mypy 2.x 已移除 3.9 目标，会静默按 3.12 检查（PEP 604 之类写法就拦不住了）。
+- 打包以 **`requires-python = ">=3.12"`** 为准（与运行时镜像同档），所以 dev 依赖的 mypy 上界已放开为 `mypy>=1.10`：mypy 2.x 需要 >=3.10 且移除了 3.9 目标，而我们现在**就是** 3.12 —— 锁文件里实测升到 2.4.0 且 37 个源文件全绿。
 - 端到端验证不看「能不能启动」，看 `tests/e2e/smoke_web.py`：独立 HOME、临时 cwd、本地 stub 上游真跑一轮，断言笔记落盘 + processed.json/config.json 写入 + 日志掩码 + `POST /api/shutdown` 干净退出。
 - **主用运行方式是 Docker**（`docker compose up -d --build`，见 README 的 Docker 章节）：数据源与 Web 服务一个 compose 项目，`include` 复用 `deploy/we-mp-rss` 的配方，默认只绑 `127.0.0.1`。
 - 容器里有两处必须注意：①**vault 必须挂到与宿主机相同的绝对路径**（`processed.json` 存的是绝对路径，挂 `/vault` 会让级联删除静默失效、记录分叉）；②**必须开 `WX_ALLOW_REMOTE=1`**，因为经发布端口进来的连接，容器看到的客户端 IP 是容器网关（实测 `192.168.117.1`），不放行连宿主浏览器都 403；真正的边界是宿主端口绑定。

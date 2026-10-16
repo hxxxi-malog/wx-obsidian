@@ -34,7 +34,7 @@ wx_obsidian/web/static/
 # pnpm 包存储（在本仓库时会落到根目录，体积可达数百 MB）
 .pnpm-store/
 
-# 3.12 兼容性验证用的独立 venv（T-15a：与 3.9 dev venv 对照跑门禁）
+# 本地额外的独立 venv（曾用于 3.12 兼容性验证；底线已是 3.12，留着以免误提交）
 .venv312/
 
 # 备份文件

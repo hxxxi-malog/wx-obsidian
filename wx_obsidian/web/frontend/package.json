@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "style-guard": "node scripts/style-guard.mjs",
     "ui:smoke": "node scripts/ui-smoke.mjs",
-    "verify": "pnpm type-check && pnpm style-guard && pnpm test && pnpm build",
+    "verify": "pnpm style-guard && pnpm type-check && pnpm test && pnpm build",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -32,9 +32,9 @@
     "@vue/test-utils": "^2.5.1",
     "happy-dom": "^20.14.6",
     "tailwindcss": "^4.3.3",
-    "typescript": "~5.6.0",
+    "typescript": "~6.0.3",
     "vite": "^6.0.0",
     "vitest": "^5.0.3",
-    "vue-tsc": "^2.1.0"
+    "vue-tsc": "^3.3.13"
   }
 }

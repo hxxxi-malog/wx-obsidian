@@ -32,7 +32,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: "3.12"
 
       # 纯标准库，不需要装任何依赖
       - name: .github/scripts/check_secrets.py --history
@@ -60,10 +60,9 @@ jobs:
   dependency-audit:
     name: 依赖漏洞审计（py${{ matrix.python-version }}，只报不拦）
     runs-on: ubuntu-24.04
-    # 两个 Python 档都审。uv.lock 是**按 Python 分档解析**的，同一个包在不同档
-    # 可以是不同版本（starlette：3.9 档 0.49.3、3.12 档 1.8.0）。只审 3.9 那一档
-    # 会两头落空：报出来的是容器里根本不发货的版本，而容器真正跑的 3.12 档
-    # 反而从没被审过。
+    # 只审一档，而且这一档就是容器真正跑的那套：底线抬到 3.12 后，uv.lock 不再按
+    # Python marker 分叉（历史上 3.9 + 3.12 会分叉出 starlette 0.49/1.8、
+    # urllib3 2.6.3/2.8.0），所以单档即全量，不存在「审了个不发货的版本」。
     #
     # 不拦合并，但不再靠 continue-on-error 蒙混：结果写进 job summary + warning
     # 注解，job 自己保持绿色，只有 pip-audit 执行失败才红。这样红叉恒等于
@@ -71,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v5
 

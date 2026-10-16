@@ -21,13 +21,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    ignore:
-      # mypy 2.x 起 requires-python >=3.10，并移除了 Python 3.9 目标 —— 上界一旦
-      # 放开，重新解析锁时会在 >=3.10 档静默换上 2.x，而静态检查 job 只在 3.9
-      # 档跑，CI 不会红。属于「绿灯 + 保护静默消失」，所以在这里堵住。
-      # 理由详见 pyproject.toml 里 mypy 那行的注释。
-      - dependency-name: "mypy"
-        versions: [">=2"]
+    # 这里曾经有一条 `mypy >= 2` 的 ignore（mypy 2.x 移除 3.9 目标，会让
+    # `[tool.mypy] python_version = "3.9"` 形同虚设）。底线抬到 3.12 后理由消失，
+    # 已删除；mypy 2.4.0 实测在本仓库 37 个源文件上全绿。
     groups:
       # 一次 PR 打包所有小版本更新，避免每周收到十几个 PR
       python-deps:
@@ -39,6 +35,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # TypeScript 7 起 typescript 包只导出 ./unstable/*，不再有 ./lib/tsc 子路径，
+      # 而 vue-tsc（含最新的 3.3.13）内部就是 require.resolve('typescript/lib/tsc')。
+      # 升上去必炸 ERR_PACKAGE_PATH_NOT_EXPORTED，且这不是我们能修的：
+      # 上游没发支持 TS 7 的 vue-tsc 之前，typescript 锁在 6.x。
+      # 证据与复现步骤见 .github/CI.md 的「六、前端两个上游坑」。
+      - dependency-name: "typescript"
+        versions: [">=7"]
     groups:
       frontend-deps:
         patterns: ["*"]

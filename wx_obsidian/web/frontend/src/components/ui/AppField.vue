@@ -16,6 +16,14 @@ const props = withDefaults(
   { label: '', hint: '', error: '', required: false, htmlFor: '' },
 )
 
+// 显式声明插槽类型。默认插槽把 id / invalid 交给调用方：
+// vue-tsc 3 起，裸 `<slot :id :invalid />` 不再推断出可解构的 props，
+// 调用方写 `#default="{ id, invalid }"` 会报 TS2304（找不到名称）。
+defineSlots<{
+  default(props: { id: string; invalid: boolean }): unknown
+  labelAction(): unknown
+}>()
+
 const fieldId = useId()
 const controlId = computed(() => props.htmlFor || fieldId)
 </script>

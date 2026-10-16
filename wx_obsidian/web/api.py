@@ -18,7 +18,7 @@ import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -44,9 +44,10 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 # 免鉴权路径：/api/ping 只回应用标识，供第二实例探测
 PUBLIC_PATHS = frozenset({"/api/ping"})
 
-# 端点签名刻意不用 `X | None` / Optional：FastAPI 会在运行时求值端点注解，
-# 而 py3.9 无法求值 `dict[str, Any] | None`（PEP 604 需 3.10）。可省 body 用
-# Body(default_factory=dict) 表达，既保住可选语义又不引入联合类型。
+# 端点签名历史上刻意避开 `X | None` / Optional：FastAPI 会在运行时求值端点注解，
+# 而 py3.9 无法求值 `dict[str, Any] | None`（PEP 604 需 3.10）。底线抬到 3.12 后
+# 这个约束已经消失，新端点可以正常写 `X | None`；现有签名保持原样，不为改而改。
+# 可省 body 仍用 Body(default_factory=dict) 表达，语义更直白。
 TOKEN_HEADER = b"x-wx-token"
 MASK = "****"
 
@@ -439,7 +440,7 @@ def _token_expiry(token: str) -> str:
     if not isinstance(exp, (int, float)):
         return ""
     try:
-        return datetime.fromtimestamp(float(exp), timezone.utc).isoformat()
+        return datetime.fromtimestamp(float(exp), UTC).isoformat()
     except (OverflowError, OSError, ValueError):
         return ""
 
@@ -454,7 +455,7 @@ def source_token_state(runtime: WebRuntime) -> dict[str, Any]:
     expired = False
     if expires_at:
         try:
-            expired = datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc)
+            expired = datetime.fromisoformat(expires_at) <= datetime.now(UTC)
         except ValueError:
             expired = False
     return {"configured": True, "expires_at": expires_at, "expired": expired}

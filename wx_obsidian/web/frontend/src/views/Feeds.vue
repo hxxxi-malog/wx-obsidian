@@ -29,6 +29,13 @@ import { formatDateTime, formatRelative, initialOf, stableHue } from '@/lib/form
 const router = useRouter()
 const toast = useToast()
 
+/**
+ * 含 `//` 的占位文案放这里，模板里只绑变量名。
+ * vue-tsc 3 遇到插槽内属性值里的 `//` 会丢掉插槽 props 作用域并报 TS2304（上游 bug），
+ * 详见 .github/CI.md「六、前端两个上游坑」；style-guard 的 no-double-slash-in-slot-attr 守这条线。
+ */
+const ARTICLE_URL_PLACEHOLDER = 'https://mp.weixin.qq.com/s/...'
+
 interface FeedsPayload {
   feeds: FeedItem[]
   /** 数据源访问令牌是否已配置：决定空态该说哪句话 */
@@ -164,7 +171,7 @@ async function remove(): Promise<void> {
                 type="url"
                 mono
                 clearable
-                placeholder="https://mp.weixin.qq.com/s/..."
+                :placeholder="ARTICLE_URL_PLACEHOLDER"
                 @enter="add"
               />
             </div>

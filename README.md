@@ -1,7 +1,7 @@
 # wx-obsidian
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9+-blue" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/Python-3.12+-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/DeepSeek-API-orange" alt="DeepSeek">
   <img src="https://img.shields.io/badge/we--mp--rss-Docker-green" alt="we-mp-rss">
   <img src="https://img.shields.io/badge/Obsidian-Vault-purple" alt="Obsidian">
@@ -64,7 +64,7 @@ Claude Code 采用了「胖核心」设计：query.ts 刻意保持单文件，�
 
 ## 快速开始
 
-需要：Docker、[DeepSeek API Key](https://platform.deepseek.com/)。不想用 Docker 就走源码方式（Python 3.9+），见下面的「运行方式」。
+需要：Docker、[DeepSeek API Key](https://platform.deepseek.com/)。不想用 Docker 就走源码方式（Python 3.12+），见下面的「运行方式」。
 
 **1. 起服务**
 

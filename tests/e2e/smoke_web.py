@@ -31,7 +31,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,7 @@ FIX_PROMPT_MARKER = "请修正上述问题"
 
 
 def _feed_payload() -> dict[str, Any]:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     body = "".join(
         f"<p>第 {i} 段：{NOTE_MARKER}，用于验证服务能走完取文 → 生成 → 落盘全链路。</p>"
         for i in range(1, 13)

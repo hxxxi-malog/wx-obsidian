@@ -7,10 +7,11 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import requests
 
@@ -70,7 +71,8 @@ def _utc_to_beijing_date(raw: str) -> str:
     if len(raw) <= 10:
         return raw[:10]
     try:
-        # Python 3.9 的 fromisoformat 不支持 Z 后缀，需手动替换
+        # 底线是 3.12，fromisoformat 自 3.11 起原生支持 Z 后缀；这层 replace 是
+        # 当年兼容 3.9 留下的，行为等价，故不动（日期解析没有直接单测兜底）。
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         # 无时区信息的字符串不做转换
         if dt.tzinfo is not None:

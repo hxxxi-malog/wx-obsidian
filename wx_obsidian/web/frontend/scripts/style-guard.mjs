@@ -28,6 +28,16 @@ const API_LITERAL = /['"`]\/api\//
 const VIEWPORT_UNIT = /\b100vh\b|\bh-screen\b/
 const ELEMENT_PLUS = /from\s+['"]element-plus['"]|['"]element-plus\/dist/
 const INTER_FONT = /\bInter\b/
+/**
+ * 属性值里出现 `//`（含 :attr="'https://…'" 这类绑定表达式里的字符串）。
+ *
+ * 为什么它会红灯：vue-tsc 3 在生成插槽虚拟代码时，属性值里的 `//` 会让该插槽的
+ * props 作用域丢失，于是 `#default="{ id }"` 里的 `id` 变成未定义，报出
+ * `TS2304: Cannot find name 'id'` —— 与真实代码毫无关系的错。已实测只有
+ * 「插槽内 + 属性值」这一种组合触发：插槽内纯文本不触发，插槽外的 `href="https://…"`
+ * 也不触发（见 .github/CI.md「六、前端两个上游坑」）。
+ */
+const ATTR_DOUBLE_SLASH = /=\s*(?:"[^"]*\/\/[^"]*"|'[^']*\/\/[^']*')/
 
 function walk(dir) {
   const out = []
@@ -81,6 +91,14 @@ const checks = [
     test: (line) => INTER_FONT.test(line),
     skipFiles: TOKEN_FILES,
   },
+  {
+    id: 'no-double-slash-in-slot-attr',
+    message:
+      '插槽内的属性值不得出现 `//`：vue-tsc 3 会因此丢掉插槽 props 作用域并报出莫名的 TS2304。' +
+      '含 https:// 的文案请提到 <script> 里做常量，模板只绑变量名（例：:placeholder="URL_PLACEHOLDER"）',
+    test: (line) => ATTR_DOUBLE_SLASH.test(line),
+    slotsOnly: true,
+  },
 ]
 
 const violations = []
@@ -93,12 +111,22 @@ for (const file of walk(SRC)) {
   const rel = relative(FRONTEND_ROOT, file)
   const content = readFileSync(file, 'utf8')
   scanned += 1
+  // <template> 嵌套深度：SFC 根 template 是第 1 层，`<template #slot>` 是第 2 层起。
+  // 只有第 2 层及更深的属性才受 vue-tsc 那个 `//` bug 影响（见 ATTR_DOUBLE_SLASH）。
+  let templateDepth = 0
   content.split('\n').forEach((line, index) => {
+    const opens = (line.match(/<template(?=[\s>])/g) ?? []).length
+    const closes = (line.match(/<\/template>/g) ?? []).length
+    const depth = templateDepth + (opens > 0 ? 1 : 0)
+    templateDepth += opens - closes
     if (isComment(line)) {
       return
     }
     for (const check of checks) {
       if (check.skipFiles?.has(rel)) {
+        continue
+      }
+      if (check.slotsOnly && depth < 2) {
         continue
       }
       if (check.test(line)) {

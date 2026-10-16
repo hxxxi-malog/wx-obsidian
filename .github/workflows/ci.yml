@@ -18,10 +18,10 @@ concurrency:
 permissions:
   contents: read
 
-# runner 固定 ubuntu-24.04，不用 ubuntu-latest：① `ubuntu-latest` 自 2026-10-19
-# 起迁往 Ubuntu 26，而 actions/python-versions 目前没有 3.9 的 26.04 构建
-# （只有 22.04 / 24.04），继续跟 latest 会让 3.9 那一档突然找不到解释器；
-# ② 固定版本后「哪天开始红」是可归因的。
+# runner 固定 ubuntu-24.04，不用 ubuntu-latest：`ubuntu-latest` 自 2026-10-19 起
+# 迁往 Ubuntu 26，解释器/系统库会随之漂移；固定版本后「哪天开始红」是可归因的。
+# （历史上这里还有一条 py3.9 的理由：actions/python-versions 没有 3.9 的 26.04
+# 构建。底线抬到 3.12 后该理由消失，但可归因这条仍然成立。）
 jobs:
   # ------------------------------------------------------------------ 静态检查
   static-checks:
@@ -32,7 +32,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: "3.12"
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -45,7 +45,7 @@ jobs:
       # requirements-test.txt 兜底 pyproject 没声明的测试期依赖（见该文件注释）。
       - name: 安装依赖
         run: |
-          uv sync --frozen --extra dev --no-install-project --python 3.9
+          uv sync --frozen --extra dev --no-install-project --python 3.12
           uv pip install --python .venv/bin/python -r .github/requirements-test.txt
 
       - name: ruff check（lint）
@@ -54,9 +54,8 @@ jobs:
       - name: ruff format --check（格式）
         run: .venv/bin/ruff format --check .
 
-      # mypy 只在 3.9 这一档跑：pyproject 里写的是 `python_version = "3.9"`，
-      # 而 3.12 环境里 uv.lock 会解到 click 8.5（内部用了 match 语法），
-      # mypy 按 3.9 目标去解析它必然报语法错——那是环境错配，不是代码问题。
+      # mypy 只需要跑一档：`[tool.mypy] python_version`、`requires-python` 与
+      # 运行时镜像现在都是 3.12，不再有「按 3.9 解析 3.12 环境的包」那种错配。
       - name: mypy（类型）
         run: .venv/bin/mypy wx_obsidian/ process_articles.py validate_markdown.py
 
@@ -67,8 +66,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 是 pyproject 声明的下限，3.12 是容器实际运行的那一档
-        python-version: ["3.9", "3.12"]
+        # 只跑 3.12：它同时是 pyproject 的下限与运行时镜像那一档。
+        # 多跑一档会让 uv 的 universal resolution 按 Python marker 分叉出多份版本
+        # （历史上 3.9 + 3.12 就分叉出 starlette 0.49/1.8、urllib3 2.6.3/2.8.0），
+        # 锁文件与依赖审计都会跟着变复杂，而收益只是「多验证一档」。
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v5
 
@@ -90,7 +92,7 @@ jobs:
 
   # ------------------------------------------------------------------ 前端四道门
   frontend:
-    name: 前端（type-check / style-guard / test / build）
+    name: 前端（style-guard / type-check / test / build）
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -115,8 +117,11 @@ jobs:
       # （已实测：全新检出下裸跑也能过）。
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm type-check
+      # style-guard 排在最前：它是纯行扫描（毫秒级），且负责把 vue-tsc 那个
+      # 「插槽内属性出现 //」的坑翻译成人话——放后面的话 type-check 先挂，
+      # 人只会看到一句和真实代码无关的 TS2304。
       - run: pnpm style-guard
+      - run: pnpm type-check
       - run: pnpm test
       - run: pnpm build
 
@@ -129,14 +134,14 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: "3.12"
 
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
       - name: 安装依赖
-        run: uv sync --frozen --extra dev --no-install-project --python 3.9
+        run: uv sync --frozen --extra dev --no-install-project --python 3.12
 
       # 真跑一轮：起真实服务 → 抓取 → 生成笔记 → 写 processed.json → 干净退出。
       # 上游是本地 stub，不花 API 费用、不碰真实 vault 与 ~/.wx-obsidian。

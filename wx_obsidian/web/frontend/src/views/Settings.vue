@@ -65,6 +65,16 @@ const quitting = ref(false)
 /** 面板文案里的日志位置（服务没有终端，排错只能看这里） */
 const logHint = '~/Library/Logs/wx-obsidian/app.log'
 
+/**
+ * 含 `//` 的占位文案必须放在这里，模板里只绑变量名。
+ *
+ * 原因：vue-tsc 3 生成插槽虚拟代码时，**插槽内属性值**里的 `//` 会让该插槽的
+ * props 作用域丢失，`#default="{ id }"` 的 `id` 变成未定义并报 TS2304 —— 一个和
+ * 真实代码毫无关系的错。style-guard 的 no-double-slash-in-slot-attr 规则守这条线。
+ */
+const URL_PLACEHOLDER = 'https://…'
+const SOURCE_URL_PLACEHOLDER = 'http://localhost:8001'
+
 const SECTIONS = [
   { key: 'llm', label: '语言模型', icon: PhBrain },
   { key: 'vision', label: '视觉模型', icon: PhEye },
@@ -413,7 +423,7 @@ onMounted(reload)
                 v-model="config.form.llmBaseUrl"
                 mono
                 :invalid="invalid"
-                placeholder="https://…"
+                :placeholder="URL_PLACEHOLDER"
               />
             </template>
           </AppField>
@@ -482,7 +492,7 @@ onMounted(reload)
                 v-model="config.form.visionBaseUrl"
                 mono
                 :invalid="invalid"
-                placeholder="https://…"
+                :placeholder="URL_PLACEHOLDER"
               />
             </template>
           </AppField>
@@ -529,7 +539,7 @@ onMounted(reload)
                 v-model="config.form.sourceBaseUrl"
                 mono
                 :invalid="invalid"
-                placeholder="http://localhost:8001"
+                :placeholder="SOURCE_URL_PLACEHOLDER"
               />
             </template>
           </AppField>

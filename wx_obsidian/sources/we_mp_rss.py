@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -85,14 +85,15 @@ def _to_iso8601(value: Any) -> str:
     会被截成非法日期，故在此统一。
     """
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
-        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        dt = datetime.fromtimestamp(float(value), tz=UTC)
         return dt.isoformat().replace("+00:00", "Z")
 
     text = str(value or "").strip()
     if not text:
         return ""
     try:
-        # Python 3.9 的 fromisoformat 不支持 Z 后缀，需手动替换
+        # 底线是 3.12，fromisoformat 自 3.11 起原生支持 Z 后缀；这层 replace 是
+        # 当年兼容 3.9 留下的，行为等价，故不动（日期解析没有直接单测兜底）。
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         logger.warning("无法解析发布时间: %r", text)

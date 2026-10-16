@@ -16,9 +16,10 @@ import logging
 import threading
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from wx_obsidian.orchestrator import Orchestrator
 
@@ -79,7 +80,7 @@ class JobSnapshot:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
 class _Job:
