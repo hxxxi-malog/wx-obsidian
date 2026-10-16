@@ -293,6 +293,8 @@ python validate_markdown.py --dir <directory>                # 校验 Markdown
 
 项目结构、依赖流向、编码红线（路径安全 / 原子写入 / 异常规范 / 依赖隔离）、改动影响地图见 [`AGENTS.md`](AGENTS.md)（[`CLAUDE.md`](CLAUDE.md) 是同一份内容的镜像）。
 
+CI / 安全扫描 / CD 三条流水线与 `.env` 密钥防线的三道关见 [`.github/CI.md`](.github/CI.md)。
+
 ## 免责声明
 
 文章正文、图片与生成中的笔记内容会发送到你所配置的 LLM API（默认 DeepSeek）用于生成与修订。

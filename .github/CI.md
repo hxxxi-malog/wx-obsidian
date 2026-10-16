@@ -1,5 +1,10 @@
 # GitHub Actions 配置说明
 
+<!-- 文件名刻意不叫 README.md：GitHub 找仓库首页 README 的顺序是
+     `.github/README.md` → 根 `README.md` → `docs/README.md`，`.github/` 优先级
+     最高。叫 README.md 会把项目首页顶掉（踩过一次：dev 分支首页整个变成这份文档）。
+     要改名请避开这三个候选位置。 -->
+
 三个 workflow + 一个依赖更新机器人。**红线**：CI 必须能在干净环境里跑绿，
 所以这里不依赖任何「本机手工装过的东西」，也不把本机镜像源写进 workflow。
 
