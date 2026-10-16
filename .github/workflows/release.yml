@@ -79,12 +79,16 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           # 两条滚动标签都挂了 enable：预发布（tag 带 `-`）时只推精确版本 + sha，
           # 不动 latest、也不动 1.2（见上面 id: ref 的说明）。
-          # enable 收的是布尔字面量，GitHub Actions 会先把 ${{ }} 求值成 true/false。
+          # enable 收的是布尔字面量，GitHub Actions 会先把 ${{ }} 求值成 true/false；
+          # 写成 `!= 'true'` 而不是 `== 'false'` 是刻意的：万一 prerelease 输出取不到
+          # （比如以后改了步骤 id），空串会落回 true —— 退化成「照旧推 latest」，
+          # 而不是静默停止更新 latest。metadata-action 对非 true/false 的字面量会直接
+          # 报错，所以拼错不会静默通过。
           tags: |
             type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }},enable=${{ steps.ref.outputs.prerelease == 'false' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }},enable=${{ steps.ref.outputs.prerelease != 'true' }}
             type=sha
-            type=raw,value=latest,enable=${{ steps.ref.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ steps.ref.outputs.prerelease != 'true' }}
 
       - uses: docker/build-push-action@v7
         with:

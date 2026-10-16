@@ -90,11 +90,15 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 
 - 只在 tag 上发布，主干推送不推镜像（不把 registry 当 CI 缓存用）。
 - **预发布不顶滚动标签**：tag 里带 `-`（如 `v1.2.0-rc1`）视为预发布，
-  `latest` 与 `major.minor` 两条规则都挂 `enable=${{ steps.ref.outputs.prerelease == 'false' }}`
+  `latest` 与 `major.minor` 两条规则都挂 `enable=${{ steps.ref.outputs.prerelease != 'true' }}`
   被跳过，只推精确版本 + `sha`；GitHub Release 也显式加 `--prerelease`。
   否则 `docker pull ...:latest` 会静默拿到 rc 版，Release 页上 rc 还会被标成
   「Latest release」。判定放在 `id: ref` 步骤里，经 `jobs.image.outputs.prerelease`
-  传给 `github-release`（**steps 不跨 job**，直接写 `steps.ref.outputs.*` 会静默取空串）。
+  传给 `github-release`（**steps 不跨 job**，直接写 `steps.ref.outputs.*` 会静默取空串，
+  actionlint 会报 `property "ref" is not defined in object type {}`）。
+  条件写成 `!= 'true'` 而非 `== 'false'`：万一该输出取不到，空串落回 true，
+  退化成「照旧推 latest」，而不是静默停止更新 latest（metadata-action 对非
+  true/false 的字面量会直接抛错，所以拼错不会静默通过）。
 - 手动触发（workflow_dispatch）有**两处**必须显式处理，少一处就会发错：
   1. `checkout` 的 `ref` 要指向目标 tag，否则拿主干代码去发一个「v1.0.0」的镜像；
   2. 标签推导：`type=semver` 是从 `github.ref` 取版本的，而 dispatch 时它是**分支名**，
