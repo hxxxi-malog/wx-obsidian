@@ -58,26 +58,81 @@ jobs:
 
   # -------------------------------------------------------------- 依赖漏洞（只报不拦）
   dependency-audit:
-    name: 依赖漏洞审计（只报不拦）
+    name: 依赖漏洞审计（py${{ matrix.python-version }}，只报不拦）
     runs-on: ubuntu-24.04
-    # 审计结果取决于上游发布节奏——当前 uv.lock 解出来的 starlette / urllib3 /
-    # requests 就带着待修通告。拿它卡主干，只会让人习惯性无视红叉；
-    # 它负责把信息摆到台面上，真正要拦的是密钥与代码质量。
-    continue-on-error: true
+    # 两个 Python 档都审。uv.lock 是**按 Python 分档解析**的，同一个包在不同档
+    # 可以是不同版本（starlette：3.9 档 0.49.3、3.12 档 1.8.0）。只审 3.9 那一档
+    # 会两头落空：报出来的是容器里根本不发货的版本，而容器真正跑的 3.12 档
+    # 反而从没被审过。
+    #
+    # 不拦合并，但不再靠 continue-on-error 蒙混：结果写进 job summary + warning
+    # 注解，job 自己保持绿色，只有 pip-audit 执行失败才红。这样红叉恒等于
+    # 「真出事了」，而不是「上游又发通告了」。
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: ${{ matrix.python-version }}
 
       - uses: astral-sh/setup-uv@v7
 
       # 不装 dev extra：要审的是运行期依赖，也就是容器里真正会跑的那些
       - name: 按 uv.lock 装出运行环境
-        run: uv sync --frozen --no-install-project --python 3.9
+        run: uv sync --frozen --no-install-project --python ${{ matrix.python-version }}
 
+      # pip-audit 用 `uv tool run` 跑在隔离环境里，不装进被审环境：装进去的话
+      # 它会把自己的依赖（pip / msgpack / filelock …）也审一遍，报出一堆与项目
+      # 无关的通告。--path 指向被审环境的 site-packages，审的才是真正会跑的包。
       - name: pip-audit
         run: |
-          uv pip install --python .venv/bin/python pip-audit
-          .venv/bin/pip-audit --progress-spinner off
+          SITE=".venv/lib/python${{ matrix.python-version }}/site-packages"
+          echo "审计目标：$SITE"
+          set +e
+          uv tool run pip-audit --path "$SITE" --progress-spinner off --format json -o audit.json
+          code=$?
+          set -e
+
+          python3 - "${{ matrix.python-version }}" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import pathlib
+          import sys
+
+          ver = sys.argv[1]
+          path = pathlib.Path("audit.json")
+          print(f"## 依赖漏洞审计（Python {ver}）\n")
+          if not path.exists():
+              print("pip-audit 没有产出报告，见本步骤日志。")
+              raise SystemExit(0)
+          data = json.loads(path.read_text(encoding="utf-8"))
+          # 按 (包, 版本, 通告 ID) 去重：pip-audit 会把同一条通告按不同来源
+          # 列两次（ID 与 aliases 完全一样），不去重表格里会出现重复行。
+          seen = {
+              (d["name"], d["version"], v["id"]): v
+              for d in data.get("dependencies", [])
+              for v in d.get("vulns", [])
+          }
+          if not seen:
+              print("未发现已知漏洞。")
+              raise SystemExit(0)
+          pkgs = sorted({k[0] for k in seen})
+          print(f"发现 **{len(seen)}** 条通告，涉及 **{len(pkgs)}** 个包：{', '.join(pkgs)}\n")
+          print("| 包 | 版本 | 通告 | 修复版本 |")
+          print("|---|---|---|---|")
+          for (name, pkg_ver, vuln_id), vuln in sorted(seen.items()):
+              fix = ", ".join(vuln.get("fix_versions") or []) or "—"
+              print(f"| {name} | {pkg_ver} | {vuln_id} | {fix} |")
+          PY
+
+          if [ "$code" = "0" ]; then
+            echo "::notice::pip-audit：Python ${{ matrix.python-version }} 档未发现已知漏洞"
+          elif [ "$code" = "1" ]; then
+            echo "::warning title=依赖漏洞（Python ${{ matrix.python-version }}）::发现通告，详见 job summary（不拦合并）"
+          else
+            echo "::error::pip-audit 执行失败（退出码 $code）"
+            exit "$code"
+          fi
