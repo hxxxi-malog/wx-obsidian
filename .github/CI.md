@@ -11,7 +11,7 @@
 | 文件 | 触发 | 作用 |
 |------|------|------|
 | `workflows/ci.yml` | push / PR 到 `main` `dev`，可手动 | 静态检查、双版本单测、前端四道门、端到端冒烟、容器可启动 |
-| `workflows/security.yml` | push / PR + 每周一 06:00 + 可手动 | 密钥守卫、gitleaks 全历史、依赖漏洞审计（只报不拦） |
+| `workflows/security.yml` | push / PR + 每周一 06:00 + 可手动 | 密钥守卫、gitleaks 全历史、依赖漏洞审计（3.9 + 3.12 双档，只报不拦） |
 | `workflows/release.yml` | 打 `v*` tag，可手动 | 构建并推送镜像到 GHCR + 建 GitHub Release |
 | `scripts/check_secrets.py` | 被 security.yml 调用 | `.env` / 密钥 / `.gitignore` 生效性 / 历史泄漏 |
 | `requirements-test.txt` | 被 ci.yml 调用 | pyproject 没声明的测试期依赖（见下） |
@@ -113,9 +113,24 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 
 ## 四、已知边界（有意为之）
 
-1. **依赖漏洞审计只报不拦**：当前 `uv.lock` 解出的 `starlette` / `urllib3` /
-   `requests` 就带着待修通告。拿它卡主干只会让人习惯性无视红叉，所以它负责把
-   信息摆到台面上，真正拦人的是密钥与代码质量。
+1. **依赖漏洞审计审两个 Python 档，只报不拦**：`uv.lock` 是**按 Python 分档
+   解析**的，同一个包在不同档可以是不同版本（`starlette`：3.9 档 0.49.3、
+   3.12 档 1.8.0）。只审 3.9 那一档会两头落空 —— 报出来的是容器里根本不发货的
+   版本，而容器真正跑的 3.12 档反而从没被审过。所以现在是 3.9 + 3.12 矩阵。
+   结果写进 job summary + warning 注解，**job 自己保持绿色**，只有 pip-audit
+   执行失败才红：红叉恒等于「真出事了」，而不是「上游又发通告了」。
+   两个实现细节：pip-audit 用 `uv tool run` 跑在隔离环境里（装进被审环境的话，
+   它会把自己的依赖 pip / msgpack / filelock 也审一遍，报出一堆与项目无关的
+   通告），`--path` 指向被审环境的 `site-packages`；同一条通告 pip-audit 会按
+   不同来源列两次，summary 里按 (包, 版本, 通告 ID) 去重。
+   修完后的实测现状：**3.12 档 0 条**（容器里跑的那套已干净），**3.9 档 13 条**
+   （anyio / requests / starlette / urllib3）。
+   3.9 档这 13 条是**结构性**的：它们的修复版本都要求 `>=3.10`（`urllib3 2.8.0`、
+   `starlette 1.x` 皆然），2.6.3 是最后一个支持 3.9 的 urllib3 —— 只要还宣称
+   `requires-python >=3.9`，这一档就修不掉。要么接受它长期挂在 summary 里，
+   要么放弃 3.9（同步改 `requires-python` 与静态检查那档）。
+   本次据此修掉的真问题：`mistune 3.2.1 → 3.3.4`（10 条；直接依赖、所有 Python
+   共用，容器也发货）与 `urllib3 2.7.0 → 2.8.0`（3 条；3.10+ 档，即容器那档）。
 2. **浏览器冒烟（`ui-smoke.mjs`）没有进 CI**：它需要系统 Chrome，且要有已抓取
    的文章数据（本次实测空状态下 49/50 通过，失败项是「点击行打开详情抽屉」）。
    直接接进 CI 会长期红。要接的话得先给它造种子数据。
@@ -135,6 +150,13 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
    2026-10-19 起迁往 Ubuntu 26，而 `actions/python-versions` 目前**没有 3.9 的
    26.04 构建**（只有 22.04 / 24.04），继续跟 latest 会让 3.9 那档突然找不到解释器。
    固定版本后「哪天开始红」也可归因。
+6. **`mypy` 的大版本被 Dependabot 忽略**：`pyproject.toml` 钉 `mypy>=1.10,<2`。
+   mypy 2.x 起 `requires-python >=3.10`（PyPI 实测）且移除了 3.9 目标，会让
+   `[tool.mypy] python_version = "3.9"` 形同虚设；而静态检查 job 只在 3.9 档跑，
+   放开上界后 CI 不会红 —— 属于「绿灯 + 保护静默消失」，所以在
+   `dependabot.yml` 里显式 ignore `mypy >= 2`。
+   同类注意：只放宽约束、不动 `uv.lock` 的 PR（Dependabot 的 range 更新就是这样）
+   会以全绿通过，因为锁文件里还是旧版本 —— 它改的是「以后会解到什么」。
 
 ## 五、本地复现 CI
 
