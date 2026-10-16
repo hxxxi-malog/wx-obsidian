@@ -103,6 +103,18 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
    而 README 的源码安装章节写的是这条命令。CI 绕开了它，但文档与实现不一致，
    建议二选一：给 `pyproject.toml` 补 `[tool.setuptools] packages` 配置，
    或把 README 改成 `uv sync`。
+4. **5 个「在 Obsidian 中打开」的用例在 Linux 上会 skip**：`open_in_obsidian()`
+   走 macOS 的 `open obsidian://...`，非 macOS 直接抛 `RuntimeError("仅支持 macOS")`，
+   所以 `tests/test_web/test_articles.py` 里这 5 个用例标了
+   `@macos_only = pytest.mark.skipif(sys.platform != "darwin")`。它们在 macOS
+   （开发机）上照常跑，在 Linux CI 上报 skip。
+   **代价要说清**：这组逻辑（注册表校验、URI 百分号编码）在 Linux CI 上不再被覆盖。
+   想要覆盖的话有两条路：补一个 macOS runner 的 job，或把那 5 个用例里的平台判定
+   改成可注入的开关（它们本来就把 `subprocess.run` mock 掉了，纯粹被平台守卫挡住）。
+5. **runner 固定 `ubuntu-24.04`，不用 `ubuntu-latest`**：`ubuntu-latest` 自
+   2026-10-19 起迁往 Ubuntu 26，而 `actions/python-versions` 目前**没有 3.9 的
+   26.04 构建**（只有 22.04 / 24.04），继续跟 latest 会让 3.9 那档突然找不到解释器。
+   固定版本后「哪天开始红」也可归因。
 
 ## 五、本地复现 CI
 

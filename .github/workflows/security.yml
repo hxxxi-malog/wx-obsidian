@@ -23,14 +23,14 @@ jobs:
   # -------------------------------------------------------------- .env / 密钥守卫
   secret-guard:
     name: 密钥守卫（.env / 内容 / .gitignore）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # 历史扫描需要完整历史（默认 fetch-depth: 1 只有最后一次提交）
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
 
@@ -41,9 +41,9 @@ jobs:
   # -------------------------------------------------------------- gitleaks（第二意见）
   gitleaks:
     name: gitleaks 全历史扫描
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -59,15 +59,15 @@ jobs:
   # -------------------------------------------------------------- 依赖漏洞（只报不拦）
   dependency-audit:
     name: 依赖漏洞审计（只报不拦）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 审计结果取决于上游发布节奏——当前 uv.lock 解出来的 starlette / urllib3 /
     # requests 就带着待修通告。拿它卡主干，只会让人习惯性无视红叉；
     # 它负责把信息摆到台面上，真正要拦的是密钥与代码质量。
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
 

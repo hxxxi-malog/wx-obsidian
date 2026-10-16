@@ -18,15 +18,19 @@ concurrency:
 permissions:
   contents: read
 
+# runner 固定 ubuntu-24.04，不用 ubuntu-latest：① `ubuntu-latest` 自 2026-10-19
+# 起迁往 Ubuntu 26，而 actions/python-versions 目前没有 3.9 的 26.04 构建
+# （只有 22.04 / 24.04），继续跟 latest 会让 3.9 那一档突然找不到解释器；
+# ② 固定版本后「哪天开始红」是可归因的。
 jobs:
   # ------------------------------------------------------------------ 静态检查
   static-checks:
     name: 静态检查（ruff + mypy）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
 
@@ -59,16 +63,16 @@ jobs:
   # ------------------------------------------------------------------ 单元测试
   tests:
     name: 单元测试（Python ${{ matrix.python-version }}）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         # 3.9 是 pyproject 声明的下限，3.12 是容器实际运行的那一档
         python-version: ["3.9", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -87,7 +91,7 @@ jobs:
   # ------------------------------------------------------------------ 前端四道门
   frontend:
     name: 前端（type-check / style-guard / test / build）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: wx_obsidian/web/frontend
@@ -96,7 +100,7 @@ jobs:
       # 会一直卡到超时。Dockerfile 的构建阶段同样要关掉它。
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
@@ -119,11 +123,11 @@ jobs:
   # ------------------------------------------------------------------ 端到端冒烟
   e2e:
     name: 端到端冒烟（临时 HOME + stub 上游）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
 
@@ -142,9 +146,9 @@ jobs:
   # ------------------------------------------------------------------ 容器镜像
   docker:
     name: 容器镜像可构建、可启动
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/setup-buildx-action@v3
 
