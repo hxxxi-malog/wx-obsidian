@@ -68,7 +68,14 @@ COPY --from=frontend /src/wx_obsidian/web/static ./wx_obsidian/web/static
 # chown 不能省：COPY 会**保留源文件权限**，而本机检出的文件是 0600（git 不记录
 # 普通文件的权限位，只记可执行位，所以 clone 出来又是 0644）。不 chown 的话
 # 非 root 用户连自己的源码都读不了，容器会以 PermissionError 启动失败。
-RUN useradd --create-home --uid 1000 wx && chown -R wx:wx /app
+#
+# /home/wx 也必须 chown：上面 `ENV HOME=/home/wx` 在 useradd 之前就生效，而
+# `useradd --create-home` 对**已存在**的家目录不改归属。实测探针：useradd 之前
+# /home/wx 已经是 root:root（前面某一层以 root 身份碰过 $HOME），于是 wx 用户
+# 建不了 ~/.wx-obsidian —— 日志与 web.token 都落不了盘。症状很隐蔽：容器照样
+# 起得来、/api/ping 照样 200，只是每次启动都刷「无法写入日志文件」的告警，而
+# 容器里唯一的排错通道恰好就是那份日志。
+RUN useradd --create-home --uid 1000 wx && chown -R wx:wx /app /home/wx
 USER wx
 
 EXPOSE 8765
