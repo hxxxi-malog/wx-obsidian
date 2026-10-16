@@ -25,7 +25,7 @@ jobs:
     name: 密钥守卫（.env / 内容 / .gitignore）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # 历史扫描需要完整历史（默认 fetch-depth: 1 只有最后一次提交）
           fetch-depth: 0
@@ -43,7 +43,7 @@ jobs:
     name: gitleaks 全历史扫描
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -72,7 +72,7 @@ jobs:
       matrix:
         python-version: ["3.12"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:

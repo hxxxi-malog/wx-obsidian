@@ -31,7 +31,7 @@ jobs:
     steps:
       # 手动触发时 github.ref 是分支名，必须显式 checkout 目标 tag，
       # 否则会拿主干代码去发一个「v0.1.0」的镜像。
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -87,7 +87,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
