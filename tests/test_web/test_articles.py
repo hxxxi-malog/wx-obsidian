@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -18,6 +19,13 @@ from wx_obsidian.web.api import create_app
 
 TOKEN = "test-token-123"
 AUTH = {"X-WX-Token": TOKEN}
+
+# 「在 Obsidian 中打开」走的是 macOS 的 `open obsidian://...`：非 macOS 时
+# wx_obsidian/web/articles.py 会直接抛 RuntimeError("仅支持 macOS")，端点必然 400。
+# 所以这组用例只在 macOS 上有意义——显式声明平台要求，而不是让它们在 Linux CI 上
+# 长期红着（红久了就没人看这个 job 了）。代价是这组逻辑在 Linux 上不再被覆盖，
+# 需要的话可以补一个 macOS runner 的 job，或把平台判定做成可注入的开关。
+macos_only = pytest.mark.skipif(sys.platform != "darwin", reason="open_in_obsidian 仅支持 macOS")
 
 
 def _records(note_path: Path) -> dict[str, Any]:
@@ -393,6 +401,7 @@ def test_open_missing_file_is_400(env: dict[str, Any]) -> None:
     assert response.json()["error"] == "open_failed"
 
 
+@macos_only
 def test_open_builds_obsidian_uri(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -426,10 +435,11 @@ def _write_registry(tmp_path: Path, vaults: list[Path]) -> Path:
     return registry
 
 
+@macos_only
 def test_open_falls_back_when_registry_missing(
     env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """读不到注册表（非 macOS / Obsidian 未装）时不能拦住用户。"""
+    """读不到注册表（Obsidian 未装 / 注册表损坏）时不能拦住用户。"""
     monkeypatch.setattr(articles_api, "_OBSIDIAN_REGISTRY", tmp_path / "nope.json")
     monkeypatch.setattr(articles_api.subprocess, "run", lambda *a, **k: _OkResult())
 
@@ -437,6 +447,7 @@ def test_open_falls_back_when_registry_missing(
         assert client.post("/api/articles/a1/open", headers=AUTH).status_code == 200
 
 
+@macos_only
 def test_open_rejects_note_outside_registered_vaults(
     env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -455,6 +466,7 @@ def test_open_rejects_note_outside_registered_vaults(
     assert "另一个仓库" in body["detail"]  # 顺带列出已注册仓库，便于排查
 
 
+@macos_only
 def test_open_accepts_note_inside_registered_vault(
     env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -495,6 +507,7 @@ def test_vault_message_points_at_dot_obsidian(tmp_path: Path) -> None:
     assert "打开文件夹作为仓库" in message
 
 
+@macos_only
 def test_open_percent_encodes_special_characters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
