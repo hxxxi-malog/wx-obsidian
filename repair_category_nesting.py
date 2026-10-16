@@ -263,9 +263,7 @@ class LinkPass:
         return not self.files
 
 
-def scan_residual_links(
-    articles_dir: Path, prefix_map: dict[str, str] | None = None
-) -> LinkPass:
+def scan_residual_links(articles_dir: Path, prefix_map: dict[str, str] | None = None) -> LinkPass:
     """扫描所有 .md（含概念页），找出需重定向/折叠的链接、自引用文件夹组与重复条目。"""
     result = LinkPass()
     for path in sorted(articles_dir.rglob("*.md")):
@@ -626,7 +624,11 @@ def build_plan(
         if rel.as_posix() in ("", "."):
             continue  # 文章根目录的 MOC 不属于分类 MOC
         by_dir.setdefault(directory, []).append(
-            (str(record.get("processed_at") or "")[:10], final.stem, str(record.get("title") or final.stem))
+            (
+                str(record.get("processed_at") or "")[:10],
+                final.stem,
+                str(record.get("title") or final.stem),
+            )
         )
     for directory, entries in sorted(by_dir.items()):
         if (directory / "_MOC.md").exists():
@@ -670,8 +672,10 @@ def _print_plan(plan: Plan, articles_dir: Path, config_file: Path, processed_fil
         print(f"    {merge.src.relative_to(articles_dir)}  →  {merge.new_category}/_MOC.md")
 
     if plan.merges:
-        print(f"\n[2.5] 父 MOC 文件夹组维护：删 {len(plan.merge_parent_cleanups)} 组、"
-              f"重建 {len(plan.merge_parent_refreshes)} 组")
+        print(
+            f"\n[2.5] 父 MOC 文件夹组维护：删 {len(plan.merge_parent_cleanups)} 组、"
+            f"重建 {len(plan.merge_parent_refreshes)} 组"
+        )
         for category in plan.merge_parent_cleanups:
             print(f"    删除  📁 [[{category}/_MOC]]（源目录已并入别处）")
         for category in plan.merge_parent_refreshes:

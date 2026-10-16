@@ -291,7 +291,12 @@ class TestMaybeCreateSubcategory:
         sub_dir = articles_dir / "LLM" / "注意力机制"
         assert sub_dir.is_dir()
         assert not (sub_dir / "注意力机制").exists()
-        assert sorted(p.name for p in sub_dir.iterdir()) == ["_MOC.md", "文章0.md", "文章1.md", "文章2.md"]
+        assert sorted(p.name for p in sub_dir.iterdir()) == [
+            "_MOC.md",
+            "文章0.md",
+            "文章1.md",
+            "文章2.md",
+        ]
 
     def test_already_migrated_blocks_new_sub_topic(self, tmp_vault, monkeypatch):
         """已迁移到「顶层/子主题」后，即使换一个新 sub_topic 也不得创建第三层。"""

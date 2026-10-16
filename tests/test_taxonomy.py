@@ -67,7 +67,9 @@ class TestLoadTaxonomy:
         assert data["aliases"]["Loop工程"] == "Loop Engineering"
         assert any(item["name"] == "多Agent协同" for item in data["sub_topics"])
 
-    def test_missing_file_degrades_to_identity(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    def test_missing_file_degrades_to_identity(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
         monkeypatch.setattr(taxonomy_module, "TAXONOMY_FILE", tmp_path / "nope.yaml")
         load_taxonomy.cache_clear()
         assert load_taxonomy()["aliases"] == {}

@@ -280,9 +280,7 @@ def test_conftest_isolates_real_processed_path(tmp_path: Path) -> None:
         (" false ", False),
     ],
 )
-def test_env_flag_parses_value(
-    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
-) -> None:
+def test_env_flag_parses_value(monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool) -> None:
     monkeypatch.setenv("WX_TEST_FLAG", raw)
     assert env_flag("WX_TEST_FLAG") is expected
 

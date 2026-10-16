@@ -29,7 +29,13 @@ class TestCanonicalCategory:
 
     def test_keeps_legit_paths_untouched(self):
         """合法的单层子目录与非连续重复不得被改写。"""
-        for category in ("Agent/MCP", "LLM基础/推理优化", "A/B/A", "Agent", "Harness Engineering/Loop Engineering"):
+        for category in (
+            "Agent/MCP",
+            "LLM基础/推理优化",
+            "A/B/A",
+            "Agent",
+            "Harness Engineering/Loop Engineering",
+        ):
             assert canonical_category(category) == category
             assert not is_nested(category)
 
@@ -64,7 +70,9 @@ class TestRewriteTextLinks:
         assert new_text == "见 [[Agent/RAG/某文|某文]] 与 [[Agent/MCP/正常文]]，还有 [[常识]]"
 
     def test_rewrites_anchor_links(self):
-        new_text, changed = rewrite_text_links("[[Harness Engineering/Loop Engineering/Loop Engineering/文#节]]")
+        new_text, changed = rewrite_text_links(
+            "[[Harness Engineering/Loop Engineering/Loop Engineering/文#节]]"
+        )
         assert changed == 1
         assert new_text == "[[Harness Engineering/Loop Engineering/文#节]]"
 
@@ -87,9 +95,7 @@ class TestRewriteTextLinks:
 
     def test_prefix_map_ignores_identity_and_prefers_longest(self):
         text = "[[A/B/C/文]] 与 [[A/B/文]]"
-        new_text, changed = rewrite_text_links(
-            text, {"A/B": "X", "A/B/C": "Y", "X": "X"}
-        )
+        new_text, changed = rewrite_text_links(text, {"A/B": "X", "A/B/C": "Y", "X": "X"})
         assert changed == 2
         assert new_text == "[[Y/文]] 与 [[X/文]]"
 
@@ -158,7 +164,9 @@ class TestBuildPlan:
         (nested / "_MOC.md").write_text("# 上下文工程\n\n", encoding="utf-8")
         (articles_dir / "Agent" / "上下文工程").mkdir(parents=True, exist_ok=True)
         (articles_dir / "Agent" / "MCP").mkdir(parents=True, exist_ok=True)
-        (articles_dir / "Agent" / "MCP" / "正常.md").write_text('---\ncategory: "Agent/MCP"\n---\n', encoding="utf-8")
+        (articles_dir / "Agent" / "MCP" / "正常.md").write_text(
+            '---\ncategory: "Agent/MCP"\n---\n', encoding="utf-8"
+        )
         return articles_dir
 
     def test_plan_collapses_and_fixes_records(self, tmp_path: Path):
@@ -170,7 +178,11 @@ class TestBuildPlan:
                 "category": "Agent/上下文工程/上下文工程/上下文工程",
                 "file": str(nested / "文1.md"),
             },
-            "a2": {"status": "done", "category": "Agent/MCP", "file": str(articles_dir / "Agent" / "MCP" / "正常.md")},
+            "a2": {
+                "status": "done",
+                "category": "Agent/MCP",
+                "file": str(articles_dir / "Agent" / "MCP" / "正常.md"),
+            },
         }
         plan = build_plan(articles_dir, processed, ["Agent/MCP", "Agent/上下文工程/上下文工程"])
 
@@ -187,9 +199,7 @@ class TestBuildPlan:
         cat = articles_dir / "Agent" / "RAG"
         cat.mkdir(parents=True)
         (cat / "_MOC.md").write_text(
-            "# RAG\n\n"
-            "- 2026-07-05 [[Agent/RAG/RAG/RAG/文|文]]\n"
-            "- 2026-07-05 [[Agent/RAG/文|文]]\n",
+            "# RAG\n\n- 2026-07-05 [[Agent/RAG/RAG/RAG/文|文]]\n- 2026-07-05 [[Agent/RAG/文|文]]\n",
             encoding="utf-8",
         )
         result = scan_residual_links(articles_dir)
@@ -369,7 +379,13 @@ class TestCategoryMerge:
         src_a = articles_dir / "Agent" / "Loop工程"
         src_b = articles_dir / "Harness Engineering" / "Loop工程"
         dst = articles_dir / "Harness Engineering" / "Loop Engineering"
-        for directory in (src_a, src_b, dst, articles_dir / "Agent", articles_dir / "Harness Engineering"):
+        for directory in (
+            src_a,
+            src_b,
+            dst,
+            articles_dir / "Agent",
+            articles_dir / "Harness Engineering",
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
         (articles_dir / "Agent" / "_MOC.md").write_text(
@@ -417,8 +433,7 @@ class TestCategoryMerge:
             encoding="utf-8",
         )
         (dst / "_MOC.md").write_text(
-            "# Loop Engineering\n\n"
-            "- 2026-06-23 [[Harness Engineering/Loop Engineering/丙|丙]]\n",
+            "# Loop Engineering\n\n- 2026-06-23 [[Harness Engineering/Loop Engineering/丙|丙]]\n",
             encoding="utf-8",
         )
         return articles_dir, processed
@@ -428,7 +443,10 @@ class TestCategoryMerge:
         plan = build_plan(articles_dir, processed, [])
 
         assert ("Agent/Loop工程", "Harness Engineering/Loop Engineering") in plan.merges
-        assert ("Harness Engineering/Loop工程", "Harness Engineering/Loop Engineering") in plan.merges
+        assert (
+            "Harness Engineering/Loop工程",
+            "Harness Engineering/Loop Engineering",
+        ) in plan.merges
         moved = {m.src.name for m in plan.file_moves}
         assert moved == {"甲.md", "乙.md"}
         assert {m.new_category for m in plan.file_moves} == {"Harness Engineering/Loop Engineering"}
@@ -442,7 +460,15 @@ class TestCategoryMerge:
         dst = articles_dir / "Harness Engineering" / "Loop Engineering"
         cm = ConfigManager(config_dir=tmp_path / "cfg")
         cm.load()
-        cm.set("categories", ["Agent", "Agent/Loop工程", "Harness Engineering", "Harness Engineering/Loop Engineering"])
+        cm.set(
+            "categories",
+            [
+                "Agent",
+                "Agent/Loop工程",
+                "Harness Engineering",
+                "Harness Engineering/Loop Engineering",
+            ],
+        )
         cm.save()
         save_processed(processed)
 
@@ -479,7 +505,11 @@ class TestCategoryMerge:
         assert reloaded["a0"]["sub_topic"] == "Loop Engineering"
 
         # config：源分类移除、目标分类保留
-        assert cm.get("categories") == ["Agent", "Harness Engineering", "Harness Engineering/Loop Engineering"]
+        assert cm.get("categories") == [
+            "Agent",
+            "Harness Engineering",
+            "Harness Engineering/Loop Engineering",
+        ]
 
     def test_second_run_is_noop(self, tmp_path: Path):
         articles_dir, processed = self._build_vault(tmp_path)
