@@ -1,0 +1,83 @@
+name: Security
+
+# 安全面单独一个 workflow：它与「代码能不能跑」无关，
+# 失败原因也不同（泄漏、漏洞通告），混在 CI 里容易让人误判。
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master, dev]
+  schedule:
+    # 每周一 06:00（Asia/Shanghai）：漏洞通告与历史泄漏不会因为没人提交就消失
+    - cron: "0 22 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------- .env / 密钥守卫
+  secret-guard:
+    name: 密钥守卫（.env / 内容 / .gitignore）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 历史扫描需要完整历史（默认 fetch-depth: 1 只有最后一次提交）
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      # 纯标准库，不需要装任何依赖
+      - name: .github/scripts/check_secrets.py --history
+        run: python .github/scripts/check_secrets.py --history
+
+  # -------------------------------------------------------------- gitleaks（第二意见）
+  gitleaks:
+    name: gitleaks 全历史扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 用官方镜像而不是 gitleaks-action：action 在组织仓库里需要
+      # GITLEAKS_LICENSE，镜像没有这个限制，版本与行为也都看得见。
+      # 白名单（.env.example / tests 假值）在 .github/gitleaks.toml。
+      - name: gitleaks detect
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source=/repo --config=/repo/.github/gitleaks.toml \
+            --redact --verbose
+
+  # -------------------------------------------------------------- 依赖漏洞（只报不拦）
+  dependency-audit:
+    name: 依赖漏洞审计（只报不拦）
+    runs-on: ubuntu-latest
+    # 审计结果取决于上游发布节奏——当前 uv.lock 解出来的 starlette / urllib3 /
+    # requests 就带着待修通告。拿它卡主干，只会让人习惯性无视红叉；
+    # 它负责把信息摆到台面上，真正要拦的是密钥与代码质量。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - uses: astral-sh/setup-uv@v7
+
+      # 不装 dev extra：要审的是运行期依赖，也就是容器里真正会跑的那些
+      - name: 按 uv.lock 装出运行环境
+        run: uv sync --frozen --no-install-project --python 3.9
+
+      - name: pip-audit
+        run: |
+          uv pip install --python .venv/bin/python pip-audit
+          .venv/bin/pip-audit --progress-spinner off

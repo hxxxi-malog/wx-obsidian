@@ -1,0 +1,179 @@
+name: CI
+
+# 触发面：主干（main/dev）的推送，以及面向主干的 PR。
+# 其它分支不自动跑——需要时用 workflow_dispatch 手动触发。
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master, dev]
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧运行：CI 只对「最新一次提交」负责，省 runner 时间
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限：CI 只读仓库（需要写权限的动作只在 release.yml 里单独声明）
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------ 静态检查
+  static-checks:
+    name: 静态检查（ruff + mypy）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # 依赖只从 pyproject / uv.lock 取（单一事实来源），且**不装项目本体**：
+      # 本仓库是 flat-layout（deploy/ skills/ prompts/ 都在根下），
+      # `pip install -e .` 会因 setuptools 自动发现多个顶层包而直接失败。
+      # 测试与 lint 都在仓库根目录跑，不装本体不影响 import。
+      # requirements-test.txt 兜底 pyproject 没声明的测试期依赖（见该文件注释）。
+      - name: 安装依赖
+        run: |
+          uv sync --frozen --extra dev --no-install-project --python 3.9
+          uv pip install --python .venv/bin/python -r .github/requirements-test.txt
+
+      - name: ruff check（lint）
+        run: .venv/bin/ruff check .
+
+      - name: ruff format --check（格式）
+        run: .venv/bin/ruff format --check .
+
+      # mypy 只在 3.9 这一档跑：pyproject 里写的是 `python_version = "3.9"`，
+      # 而 3.12 环境里 uv.lock 会解到 click 8.5（内部用了 match 语法），
+      # mypy 按 3.9 目标去解析它必然报语法错——那是环境错配，不是代码问题。
+      - name: mypy（类型）
+        run: .venv/bin/mypy wx_obsidian/ process_articles.py validate_markdown.py
+
+  # ------------------------------------------------------------------ 单元测试
+  tests:
+    name: 单元测试（Python ${{ matrix.python-version }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 是 pyproject 声明的下限，3.12 是容器实际运行的那一档
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: 安装依赖
+        run: |
+          uv sync --frozen --extra dev --no-install-project --python ${{ matrix.python-version }}
+          uv pip install --python .venv/bin/python -r .github/requirements-test.txt
+
+      - name: pytest
+        run: .venv/bin/python -m pytest tests -q
+
+  # ------------------------------------------------------------------ 前端四道门
+  frontend:
+    name: 前端（type-check / style-guard / test / build）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wx_obsidian/web/frontend
+    env:
+      # corepack 下载 pnpm 本体时会问一句「是否继续」——CI 里没人回答，
+      # 会一直卡到超时。Dockerfile 的构建阶段同样要关掉它。
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 用 corepack 起 pnpm：package.json 已钉 `packageManager: pnpm@12.9.1`，
+      # 与 Dockerfile 的构建路径一致，不额外引第三方 pnpm action。
+      - run: corepack enable
+
+      # 依赖构建脚本的放行写在 pnpm-workspace.yaml 的 allowBuilds 里，
+      # 所以这里不需要 Dockerfile 早期那版 `--config.strict-dep-builds=false`
+      # （已实测：全新检出下裸跑也能过）。
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm type-check
+      - run: pnpm style-guard
+      - run: pnpm test
+      - run: pnpm build
+
+  # ------------------------------------------------------------------ 端到端冒烟
+  e2e:
+    name: 端到端冒烟（临时 HOME + stub 上游）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: 安装依赖
+        run: uv sync --frozen --extra dev --no-install-project --python 3.9
+
+      # 真跑一轮：起真实服务 → 抓取 → 生成笔记 → 写 processed.json → 干净退出。
+      # 上游是本地 stub，不花 API 费用、不碰真实 vault 与 ~/.wx-obsidian。
+      - name: tests/e2e/smoke_web.py
+        run: .venv/bin/python tests/e2e/smoke_web.py
+
+  # ------------------------------------------------------------------ 容器镜像
+  docker:
+    name: 容器镜像可构建、可启动
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/wx-obsidian/Dockerfile
+          push: false
+          load: true
+          tags: wx-obsidian:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 只 build 不算数：镜像里前端产物缺失、依赖装错，都会「构建成功但起不来」。
+      # /api/ping 免鉴权，正好拿来做这个判定。
+      # WX_ALLOW_REMOTE=1 不能省：经发布端口进来的连接，容器看到的客户端 IP 是
+      # 容器网关（不是回环），不放行会被来源校验挡掉——与 docker-compose.yml 同理。
+      - name: 容器能起来并回 /api/ping
+        run: |
+          docker run -d --name wx-ci -e WX_ALLOW_REMOTE=1 -p 8765:8765 wx-obsidian:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/ping >/dev/null 2>&1; then
+              echo "容器健康检查通过"
+              docker rm -f wx-ci >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "容器 60 秒内没有就绪，日志如下：" >&2
+          docker logs wx-ci >&2
+          docker rm -f wx-ci >/dev/null
+          exit 1

@@ -1,8 +1,11 @@
 # 环境变量（含密钥）
-# .env 的精确匹配盖不住备份文件，而备份里同样有密钥，故一并忽略
+# `.env` 的精确匹配盖不住 `.env.local` / `.env.production` 这类变体，而备份文件
+# （`.env.bak.*`）里同样有密钥，所以按前缀整体忽略，再单独放行模板文件。
+# CI 的密钥守卫会用 `git check-ignore` 验证这几条规则真的生效（不是写着好看）：
+# .github/scripts/check_secrets.py
 .env
-.env.bak.*
-.env.*.bak
+.env.*
+!.env.example
 
 # 运行时数据
 processed.json

@@ -1,0 +1,21 @@
+# gitleaks 配置：默认规则集 + 路径白名单（由 .github/workflows/security.yml 调用）。
+#
+# 为什么必须加白名单：仓库里有三类「长得像密钥、其实是占位」的内容，
+# 不放行的话每次扫描都会红，久而久之这个 job 就没人看了：
+#   1. *.env.example  —— 告诉用户该配哪些变量，值是 sk-your-api-key-here 这类占位
+#   2. tests/         —— 掩码功能的测试假值（SUPERSECRET / sk-livekey123456）
+#   3. 密钥守卫脚本自身 —— 里面写着要匹配的正则字面量，必然自命中
+#
+# 白名单只按「路径」放行，不放行任何具体的密钥值；要放行某个已知假值时，
+# 请在下面写清理由，不要用泛化的正则。
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "占位模板、测试假值、扫描器自身的规则字面量"
+paths = [
+    '''(^|/)\.env\.(example|sample|template)$''',
+    '''^tests/''',
+    '''^\.github/scripts/check_secrets\.py$''',
+]

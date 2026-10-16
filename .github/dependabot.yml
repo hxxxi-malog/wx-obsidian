@@ -1,0 +1,38 @@
+# 依赖更新机器人：让上面几个 workflow 里钉住的版本自己跟上游走。
+#
+# 三个生态各自独立：
+#   github-actions —— workflow 里 pin 的 action 大版本（升了就自动开 PR）
+#   pip            —— pyproject.toml 的依赖（含 dev extra）
+#   npm            —— 前端依赖（目录必须指到 package.json 所在处）
+#
+# 不想要这些 PR 的话，删掉本文件即可，不影响 CI 运行。
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # 一次 PR 打包所有小版本更新，避免每周收到十几个 PR
+      python-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: npm
+    directory: "/wx_obsidian/web/frontend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
