@@ -35,6 +35,13 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      # 多架构发布：GHA 的 runner 是 amd64，buildx 默认只出本机架构，而用户机器
+      # （Apple Silicon）与 ARM 主机必须要有 arm64 才能 pull —— 实测缺 arm64 时
+      # `docker pull` 直接报 no matching manifest for linux/arm64/v8。
+      # QEMU 必须先于 buildx：buildx 靠它注册 binfmt 才能跨架构构建。
+      # 代价：arm64 那一半是模拟执行的，前端（pnpm + vite）会明显变慢。
+      - uses: docker/setup-qemu-action@v4
+
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -57,6 +64,9 @@ jobs:
         with:
           context: .
           file: deploy/wx-obsidian/Dockerfile
+          # 一次构建出两种架构的 manifest list。不能写 load: true ——
+          # 多架构镜像无法装进本地 docker，只能 push。
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

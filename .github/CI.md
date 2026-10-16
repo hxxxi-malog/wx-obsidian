@@ -90,9 +90,18 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 
 - 只在 tag 上发布，主干推送不推镜像（不把 registry 当 CI 缓存用）。
 - 手动触发必须显式 checkout 目标 tag，否则会拿主干代码发一个「v1.0.0」的镜像。
-- 建 Release 是幂等的（已存在则跳过）。
-- 首次发布后，若要让别人能拉这个包，需在 GitHub 仓库的 Packages 设置里把该
-  package 设为 public。
+- 建 Release 是幂等的（已存在则跳过）；重发同一个 tag 会覆盖镜像标签，
+  所以补构建配置不需要发新版本号。
+- **多架构（amd64 + arm64）**：CI 里那个容器 job 只验本机架构（快），跨架构那半
+  只在发布时构建 —— 需要 `docker/setup-qemu-action`（必须先于 buildx，buildx 靠
+  它注册 binfmt）+ 给 build-push 传 `platforms: linux/amd64,linux/arm64`。
+  缺 arm64 时 Apple Silicon 上 `docker pull` 会直接报
+  `no matching manifest for linux/arm64/v8`（v1.0.0 首发踩过这个坑）。
+  多架构镜像不能配 `load: true`（装不进本地 docker），只能 push。
+  代价：arm64 那半走 QEMU 模拟，前端构建明显变慢。
+- 包可见性：**仓库是 public 时 GHCR 包默认也是 public**，匿名即可拉取
+  （实测 v1.0.0 不登录就能解析 manifest）；只有仓库转 private 时才需要去
+  Packages 设置里调整。
 
 ---
 
