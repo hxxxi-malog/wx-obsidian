@@ -21,6 +21,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # mypy 2.x 起 requires-python >=3.10，并移除了 Python 3.9 目标 —— 上界一旦
+      # 放开，重新解析锁时会在 >=3.10 档静默换上 2.x，而静态检查 job 只在 3.9
+      # 档跑，CI 不会红。属于「绿灯 + 保护静默消失」，所以在这里堵住。
+      # 理由详见 pyproject.toml 里 mypy 那行的注释。
+      - dependency-name: "mypy"
+        versions: [">=2"]
     groups:
       # 一次 PR 打包所有小版本更新，避免每周收到十几个 PR
       python-deps:

@@ -35,6 +35,13 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      # 多架构发布：GHA 的 runner 是 amd64，buildx 默认只出本机架构，而用户机器
+      # （Apple Silicon）与 ARM 主机必须要有 arm64 才能 pull —— 实测缺 arm64 时
+      # `docker pull` 直接报 no matching manifest for linux/arm64/v8。
+      # QEMU 必须先于 buildx：buildx 靠它注册 binfmt 才能跨架构构建。
+      # 代价：arm64 那一半是模拟执行的，前端（pnpm + vite）会明显变慢。
+      - uses: docker/setup-qemu-action@v4
+
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -43,13 +50,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 手动触发（workflow_dispatch）时 github.ref 是分支名 refs/heads/main，
+      # metadata-action 的 type=semver 解析不出 tag 会直接跳过（日志里表现为
+      # `value=,match=`），结果只推 latest + sha、版本标签原地不动。
+      # 所以显式把「这次要发布的 tag」解析出来，两条路径共用同一套标签推导。
+      - id: ref
+        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
             type=sha
             type=raw,value=latest
 
@@ -57,6 +71,9 @@ jobs:
         with:
           context: .
           file: deploy/wx-obsidian/Dockerfile
+          # 一次构建出两种架构的 manifest list。不能写 load: true ——
+          # 多架构镜像无法装进本地 docker，只能 push。
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
