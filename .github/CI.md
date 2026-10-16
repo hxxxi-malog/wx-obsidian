@@ -67,7 +67,7 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 | `tests` | `pytest tests -q`，矩阵 `["3.12"]` | 3.12 同时是 `requires-python` 下限与容器那一档。多跑一档会让 `uv.lock` 按 Python marker 分叉（历史上 3.9 + 3.12 分叉出 starlette 0.49/1.8、urllib3 2.6.3/2.8.0），锁文件与依赖审计都跟着复杂化，收益只是「多验证一档」 |
 | `frontend` | `pnpm style-guard` → `type-check` → `test` → `build` | 四道门缺一不可；**style-guard 排最前**（毫秒级纯行扫描，且负责把 vue-tsc 3 的插槽坑翻译成人话，见第六节）；用 `corepack` 起 pnpm（`package.json` 已钉 `packageManager: pnpm@12.9.1`），与 Dockerfile 同一条路径 |
 | `e2e` | `python tests/e2e/smoke_web.py` | 真跑一轮：临时 HOME + 本地 stub 上游，断言笔记落盘、`processed.json` 写入、日志掩码、`POST /api/shutdown` 干净退出。不花 API 费用 |
-| `docker` | 构建镜像 + **起容器打 `/api/ping`** | 只 build 不算数：镜像里前端产物缺失、依赖装错都会「构建成功但起不来」。本 job 在本次搭建中真的抓到过一个 `NameError` 启动即崩的版本。它用的是**裸 `docker run`**（不带 compose 的 volume 挂载），所以还顺带守住了「镜像自己在非 root 下能不能落盘」——`/home/wx` 被 root 抢先建出来、导致日志与 token 落不了盘的问题就是这么浮出来的 |
+| `docker` | 构建镜像 + **起容器打 `/api/ping`**，并断言版本号与 `pyproject.toml` 一致 | 只 build 不算数：镜像里前端产物缺失、依赖装错都会「构建成功但起不来」。本 job 在本次搭建中真的抓到过一个 `NameError` 启动即崩的版本。它用的是**裸 `docker run`**（不带 compose 的 volume 挂载），所以还顺带守住了「镜像自己在非 root 下能不能落盘」——`/home/wx` 被 root 抢先建出来、导致日志与 token 落不了盘的问题就是这么浮出来的。版本断言的理由：容器**刻意不装包本体**（见 Dockerfile），`/api/ping` 报的就是 `wx_obsidian/web/__init__.py` 里 `APP_VERSION` 的兜底值，而那句「发版时两处都要跟着 pyproject 的 version 改」以前只是注释 —— 现在只改一处就在这里红，实测反例：pyproject=1.1.0 而容器报 1.0.0 时该步骤退出码 1 |
 
 **依赖为什么这么装**（`uv sync --frozen --extra dev --no-install-project`）：
 
@@ -89,6 +89,12 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 `major.minor` + `sha` + `latest`）→ 建 GitHub Release。
 
 - 只在 tag 上发布，主干推送不推镜像（不把 registry 当 CI 缓存用）。
+- **预发布不顶滚动标签**：tag 里带 `-`（如 `v1.2.0-rc1`）视为预发布，
+  `latest` 与 `major.minor` 两条规则都挂 `enable=${{ steps.ref.outputs.prerelease == 'false' }}`
+  被跳过，只推精确版本 + `sha`；GitHub Release 也显式加 `--prerelease`。
+  否则 `docker pull ...:latest` 会静默拿到 rc 版，Release 页上 rc 还会被标成
+  「Latest release」。判定放在 `id: ref` 步骤里，经 `jobs.image.outputs.prerelease`
+  传给 `github-release`（**steps 不跨 job**，直接写 `steps.ref.outputs.*` 会静默取空串）。
 - 手动触发（workflow_dispatch）有**两处**必须显式处理，少一处就会发错：
   1. `checkout` 的 `ref` 要指向目标 tag，否则拿主干代码去发一个「v1.0.0」的镜像；
   2. 标签推导：`type=semver` 是从 `github.ref` 取版本的，而 dispatch 时它是**分支名**，

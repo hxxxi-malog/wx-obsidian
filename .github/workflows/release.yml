@@ -28,6 +28,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # steps 不跨 job：下面 github-release 要用的预发布判定必须从 job outputs 出去，
+    # 直接写 ${{ steps.ref.outputs.* }} 在那个 job 里会静默取到空串（actionlint 会报）。
+    outputs:
+      prerelease: ${{ steps.ref.outputs.prerelease }}
     steps:
       # 手动触发时 github.ref 是分支名，必须显式 checkout 目标 tag，
       # 否则会拿主干代码去发一个「v0.1.0」的镜像。
@@ -54,18 +58,33 @@ jobs:
       # metadata-action 的 type=semver 解析不出 tag 会直接跳过（日志里表现为
       # `value=,match=`），结果只推 latest + sha、版本标签原地不动。
       # 所以显式把「这次要发布的 tag」解析出来，两条路径共用同一套标签推导。
+      #
+      # 顺带判预发布：semver 里带 `-`（如 v1.2.0-rc1）就是预发布。
+      # 预发布绝不能顶掉 latest / 1.2 这类**滚动标签**，否则 `docker pull ...:latest`
+      # 会静默拿到 rc 版；精确标签（1.2.0-rc1）与 sha 照推，rc 依然可被指名拉取。
       - id: ref
-        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "本次发布：tag=$tag，预发布=$prerelease"
 
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # 两条滚动标签都挂了 enable：预发布（tag 带 `-`）时只推精确版本 + sha，
+          # 不动 latest、也不动 1.2（见上面 id: ref 的说明）。
+          # enable 收的是布尔字面量，GitHub Actions 会先把 ${{ }} 求值成 true/false。
           tags: |
             type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }},enable=${{ steps.ref.outputs.prerelease == 'false' }}
             type=sha
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.ref.outputs.prerelease == 'false' }}
 
       - uses: docker/build-push-action@v7
         with:
@@ -96,9 +115,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
+          PRERELEASE: ${{ needs.image.outputs.prerelease }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，跳过"
+          elif [ "$PRERELEASE" = "true" ]; then
+            # 必须显式标 --prerelease：不标的话 GitHub 会把它当成「Latest release」，
+            # 与 latest 镜像标签是同一类坑（用户看到 rc 被标成正式版）。
+            gh release create "$TAG" --generate-notes --title "$TAG" --prerelease
           else
             gh release create "$TAG" --generate-notes --title "$TAG"
           fi

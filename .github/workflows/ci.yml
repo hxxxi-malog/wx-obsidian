@@ -171,18 +171,42 @@ jobs:
       # /api/ping 免鉴权，正好拿来做这个判定。
       # WX_ALLOW_REMOTE=1 不能省：经发布端口进来的连接，容器看到的客户端 IP 是
       # 容器网关（不是回环），不放行会被来源校验挡掉——与 docker-compose.yml 同理。
-      - name: 容器能起来并回 /api/ping
+      #
+      # 顺带把「版本号两处一致」变成门禁：容器刻意不装包本体（见 Dockerfile 的
+      # 「刻意不安装包本体」注释），所以 /api/ping 报的就是 wx_obsidian/web/__init__.py
+      # 里 APP_VERSION 的**兜底值**。那句「发版时两处都要跟着 pyproject 的 version 改」
+      # 以前只是注释，现在只改一处就会在这里红掉。
+      - name: 容器能起来并回 /api/ping（版本号须与 pyproject 一致）
         run: |
+          want=$(python3 -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])")
+          if [ -z "$want" ]; then
+            echo "::error::没能从 pyproject.toml 解析出版本号（runner 的 python3 需要 3.11+ 的 tomllib）" >&2
+            exit 1
+          fi
+          echo "pyproject 里的版本：$want"
+
           docker run -d --name wx-ci -e WX_ALLOW_REMOTE=1 -p 8765:8765 wx-obsidian:ci
+          body=""
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8765/api/ping >/dev/null 2>&1; then
-              echo "容器健康检查通过"
-              docker rm -f wx-ci >/dev/null
-              exit 0
+            if body=$(curl -fsS http://127.0.0.1:8765/api/ping 2>/dev/null); then
+              break
             fi
             sleep 2
           done
-          echo "容器 60 秒内没有就绪，日志如下：" >&2
-          docker logs wx-ci >&2
+          if [ -z "$body" ]; then
+            echo "容器 60 秒内没有就绪，日志如下：" >&2
+            docker logs wx-ci >&2
+            docker rm -f wx-ci >/dev/null
+            exit 1
+          fi
+          echo "容器健康检查通过：$body"
+
+          got=$(printf '%s' "$body" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version', ''))")
           docker rm -f wx-ci >/dev/null
-          exit 1
+          if [ "$got" != "$want" ]; then
+            echo "::error::版本号不一致：pyproject=$want，容器 /api/ping=$got" >&2
+            echo "容器不装包本体，报的是 wx_obsidian/web/__init__.py 的 APP_VERSION 兜底值；" >&2
+            echo "改 pyproject.toml 的 version 时必须同步改这一处（前端 package.json 的 version 也建议同改）。" >&2
+            exit 1
+          fi
+          echo "版本号一致：$got"
