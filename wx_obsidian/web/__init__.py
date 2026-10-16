@@ -1,7 +1,7 @@
 """Web 交互层：FastAPI 本地服务 + Vue SPA。
 
-与 `wx_obsidian/tui/`、`wx_obsidian/cli.py` 平级，只依赖 orchestrator /
-config_manager / models / sources.factory；**不得** import `wx_obsidian.tui.*`。
+与 `wx_obsidian/cli.py` 平级，只依赖 orchestrator / config_manager / models /
+sources.factory。
 """
 
 from __future__ import annotations

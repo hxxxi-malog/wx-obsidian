@@ -4,8 +4,7 @@
 # 被 gitignore 的产物；依赖本地 `pnpm build` 会让「镜像可复现」变成
 # 「看你这台机器上有没有构建过」。
 #
-# 与 .app（packaging/）的关系：两者跑的是同一份 `wx_obsidian.web`，
-# 区别只是运行环境。容器里没有浏览器，也没有 TUI。
+# 容器里没有浏览器，也没有终端：日志落盘 + 页面上的日志面板是唯一的排错通道。
 
 # ---------------------------------------------------------------- 前端构建
 FROM node:22-alpine AS frontend
@@ -52,11 +51,10 @@ WORKDIR /app
 # 依赖只从 pyproject.toml 取（单一事实来源，不在 Dockerfile 里再抄一份清单）。
 # 刻意**不**安装包本体：我们从 /app 的源码树运行，装进 site-packages 的话
 # `web/api.py` 的 `Path(__file__).parent / "static"` 会指向那份没有前端产物的副本。
-# textual 是 TUI 的依赖，这个镜像永远不 import wx_obsidian.tui，故排除。
 COPY pyproject.toml ./
 RUN python -c "import tomllib; \
 deps = tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']; \
-print('\n'.join(d for d in deps if not d.startswith('textual')))" > /tmp/requirements.txt \
+print('\n'.join(deps))" > /tmp/requirements.txt \
     && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 

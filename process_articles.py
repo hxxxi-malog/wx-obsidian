@@ -4,7 +4,6 @@
 用法:
     python process_articles.py              # CLI 模式（默认）
     python process_articles.py --limit 5    # CLI 模式，限制处理数量
-    python process_articles.py tui          # TUI 模式
     python process_articles.py web          # Web 模式（浏览器界面）
 """
 
@@ -83,9 +82,6 @@ def main() -> None:
     cli_parser.add_argument("--force", action="store_true", help="强制重新处理已处理过的文章")
     cli_parser.add_argument("--article-id", type=str, default="", help="只处理指定 ID 的文章")
 
-    # TUI 子命令
-    subparsers.add_parser("tui", help="TUI 模式（终端图形界面）")
-
     # Web 子命令
     web_parser = subparsers.add_parser("web", help="Web 模式（浏览器界面）")
     web_parser.add_argument("--port", type=int, default=0, help="监听端口（0=读配置，默认 8765）")
@@ -106,7 +102,6 @@ def main() -> None:
     # 无子命令时默认 CLI 模式，兼容旧用法
     if len(sys.argv) > 1 and sys.argv[1] not in (
         "cli",
-        "tui",
         "web",
         "delete",
         "migrate-vault",
@@ -123,10 +118,6 @@ def main() -> None:
         _run_delete(args.query)
     elif args.command == "migrate-vault":
         _run_migrate_vault(args.new_vault, args.dry_run)
-    elif args.command == "tui":
-        from wx_obsidian.tui.app import main as tui_main
-
-        tui_main()
     elif args.command == "web":
         from wx_obsidian.web.__main__ import main as web_main
 

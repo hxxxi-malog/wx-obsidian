@@ -436,7 +436,7 @@ onMounted(() => {
         </div>
 
         <p class="m-0 mt-4 border-t border-hairline pt-3 text-[11.5px] leading-relaxed text-faint">
-          与 TUI 不能同时抓取：两边各自持有任务状态，会争抢 processed.json。
+          与 CLI 不能同时抓取：两边各自持有任务状态，会争抢 processed.json。
         </p>
       </AppPanel>
 

@@ -2,7 +2,7 @@
 
 迁移背景见 docs/design-docs/wewe-rss-replacement/spec.md：
 WeWe RSS 已归档且其闭源中转下线，改用 we-mp-rss 作为文章源。
-编排层（orchestrator / cli / tui）统一面向 `ArticleSource` 编程，
+编排层（orchestrator / cli / web）统一面向 `ArticleSource` 编程，
 具体实现由 `create_article_source()` 按配置选择。
 
 依赖隔离：本模块只依赖 models，不依赖 processing/ output/。

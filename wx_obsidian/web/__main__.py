@@ -3,16 +3,15 @@
 刻意只绑 127.0.0.1；token 存 `~/.wx-obsidian/web.token`（0600），
 供第二实例启动时复用（否则新开的标签页会因缺 token 而被拒）。
 
-三条与「双击即用」直接相关的设计：
+三条设计：
 
 - **单实例**（spec §4.6）：先 `GET /api/ping` 判断端口上是自己人还是别人。
   是自己人 → 只开浏览器后退出；是别人 → 立刻报错，而不是等 10 秒超时。
   端口占用本身就是进程级互斥，不需要锁文件。
-- **日志必须落盘**（见 `web/logging_setup.py`）：`--windowed` 下没有终端，
-  启动期失败若不写日志、不弹对话框，用户只会看到「双击了，什么都没发生」。
+- **日志必须落盘**（见 `web/logging_setup.py`）：容器、systemd、nohup 下都没有
+  终端，启动期失败若不写日志，用户只会看到「起来了，但没反应」。
 - **退出**：SIGINT/SIGTERM + `atexit` 都会优雅停；另外暴露 `POST /api/shutdown`
-  供网页里的「退出应用」按钮调用——窗口化的 .app 没有 Cocoa 事件循环，
-  系统菜单的 Cmd+Q 到不了本进程，必须给用户一个界面上的退出入口。
+  供网页里的「退出应用」按钮调用——容器里它就是「停服务」的入口。
 """
 
 from __future__ import annotations
@@ -20,14 +19,11 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
-import importlib
-import json
 import logging
 import os
 import secrets
 import signal
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -38,10 +34,9 @@ from types import FrameType
 import requests
 import uvicorn
 
-from wx_obsidian.config import PROMPTS_DIR, SCRIPT_DIR, SKILLS_DIR
 from wx_obsidian.config_manager import CONFIG_DIR, ConfigManager
 from wx_obsidian.web import APP_NAME, APP_VERSION
-from wx_obsidian.web.api import STATIC_DIR, create_app
+from wx_obsidian.web.api import create_app
 from wx_obsidian.web.logging_setup import (
     configure_logging,
     default_log_file,
@@ -58,17 +53,6 @@ TOKEN_FILE = CONFIG_DIR / "web.token"
 READY_TIMEOUT_SECONDS = 10.0
 # 容器里必须绑 0.0.0.0，否则发布出去的端口连不到服务（见 docs/design-docs/web-ui/docker.md）
 FLAG_NAMES = {"1", "true", "yes", "on"}
-
-# 打包自检用：这些依赖只要漏一个，冻结包都会在跑到对应功能时才炸
-_CHECK_MODULES = (
-    "fastapi",
-    "uvicorn",
-    "starlette",
-    "requests",
-    "yaml",
-    "jieba",
-    "mistune",
-)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -93,50 +77,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="固定访问令牌（默认随机生成；长期运行请用 WX_WEB_TOKEN）",
     )
     parser.add_argument("--log-file", default="", help="覆盖日志文件路径（排错用）")
-    parser.add_argument(
-        "--check-paths",
-        action="store_true",
-        help="只校验资源路径与依赖导入后退出（打包自检用）",
-    )
     return parser.parse_args(argv)
-
-
-def _check_paths() -> int:
-    """校验冻结包里的资源路径与依赖导入，返回进程退出码。"""
-    frozen = getattr(sys, "_MEIPASS", None)
-    print(f"frozen      : {bool(frozen)}")
-    if frozen:
-        print(f"_MEIPASS    : {frozen}")
-    print(f"script_dir  : {SCRIPT_DIR}")
-
-    ok = True
-    for label, path in (("skills", SKILLS_DIR), ("prompts", PROMPTS_DIR), ("static", STATIC_DIR)):
-        exists = path.is_dir()
-        ok = ok and exists
-        print(f"{label:<12}: {path}  {'OK' if exists else 'MISSING'}")
-
-    skill_files = (
-        sorted(p.name for p in SKILLS_DIR.glob("*/SKILL.md")) if SKILLS_DIR.is_dir() else []
-    )
-    print(f"skill files : {len(skill_files)} {skill_files}")
-    ok = ok and bool(skill_files)
-
-    print("--- 依赖导入 ---")
-    for name in _CHECK_MODULES:
-        try:
-            importlib.import_module(name)
-        except Exception as exc:  # 自检工具：任何导入失败都要报出来而不是崩掉
-            ok = False
-            print(f"{name:<12}: FAIL {type(exc).__name__}: {exc}")
-        else:
-            print(f"{name:<12}: OK")
-
-    return 0 if ok else 1
-
-
-def _is_frozen() -> bool:
-    """是否跑在 PyInstaller 冻结包里。"""
-    return bool(getattr(sys, "frozen", False))
 
 
 def _env_flag(name: str) -> bool:
@@ -268,28 +209,6 @@ def _open_browser(url: str) -> None:
         logger.warning("无法自动打开浏览器，请手动访问上面的地址")
 
 
-def _show_dialog(title: str, message: str) -> None:
-    """冻结包启动失败时的兜底提示（无终端，只能靠系统对话框）。
-
-    只在 macOS 冻结包里弹：源码运行时终端里已有完整输出，弹窗只会打扰开发。
-    """
-    if not (_is_frozen() and sys.platform == "darwin"):
-        return
-    script = (
-        f'display dialog {json.dumps(message)} buttons {{"好"}} default button 1 '
-        f"with title {json.dumps(title)} with icon caution"
-    )
-    try:
-        subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        logger.warning("无法弹出系统对话框", exc_info=True)
-
-
 def _install_signal_handlers(stop: threading.Event) -> None:
     def _handle_signal(signum: int, frame: FrameType | None) -> None:
         logger.info("收到信号 %s，准备退出", signum)
@@ -312,7 +231,6 @@ def _describe_log(log_path: Path) -> str:
 
 def _startup_failure(title: str, message: str, log_path: Path) -> int:
     logger.error("%s：%s", title, message)
-    _show_dialog(title, message)
     print(f"{title}：{message}", file=sys.stderr, flush=True)
     print(_describe_log(log_path), file=sys.stderr, flush=True)
     return 1
@@ -444,9 +362,6 @@ def main(argv: list[str] | None = None) -> int:
         进程退出码。
     """
     args = _parse_args(argv)
-    if args.check_paths:
-        # 自检要给人看，必须先于 stdout 重定向
-        return _check_paths()
 
     cm = ConfigManager()
     cm.load()
@@ -455,16 +370,10 @@ def main(argv: list[str] | None = None) -> int:
     written = configure_logging(
         level=log_level,
         log_file=log_file,
-        redirect_streams=_is_frozen(),
     )
     log_path = written or log_file or default_log_file()
 
     try:
-        if _is_frozen() and written is None:
-            _show_dialog(
-                "wx-obsidian 无法写日志",
-                "日志文件写入失败，应用仍会启动，但出错时将没有日志可查。",
-            )
         port = _resolve_port(args.port or int(cm.get("web.port", DEFAULT_PORT) or DEFAULT_PORT))
 
         # 监听地址与环境开关：参数 > 环境变量 > 配置 > 默认（保持只给本机）
@@ -515,7 +424,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:  # 无终端时不能让 traceback 消失在虚空里
         logger.exception("启动过程异常")
-        _show_dialog("wx-obsidian 启动异常", f"{type(exc).__name__}: {exc}\n详见日志 {log_path}")
         print(
             f"启动异常：{type(exc).__name__}: {exc}（详见 {log_path}）", file=sys.stderr, flush=True
         )

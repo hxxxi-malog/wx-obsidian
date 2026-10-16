@@ -1,4 +1,4 @@
-"""核心编排器：TUI/CLI 共享的抓取→处理→输出流程。"""
+"""核心编排器：CLI/Web 共享的抓取→处理→输出流程。"""
 
 from __future__ import annotations
 
@@ -639,7 +639,7 @@ class Orchestrator:
         except (json.JSONDecodeError, OSError):
             return []
 
-    # -- 数据源代理方法（TUI 通过 orchestrator 调用） ------------------------
+    # -- 数据源代理方法（Web 通过 orchestrator 调用） ------------------------
 
     def get_account_status(self) -> AccountStatus:
         """获取数据源账号登录状态。"""

@@ -6,7 +6,7 @@ import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
 // 构建产物直接落到 wx_obsidian/web/static/，由 FastAPI 同源托管（无 CORS）。
-// base 与 outDir 是 web/api.py 的 _mount_frontend 与 PyInstaller 的 STATIC_DIR
+// base 与 outDir 是 web/api.py 的 _mount_frontend 与 Dockerfile 前端构建阶段
 // 的共同前提（spec 的 R1），改动前先确认这两处。
 export default defineConfig({
   plugins: [vue(), tailwindcss()],

@@ -1,7 +1,7 @@
-"""数据源工厂：按配置选择具体实现，供 cli / tui 复用。
+"""数据源工厂：按配置选择具体实现，供 cli / web 复用。
 
 刻意接收**普通值**而不是 ConfigManager，避免 sources/ 反向依赖配置管理层；
-调用方（cli.py / tui/app.py）负责从配置里取值后传入。
+调用方（cli.py / web/runtime.py）负责从配置里取值后传入。
 
 数据源开关解析优先级：
     1. 环境变量 WX_SOURCE（临时覆盖，便于排查）
@@ -61,7 +61,7 @@ def create_article_source(
         source_type: `we_mp_rss`（建议先用 resolve_source_type() 归一化）。
         base_url: 数据源服务地址；留空时用该类型的默认地址。
         timeout: 请求超时（秒）。
-        token: we-mp-rss 管理接口的 Bearer Token（仅订阅管理等接口需要）。
+        token: we-mp-rss 管理接口的 Bearer Token（订阅列表、账号状态等需凭据的接口用）。
 
     Returns:
         实现了 ArticleSource 协议的客户端实例。

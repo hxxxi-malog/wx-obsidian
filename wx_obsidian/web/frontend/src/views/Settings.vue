@@ -62,7 +62,7 @@ const picking = ref(false)
 const quitOpen = ref(false)
 const quitting = ref(false)
 
-/** 面板文案里的日志位置（.app 没有终端，排错只能看这里） */
+/** 面板文案里的日志位置（服务没有终端，排错只能看这里） */
 const logHint = '~/Library/Logs/wx-obsidian/app.log'
 
 const SECTIONS = [
@@ -233,7 +233,7 @@ function onPicked(path: string): void {
   toast.info('已选中目录，记得点「保存配置」')
 }
 
-/** 退出应用：窗口化的 .app 里系统菜单的 Cmd+Q 到不了本进程，这是界面上的退出入口。 */
+/** 退出应用：容器 / 后台运行下没有别的优雅停法，这是界面上的退出入口。 */
 async function quitApp(): Promise<void> {
   quitting.value = true
   try {
@@ -661,7 +661,7 @@ onMounted(reload)
             </AppField>
           </div>
 
-          <AppField label="日志文件" hint="窗口化的 .app 没有终端，排错只能看这个文件">
+          <AppField label="日志文件" hint="服务没有终端，排错只能看这个文件">
             <div class="flex items-center gap-2">
               <p class="m-0 min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink" :title="logHint">
                 {{ logHint }}
@@ -679,7 +679,7 @@ onMounted(reload)
                 退出应用
               </AppButton>
               <p class="m-0 text-[12.5px] leading-relaxed text-muted">
-                双击启动的 .app 没有终端，系统菜单的 Cmd+Q 到不了它——退出请用这个按钮。
+                容器 / 后台运行下没有终端，停服务请用这个按钮（否则只能 docker stop 硬杀）。
               </p>
             </div>
           </div>

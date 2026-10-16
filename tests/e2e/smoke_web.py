@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
-"""冻结包端到端冒烟测试（设计文档 §5.6）。
-
-验证只有真 `.app` 才能证明的三件事：
-
-1. 冻结包能读到 `skills/` 与 `prompts/`——**真的生成一篇笔记**，不是只看能启动
-2. 冻结包能读写 `~/.wx-obsidian/`（config.json / .env / processed.json）
-3. `.app` 不依赖源码目录：把它拷到临时目录、用**独立 HOME**、`cwd` 也换掉再运行
+"""Web 服务端到端冒烟测试。
 
 做法：在本地起一个 stub（假装 we-mp-rss + DeepSeek 的 OpenAI 兼容接口），
-用临时 HOME 启动冻结包 → 提交一次抓取 → 断言笔记落盘、processed.json 更新、
-日志落盘且 token 被掩码 → 最后 `POST /api/shutdown` 验证进程能干净退出。
+用**独立 HOME** 启动真实的 Web 服务（源码方式：`python -m wx_obsidian.web`）
+→ 提交一次抓取 → 断言：
+
+1. 服务能读到 `skills/` 与 `prompts/`——**真的生成一篇笔记**，不是只看能启动
+2. 服务能读写 `~/.wx-obsidian/`（config.json / .env / processed.json）
+3. 服务不依赖 `cwd`：换到临时目录、换掉 HOME 再跑
+4. 日志落盘、token 被掩码，`POST /api/shutdown` 能让进程干净退出
 
 **不花一分钱、不碰真实 vault、不碰真实 `~/.wx-obsidian`。**
 
 用法::
 
-    .venv/bin/python packaging/smoke_frozen.py             # 用 dist/wx-obsidian.app
-    .venv/bin/python packaging/smoke_frozen.py --app /Applications/wx-obsidian.app
-    .venv/bin/python packaging/smoke_frozen.py --keep      # 保留临时目录便于排查
+    .venv/bin/python tests/e2e/smoke_web.py
+    .venv/bin/python tests/e2e/smoke_web.py --keep      # 保留临时目录便于排查
 """
 
 from __future__ import annotations
@@ -41,7 +39,7 @@ from typing import Any
 import requests
 
 NOTE_MARKER = "冒烟测试占位正文"
-ARTICLE_TITLE = "冒烟测试文章：冻结包能否生成笔记"
+ARTICLE_TITLE = "冒烟测试文章：Web 服务能否生成笔记"
 ACCOUNT_NAME = "冒烟测试号"
 FIX_PROMPT_MARKER = "请修正上述问题"
 
@@ -54,7 +52,7 @@ FIX_PROMPT_MARKER = "请修正上述问题"
 def _feed_payload() -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     body = "".join(
-        f"<p>第 {i} 段：{NOTE_MARKER}，用于验证冻结包能走完取文 → 生成 → 落盘全链路。</p>"
+        f"<p>第 {i} 段：{NOTE_MARKER}，用于验证服务能走完取文 → 生成 → 落盘全链路。</p>"
         for i in range(1, 13)
     )
     return {
@@ -78,19 +76,19 @@ def _note_payload() -> dict[str, Any]:
     return {
         "category": "LLM",
         "sub_topic": "",
-        "summary": f"本文是打包自检用的结构化摘要，{NOTE_MARKER}。" * 4,
+        "summary": f"本文是端到端自检用的结构化摘要，{NOTE_MARKER}。" * 4,
         "key_points": [
-            f"**冻结包**：{NOTE_MARKER}，验证资源是否随包分发。",
-            f"**端到端**：{NOTE_MARKER}，验证 skills 与 prompts 能被读到。",
+            f"**端到端**：{NOTE_MARKER}，验证服务能读到 skills 与 prompts。",
             f"**落盘**：{NOTE_MARKER}，验证 vault 与 processed.json 可写。",
+            f"**退出**：{NOTE_MARKER}，验证 POST /api/shutdown 能干净收尾。",
         ],
         "concepts": [
             {
-                "name": "冻结包",
-                "description": "冻结包是把解释器与依赖一起打进 .app 的产物。",
+                "name": "端到端冒烟",
+                "description": "用本地 stub 上游跑完整管线，验证资源加载与落盘。",
             }
         ],
-        "tags": ["冒烟测试", "打包"],
+        "tags": ["冒烟测试", "端到端"],
         "related_topics": [],
         "images": [],
         "body_sections": [
@@ -231,17 +229,28 @@ def _write_config(home: Path, vault: Path, stub_port: int, web_port: int) -> Pat
     return path
 
 
+def _default_log_file(home: Path) -> Path:
+    """复刻 `web.logging_setup.default_log_file()`：日志路径随平台不同。
+
+    刻意在这里重算而不是把 `--log-file` 传进去——要验证的正是「默认路径」
+    在独立 HOME 下确实落到了临时目录里。
+    """
+    if sys.platform == "darwin":
+        return home / "Library" / "Logs" / "wx-obsidian" / "app.log"
+    return home / ".wx-obsidian" / "logs" / "app.log"
+
+
 # ---------------------------------------------------------------------------
-# 驱动冻结包
+# 驱动 Web 服务
 # ---------------------------------------------------------------------------
 
 
-def _wait_ready(binary: Path, port: int, token_file: Path, proc: subprocess.Popen[str]) -> str:
+def _wait_ready(port: int, token_file: Path, proc: subprocess.Popen[str]) -> str:
     base = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"冻结包提前退出（exit={proc.returncode}）")
+            raise RuntimeError(f"服务提前退出（exit={proc.returncode}）")
         try:
             payload = requests.get(f"{base}/api/ping", timeout=1.0).json()
         except (requests.RequestException, ValueError):
@@ -250,7 +259,7 @@ def _wait_ready(binary: Path, port: int, token_file: Path, proc: subprocess.Pope
         if payload.get("app") == "wx-obsidian" and token_file.is_file():
             return token_file.read_text(encoding="utf-8").strip()
         time.sleep(0.3)
-    raise RuntimeError("冻结包 30 秒内未就绪")
+    raise RuntimeError("服务 30 秒内未就绪")
 
 
 def _fetch_once(port: int, token: str, timeout: float) -> dict[str, Any]:
@@ -264,9 +273,11 @@ def _fetch_once(port: int, token: str, timeout: float) -> dict[str, Any]:
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        snapshot = requests.get(f"{base}/api/jobs/{job_id}", headers=headers, timeout=10.0).json()
-        if snapshot.get("state") in ("finished", "cancelled", "error"):
-            return snapshot
+        payload: Any = requests.get(
+            f"{base}/api/jobs/{job_id}", headers=headers, timeout=10.0
+        ).json()
+        if isinstance(payload, dict) and payload.get("state") in ("finished", "cancelled", "error"):
+            return payload
         time.sleep(0.5)
     raise RuntimeError(f"任务 {job_id} 在 {timeout:.0f} 秒内未结束")
 
@@ -313,68 +324,53 @@ def _report_notes(vault: Path) -> tuple[bool, str]:
 
 def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数反而更难读
     args = _parse_args()
-    repo = Path(__file__).resolve().parent.parent
-    source_app = Path(args.app).expanduser()
-    if not source_app.is_absolute():
-        source_app = repo / source_app
-
-    binary = source_app / "Contents" / "MacOS" / "wx-obsidian"
-    if not binary.is_file():
-        print(f"找不到冻结包可执行文件：{binary}", file=sys.stderr)
-        print("先构建：./packaging/build_app.sh", file=sys.stderr)
-        return 2
+    repo = Path(__file__).resolve().parent.parent.parent
 
     tmp = Path(tempfile.mkdtemp(prefix="wx-smoke-"))
     home = tmp / "home"
     home.mkdir(parents=True)
     vault = tmp / "Vault"
     vault.mkdir()
-    # 拷出仓库再跑：证明 .app 不依赖源码目录
-    app = tmp / "wx-obsidian.app"
-    shutil.copytree(source_app, app, symlinks=True)
 
     stub, stub_port = _start_stub()
     web_port = _free_port()
     config_file = _write_config(home, vault, stub_port, web_port)
     config_before = config_file.read_text(encoding="utf-8")
     token_file = home / ".wx-obsidian" / "web.token"
-    log_file = home / "Library" / "Logs" / "wx-obsidian" / "app.log"
+    log_file = _default_log_file(home)
+    cmd = [
+        sys.executable,
+        "-m",
+        "wx_obsidian.web",
+        "--port",
+        str(web_port),
+        "--no-open",
+    ]
     proc: subprocess.Popen[str] | None = None
     token = ""
     failures = 0
 
     print(f"临时目录   : {tmp}")
-    print(f"冻结包     : {app}")
+    print(f"源码根     : {repo}")
+    print(f"启动命令   : {' '.join(cmd)}")
     print(f"stub 上游  : http://127.0.0.1:{stub_port}（we-mp-rss + DeepSeek）")
     print(f"服务端口   : {web_port}")
 
     try:
-        print("\n1) 资源自检 --check-paths")
-        check = subprocess.run(
-            [str(app / "Contents" / "MacOS" / "wx-obsidian"), "--check-paths"],
-            capture_output=True,
-            text=True,
-            cwd=tmp,
-            timeout=120,
-            check=False,
-        )
-        failures += 0 if _check(check.returncode == 0, "退出码 0") else 1
-        failures += 0 if _check("MISSING" not in check.stdout, "资源路径全部就位") else 1
-        failures += 0 if _check("jieba" in check.stdout, "依赖导入清单包含 jieba") else 1
-
-        print("\n2) 独立 HOME 启动冻结包")
+        print("\n1) 独立 HOME + 临时 cwd 启动 Web 服务")
+        # cwd 换到 tmp、HOME 换到临时目录：证明服务不依赖当前目录，也不碰真实配置
         proc = subprocess.Popen(
-            [str(app / "Contents" / "MacOS" / "wx-obsidian"), "--port", str(web_port), "--no-open"],
-            env={**os.environ, "HOME": str(home)},
+            cmd,
+            env={**os.environ, "HOME": str(home), "PYTHONPATH": str(repo)},
             cwd=tmp,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        token = _wait_ready(app / "Contents" / "MacOS" / "wx-obsidian", web_port, token_file, proc)
+        token = _wait_ready(web_port, token_file, proc)
         failures += 0 if _check(bool(token), "服务就绪并写出 web.token") else 1
 
-        print("\n3) 提交一次抓取（stub 上游，零 API 费用）")
+        print("\n2) 提交一次抓取（stub 上游，零 API 费用）")
         snapshot = _fetch_once(web_port, token, timeout=args.timeout)
         failures += 0 if _check(snapshot.get("state") == "finished", "任务终态 finished") else 1
         failures += (
@@ -387,11 +383,11 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
             else 1
         )
 
-        print("\n4) 冻结包真的生成了笔记（skills/prompts 被读到）")
+        print("\n3) 服务真的生成了笔记（skills/prompts 被读到）")
         ok, detail = _report_notes(vault)
         failures += 0 if _check(ok, "笔记内容正确", detail) else 1
 
-        print("\n5) 能读写 ~/.wx-obsidian/")
+        print("\n4) 能读写 ~/.wx-obsidian/")
         processed = json.loads((home / ".wx-obsidian" / "processed.json").read_text("utf-8"))
         done = [
             k for k, v in processed.items() if isinstance(v, dict) and v.get("status") == "done"
@@ -409,19 +405,15 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
             else 1
         )
 
-        print("\n6) 日志落盘、掩码正确、没有假的 ERROR")
+        print("\n5) 日志落盘、掩码正确")
         log_text = log_file.read_text(encoding="utf-8") if log_file.is_file() else ""
         failures += 0 if _check(bool(log_text), "日志文件非空", str(log_file)) else 1
         failures += 0 if _check("已启动" in log_text, "日志含启动记录") else 1
         failures += 0 if _check(token not in log_text, "日志不含明文 token") else 1
         failures += 0 if _check("token=****" in log_text, "日志里的 token 已掩码") else 1
         failures += 0 if _check("uvicorn.error" in log_text, "uvicorn 日志经 root 落盘") else 1
-        # uvicorn/jieba 的 INFO 若被打成 ERROR，真错误会被一排假 ERROR 淹没
-        failures += (
-            0 if _check("wx_obsidian.stderr" not in log_text, "无 stderr 被误标为 ERROR") else 1
-        )
 
-        print("\n7) POST /api/shutdown 让进程干净退出")
+        print("\n6) POST /api/shutdown 让进程干净退出")
         code = _shutdown(web_port, token, proc)
         failures += 0 if _check(code == 0, "退出码 0", f"exit={code}") else 1
         proc = None
@@ -431,7 +423,7 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
             with proc.stdout:
                 tail = proc.stdout.read()[-2000:]
             if tail.strip():
-                print("--- 冻结包输出尾部 ---\n" + tail, file=sys.stderr)
+                print("--- 服务输出尾部 ---\n" + tail, file=sys.stderr)
         if log_file.is_file():
             print("--- 日志尾部 ---\n" + log_file.read_text("utf-8")[-2000:], file=sys.stderr)
         failures += 1
@@ -449,13 +441,12 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
     if failures:
         print(f"冒烟失败：{failures} 项未通过")
         return 1
-    print("冒烟通过：冻结包能独立启动、生成笔记、落盘日志并干净退出")
+    print("冒烟通过：服务能独立启动、生成笔记、落盘日志并干净退出")
     return 0
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="冻结包端到端冒烟测试")
-    parser.add_argument("--app", default="dist/wx-obsidian.app", help=".app 路径")
+    parser = argparse.ArgumentParser(description="Web 服务端到端冒烟测试")
     parser.add_argument("--timeout", type=float, default=180.0, help="抓取任务超时（秒）")
     parser.add_argument("--keep", action="store_true", help="保留临时目录")
     return parser.parse_args()

@@ -9,7 +9,7 @@
 </p>
 
 公众号文章 → Obsidian 知识库自动化流水线：从 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 抓取公众号文章，交给 DeepSeek 生成结构化笔记，写进 Obsidian Vault，并自动维护双向链接与知识图谱。
-提供 CLI、TUI（终端界面）、Web（浏览器界面）三种用法；一条 `docker compose up -d --build` 就能跑起来。
+提供 CLI 与 Web（浏览器界面）两种用法；一条 `docker compose up -d --build` 就能跑起来。
 
 <p align="center">
   <img src="assets/web-dashboard.png" alt="状态总览页：数据源 / LLM / Vision / Vault 四项连通性检查、处理统计与分类分布" width="860">
@@ -17,7 +17,7 @@
 
 ## 特性
 
-- **三种用法共用一套编排器**：命令行批量处理、[Textual](https://textual.textualize.io/) TUI、FastAPI + Vue 浏览器界面
+- **两种用法共用一套编排器**：命令行批量处理、FastAPI + Vue 浏览器界面
 - **增量抓取**：按 `processed.json` 去重，处理过的文章不会重复花钱
 - **并行 + 重试**：ThreadPoolExecutor 并行，指数退避重试（最多 3 次，覆盖 429 / 5xx / 网络错误）
 - **多模态 Vision**：视觉模型为 LLM 提供图片语义描述；Vision 不可用时自动降级为纯文本 + 关键词匹配插图，不中断管线
@@ -104,7 +104,6 @@ docker compose ps                                          # 两个都应显示 
 |------|------|------|
 | Docker（推荐） | `docker compose up -d --build` | 数据源 + Web 界面，见上 |
 | CLI | `python process_articles.py` | 批量跑一轮，不常驻 |
-| TUI | `python process_articles.py tui` | 终端图形界面 |
 | Web | `python process_articles.py web` | 浏览器界面，与容器里那个是同一个 |
 
 源码方式先装依赖：`uv sync`（推荐）或 `pip install -e .`。
@@ -119,13 +118,6 @@ python process_articles.py --article-id <id> # 只处理指定 ID
 python process_articles.py delete "标题或ID"  # 级联删除一篇文章的全部关联数据
 ./run.sh --limit 5                           # 同上，额外把输出追加到 logs/run.log
 ```
-
-**TUI**：`python process_articles.py tui`，八个界面 —— Home（概览）/ Container（数据源状态）/ Account（登录与保活）/ Feeds（订阅管理）/ Config（配置 + 连通性测试）/ Fetch（抓取）/ Articles（文章列表 + 级联删除）/ Scheduler（应用内定时，**仅 TUI 运行期间生效**）。
-
-<p align="center">
-  <img src="assets/tui-home.png" alt="TUI 首页：状态、已处理篇数与编号导航" width="820">
-  <br><sub>TUI 首页：健康状态、处理统计与编号导航（数字键切换，底部常驻快捷键）</sub>
-</p>
 
 **Web**
 
@@ -145,8 +137,8 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 - **只绑 `127.0.0.1`，除 `/api/ping` 外的所有 `/api/*` 都要启动时打印的 token**（`X-WX-Token` 头或 `?token=`），局域网内其它机器访问不到；进度走 SSE，断线或刷新会自动重连并按事件序号补齐
 - **密钥只回显掩码**：配置页留空表示「不修改」，不会清掉已存的 Key；日志同样过掩码过滤器（`sk-` / `token=` / `Bearer`）
 - **任务单飞**：同一时刻只允许一个抓取任务，第二个请求返回 409 —— `processed.json`、MOC、概念页都不能并发写
-- **⚠️ 不要同时用 TUI 和 Web 发起抓取**：两者各自持有任务状态，会争抢 `processed.json`，要跑就开一个
-- **退出请用页面上的「退出应用」**（`POST /api/shutdown`）：窗口化的 `.app` 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了它；终端里 Ctrl+C / SIGTERM，或 `pkill -f wx-obsidian` 同样有效
+- **⚠️ 不要同时用 CLI 和 Web 发起抓取**：两边各自持有任务状态，会争抢 `processed.json`，要跑就开一个
+- **退出**：网页上的「退出应用」（`POST /api/shutdown`）会让服务干净收尾，容器里它就是「停服务」的入口；终端里 Ctrl+C / SIGTERM，或 `pkill -f wx-obsidian` 同样有效
 
 <p align="center">
   <img src="assets/web-run.png" alt="文章抓取页：处理条数预设、强制重跑开关、实时进度与阶段时间线" width="820">
@@ -176,28 +168,12 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 **真正的边界是上表第一行的宿主端口绑定；token 校验在任何情况下都强制。**
 
 > 从旧方式（直接 `cd deploy/we-mp-rss && docker compose up -d`）迁过来，先 `cd deploy/we-mp-rss && docker compose down`，否则容器名冲突。数据在挂载卷里，不受影响。
->
-> 镜像与 `.app` 都不含 TUI（打包时同样排除 `textual` 与 `wx_obsidian.tui`），TUI 只能用源码方式跑。
-
-## 桌面应用（macOS，可选）
-
-主用方式是上面的 Docker；`.app` 仍然可用、脚本都保留，适合不想常驻 Docker 的场景。
-
-```bash
-./packaging/build_app.sh              # 构建 + ad-hoc 签名 + 资源自检
-./packaging/build_app.sh --dmg        # 顺带产出 dist/wx-obsidian.dmg
-./packaging/build_app.sh --install    # 装到 /Applications（先删旧包再 ditto）
-```
-
-- 重装**必须**用 `--install`（或先 `rm -rf` 旧包）：`cp -R` 的合并语义会留下上一次构建的前端产物，`codesign --verify` 会报 `a sealed resource is missing or invalid`
-- **不要从 `~/Downloads` 运行**：macOS 的 TCC 会拦截那里的读写，装到 `/Applications`；自用 ad-hoc 签名就够，**要分发给别人**得 Developer ID + 公证
-- 冻结包不读仓库里的 `.env`（密钥不入包），配置与密钥只认 `~/.wx-obsidian/`；端口被占时会先探测是不是自己人，是自己人就只开浏览器，不是就立刻报错
 
 ## 配置
 
 | 内容 | 位置 | 谁在用 |
 |------|------|--------|
-| API Key、运行时开关 | `~/.wx-obsidian/.env`（模板 [`.env.example`](.env.example)） | CLI / TUI / `.app`；Web 配置页会代写 |
+| API Key、运行时开关 | `~/.wx-obsidian/.env`（模板 [`.env.example`](.env.example)） | CLI / Web；Web 配置页会代写 |
 | Vault 路径、分类、数据源、模型渠道、端口 | `~/.wx-obsidian/config.json` | 所有入口共用 |
 | 去重账本 / 相似度索引 / 日志 | `~/.wx-obsidian/` 下的 `processed.json` / `similarity.sqlite` / `logs/` | 程序自动维护 |
 
@@ -213,7 +189,7 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 | `WX_WEB_TOKEN` / `WX_WEB_HOST` / `WX_ALLOW_REMOTE` | 否 | Web 启动期开关，容器部署用 |
 | `DEBUG` | 否 | 布尔开关：`1/true/yes/on` 开启，`0/false/no/off`（默认）关闭，认不出的取值按关闭并记一条告警；开启时把 API 原始响应写到 `last_response.txt` |
 
-`~/.wx-obsidian/config.json` 的关键字段（TUI 的 Config 界面可直接编辑）：
+`~/.wx-obsidian/config.json` 的关键字段（Web 的配置页可直接编辑）：
 
 ```jsonc
 {
@@ -234,7 +210,7 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 
 ```
 process_articles.py / docker compose
-    └── wx_obsidian/orchestrator.py           # 6-stage 编排器，CLI / TUI / Web 共用
+    └── wx_obsidian/orchestrator.py           # 6-stage 编排器，CLI / Web 共用
             ├── sources/     数据获取（we-mp-rss 客户端 + 正文提取）
             ├── processing/  处理层（Vision / LLM / Markdown / 图片 / 相似度）
             ├── output/      输出层（Vault 写入 / 格式校验 / 级联删除）
@@ -277,13 +253,13 @@ Prompt 拆成 system / user 两份（`string.Template` 的 `$变量` 占位符�
 没配时上游返回 401，界面只会显示「查不到 / 未登录」。令牌是 JWT，配置页会显示到期时间；取令牌的命令见 [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md)。
 
 **日志在哪？**
-Docker 用 `docker compose logs -f wx-obsidian`（同时落盘 `~/.wx-obsidian/logs/app.log`）；源码 / `.app` 落在 `~/Library/Logs/wx-obsidian/app.log`（2MB × 3 轮转）。
-日志里有 `print()` 出来的管线进度（冻结包与容器会接管 stdout，源码方式 `print()` 仍在终端），`sk-` / `token=` / `Bearer` 都会被掩码。冻结包（`.app`）启动失败（端口冲突、配置损坏）还会弹系统对话框，不会静默。
-冻结包的端到端自检（临时 HOME + 本地 stub 上游，**不花 API 费用、不碰真实 vault**）：
+Docker 用 `docker compose logs -f wx-obsidian`（同时落盘 `~/.wx-obsidian/logs/app.log`）；源码方式在 macOS 上落 `~/Library/Logs/wx-obsidian/app.log`，其它平台落 `~/.wx-obsidian/logs/app.log`（2MB × 3 轮转）。
+日志里有 `print()` 出来的管线进度（容器接管 stdout，源码方式 `print()` 仍在终端），`sk-` / `token=` / `Bearer` 都会被掩码。
+端到端自检（临时 HOME + 本地 stub 上游真跑一轮，**不花 API 费用、不碰真实 vault**）：
 
 ```bash
-.venv/bin/python packaging/smoke_frozen.py            # 需要先跑 build_app.sh
-.venv/bin/python packaging/smoke_frozen.py --keep     # 保留临时目录便于排查
+.venv/bin/python tests/e2e/smoke_web.py            # 抓一篇 → 断言笔记 / 账本 / 日志 / 干净退出
+.venv/bin/python tests/e2e/smoke_web.py --keep     # 保留临时目录便于排查
 ```
 
 **搬过 Vault 之后。**
@@ -325,7 +301,7 @@ python validate_markdown.py --dir <directory>                # 校验 Markdown
 
 ## 致谢
 
-数据源与公众号正文提取依赖 [we-mp-rss](https://github.com/rachelos/we-mp-rss)（部署配方在 `deploy/we-mp-rss/`）；终端界面用 [Textual](https://textual.textualize.io/)，Web 界面用 FastAPI + Vue 3 + Tailwind。
+数据源与公众号正文提取依赖 [we-mp-rss](https://github.com/rachelos/we-mp-rss)（部署配方在 `deploy/we-mp-rss/`）；Web 界面用 FastAPI + Vue 3 + Tailwind。
 
 ## 许可
 

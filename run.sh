@@ -4,7 +4,8 @@
 # 为什么没有系统级定时任务：原来的 macOS LaunchAgent（每日 9:03）在 macOS 15 的
 # TCC 下无法读取 ~/Downloads 里的脚本与 vault —— 实测 launchd.err 41 次全部是
 # "Operation not permitted"，且只把仓库搬出 ~/Downloads 也没用（vault 也在里面）。
-# 需要自动化时用 TUI 的 Scheduler 界面（APScheduler，仅在应用运行期间生效）。
+# 需要自动化时请把仓库移出 ~/Downloads，再用系统调度器（cron / launchd /
+# systemd timer）自行触发 —— 本项目不内置调度器。
 #
 # 用法：
 #   ./run.sh                # 处理所有未处理文章

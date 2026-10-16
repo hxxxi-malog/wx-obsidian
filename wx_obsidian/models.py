@@ -1,4 +1,4 @@
-"""全局数据模型：TUI/CLI/Orchestrator 共享的 dataclass 定义。"""
+"""全局数据模型：CLI/Web/Orchestrator 共享的 dataclass 定义。"""
 
 from __future__ import annotations
 

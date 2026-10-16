@@ -1,17 +1,14 @@
-# 构建上下文只需要源码与配置。没有这个文件的话上下文会把 .venv312/.pnpm-store/dist
+# 构建上下文只需要源码与配置。没有这个文件的话上下文会把 .venv312/.pnpm-store
 # 一起打包上传（实测 1GB 量级），既慢又没必要。
 
 # 虚拟环境与依赖缓存
 .venv
 .venv312
-.build-venv
 .pnpm-store
 node_modules
 wx_obsidian/web/frontend/node_modules
 
 # 构建产物：镜像里一律现构建，避免把本地过期产物带进去
-dist
-build
 wx_obsidian/web/static
 
 # 本地文档与 Agent 配置

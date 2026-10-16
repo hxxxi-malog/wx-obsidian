@@ -105,7 +105,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         # 调大会显著增加传输量；调小则可能漏掉窗口外的文章。
         "feed_limit": 300,
     },
-    # Web 模式（`process_articles.py web` / .app / 容器）
+    # Web 模式（`process_articles.py web` / 容器）
     # 注意：host 与 allow_remote 是**启动期**设置（改了要重启），
     # 容器部署通常直接用环境变量 WX_WEB_HOST / WX_ALLOW_REMOTE 覆盖。
     "web": {

@@ -4,7 +4,7 @@
 #
 # 组成：
 #   we-mp-rss    数据源（Docker 里跑，宿主浏览器通过 127.0.0.1:8001 看后台/扫码）
-#   wx-obsidian  本项目的 Web 服务（取代 .app，见 docs/design-docs/web-ui/docker.md）
+#   wx-obsidian  本项目的 Web 服务（见 docs/design-docs/web-ui/docker.md）
 #
 # we-mp-rss 的配方仍以 `deploy/we-mp-rss/docker-compose.yml` 为准，这里只是 include
 # 进来（不复制定义，避免两份配方各自漂移）。include 会把它的 env_file 一起带上，
@@ -38,7 +38,7 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       # 容器内必须绑 wildcard，否则宿主发布出去的端口连不到服务
       - WX_WEB_HOST=0.0.0.0
-      # 容器之间用服务名；宿主上的 CLI/TUI 仍用 config.json 里的 localhost:8001，
+      # 容器之间用服务名；宿主上的 CLI/Web 仍用 config.json 里的 localhost:8001，
       # config.json 只有一份（processed.json 必须共用），所以地址只能这样按环境区分
       - WX_SOURCE_BASE_URL=http://we-mp-rss:8001
       # 容器里**必须**放行私有网段：经发布端口进来的连接，来源是容器网关
@@ -48,12 +48,12 @@ services:
       # 确有必要可关：WX_ALLOW_REMOTE=0 docker compose up -d
       - WX_ALLOW_REMOTE=${WX_ALLOW_REMOTE:-1}
     ports:
-      # 默认只给本机，与 .app/源码方式的行为一致。
+      # 默认只给本机，与源码方式的行为一致。
       # 要局域网/手机访问：WX_WEB_BIND=0.0.0.0 docker compose up -d
       # 并且同时打开来源放行（见 deploy/wx-obsidian/.env.example 的 WX_ALLOW_REMOTE）。
       # 注意：明文 HTTP + URL 里的 token 在共享网段上是真的风险，优先考虑
       # Tailscale 或 SSH 隧道（docs/design-docs/web-ui/docker.md §5）。
-      # WX_WEB_PORT 是宿主端口（容器内固定 8765），用来与原 .app 并存一段时间
+      # WX_WEB_PORT 是宿主端口（容器内固定 8765），可与源码方式并存一段时间
       - "${WX_WEB_BIND:-127.0.0.1}:${WX_WEB_PORT:-8765}:8765"
     volumes:
       # 配置与状态（config.json / .env / processed.json / similarity.sqlite）

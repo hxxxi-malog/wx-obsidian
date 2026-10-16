@@ -1,7 +1,7 @@
 """Web 运行期装配：ConfigManager + 数据源 + Orchestrator。
 
-装配逻辑与 `tui/app.py:__init__` 一致。刻意复刻而非抽取共享函数：
-P0 不动已跑通的 TUI，避免把 Web 的回归风险带进 TUI。
+装配步骤与 `cli.py` 保持一致（ConfigManager → create_article_source → Orchestrator），
+集中在这里是为了让 Web 层与 CLI 用同一套取值与数据源地址解析。
 """
 
 from __future__ import annotations

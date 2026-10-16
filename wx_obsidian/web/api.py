@@ -482,8 +482,8 @@ def create_app(
         token: 访问 token；省略时随机生成（生产由启动器生成并写盘）。
         extra_allowed_hosts: 额外放行来源（仅测试用，生产保持回环限制）。
         on_quit: 「退出应用」回调（启动器传入 stop.set）。省略时该接口返回 501——
-            窗口化的 .app 没有 Cocoa 事件循环，系统菜单的 Cmd+Q 到不了本进程，
-            所以界面上必须有一个能真正退出的入口。
+            容器/后台运行下没有别的优雅停法（docker stop 是硬杀），所以界面上
+            必须有一个能真正退出的入口。
         allow_remote: 是否放行私有网段来源（默认否）。容器/局域网部署由启动器的
             `WX_ALLOW_REMOTE` 显式打开；打开后 token 校验依然强制。
 
@@ -542,7 +542,7 @@ def create_app(
 
     @app.post("/api/shutdown")
     async def shutdown() -> Response:
-        """退出应用（窗口化的 .app 没有 Cocoa 事件循环，Cmd+Q 到不了本进程）。"""
+        """退出应用（容器/后台运行下没有别的优雅停法，docker stop 是硬杀）。"""
         if on_quit is None:
             return JSONResponse(
                 {"error": "not_supported", "detail": "当前启动方式不支持从页面退出"},

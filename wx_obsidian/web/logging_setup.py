@@ -1,10 +1,8 @@
-"""日志落盘：`--windowed` 的 .app 里唯一的排错通道。
+"""日志落盘 + 密钥掩码：Web 服务的排错通道。
 
-**为什么必须有这个模块**：`.app` 以 `console=False` 打包（`packaging/wx-obsidian.spec`），
-双击启动时没有终端。一旦启动阶段就失败（端口被占、配置损坏、资源缺失），
-用户看到的现象是「双击了，什么都没发生」——没有任何可自查的线索。
-所以日志必须落盘；而且 **stdout/stderr 也要一起落盘**：管线的进度是 `print()`
-出来的，不接管这一步，日志里就只剩 uvicorn 的启动记录，看不到真正在做的事。
+**为什么必须有这个模块**：Web 服务常以「没有终端」的方式跑——容器
+（`docker compose`）、systemd、nohup 都是。一旦启动阶段就失败（端口被占、
+配置损坏、资源缺失），终端里看不到任何线索，只能靠日志回溯。
 
 两条设计取舍：
 
@@ -16,14 +14,11 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import logging
 import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, TextIO
 
 LOG_DIR_NAME = "wx-obsidian"
 LOG_FILE_NAME = "app.log"
@@ -78,48 +73,13 @@ class MaskSecretsFilter(logging.Filter):
         return True
 
 
-class _LogStream(io.TextIOBase):
-    """把 ``print()`` 的输出转发到日志。
-
-    只接管 Python 层的 `sys.stdout` / `sys.stderr`；C 扩展直接写 fd 的输出
-    不在范围内（uvicorn 自身走 logging，已在范围内）。
-    """
-
-    def __init__(self, logger: logging.Logger, level: int, fallback: TextIO | None) -> None:
-        super().__init__()
-        self._logger = logger
-        self._level = level
-        self._fallback = fallback
-        self._buffer = ""
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, text: str) -> int:
-        self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            if line.strip():
-                self._logger.log(self._level, "%s", line)
-        return len(text)
-
-    def flush(self) -> None:
-        if self._buffer.strip():
-            self._logger.log(self._level, "%s", self._buffer)
-        self._buffer = ""
-        if self._fallback is not None:
-            with contextlib.suppress(OSError, ValueError):
-                self._fallback.flush()
-
-
 def quiet_noisy_libraries() -> None:
     """压掉第三方库的启动噪音。
 
     必须在这些库 **import 之后** 才生效：jieba 在 import 时把自己的 logger
     设回 `DEBUG`（`jieba/__init__.py:29`），先前的 `setLevel` 会被它覆盖，
     所以这里先 import 再压级别。它每次加载词典都会往 stderr 打三行 INFO，
-    而冻结包把 stderr 重定向成 ERROR，日志里就会出现一排假的 `[ERROR]`——
-    真错误正好被淹没。
+    混进日志里就是三行纯噪音。
     """
     try:
         import jieba  # noqa: F401 - 先 import 才能压住它 import 时设的 DEBUG
@@ -145,15 +105,12 @@ def configure_logging(
     *,
     level: str = "INFO",
     log_file: Path | None = None,
-    redirect_streams: bool = False,
 ) -> Path | None:
     """装配控制台 + 轮转文件日志。
 
     Args:
         level: 日志级别字符串。
         log_file: 覆盖默认日志路径（测试用）。
-        redirect_streams: 是否把 `print()` 输出一并写进日志文件。冻结包
-            （无终端）传 True；源码运行保持终端原样，便于开发。
 
     Returns:
         实际使用的日志文件路径；无法落盘时返回 None（调用方据此提示用户）。
@@ -165,7 +122,7 @@ def configure_logging(
     root = logging.getLogger()
     root.setLevel(resolved)
 
-    if sys.stderr is not None:  # 冻结的 windowed 形态下可能为 None
+    if sys.stderr is not None:  # 脱离终端运行时 stderr 可能为 None（如 pythonw）
         stream_handler = logging.StreamHandler(sys.stderr)
         stream_handler.setFormatter(formatter)
         root.addHandler(stream_handler)
@@ -188,17 +145,5 @@ def configure_logging(
 
     for handler in root.handlers:
         handler.addFilter(masker)
-
-    if redirect_streams and path is not None:
-        # 刻意用 Any 承接：这是对 sys.stdout/sys.stderr 的鸭子替换，
-        # 按 AGENTS.md 红线 1 不能用 type: ignore，故走 Any 声明。
-        stdout_stream: Any = _LogStream(
-            logging.getLogger("wx_obsidian.stdout"), logging.INFO, sys.stdout
-        )
-        stderr_stream: Any = _LogStream(
-            logging.getLogger("wx_obsidian.stderr"), logging.ERROR, sys.stderr
-        )
-        sys.stdout = stdout_stream
-        sys.stderr = stderr_stream
 
     return path

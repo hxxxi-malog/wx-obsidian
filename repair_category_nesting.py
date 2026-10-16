@@ -29,7 +29,7 @@
     # 真正执行（先自动备份 config.json 与 processed.json）
     python repair_category_nesting.py --apply
 
-执行前请先停掉 Web 服务与 TUI：两者各自持有任务状态，会争抢 processed.json / MOC 写入。
+执行前请先停掉 Web 服务与 CLI 抓取：两边各自持有任务状态，会争抢 processed.json / MOC 写入。
 """
 
 from __future__ import annotations

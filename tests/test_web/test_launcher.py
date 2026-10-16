@@ -1,7 +1,7 @@
 """T-16 启动器测试：单实例判定、端口冲突、日志落盘与掩码。
 
-这些测试刻意不启动真实管线：冻结包专属行为（落盘、弹窗）在 multi-line
-场景下无法在单测里复现，改由 `packaging/smoke_frozen.py` 对真 .app 端到端验证；
+这些测试刻意不启动真实管线：端到端行为（真抓一篇、日志落盘、干净退出）
+在单测里无法复现，改由 `tests/e2e/smoke_web.py` 对真服务端到端验证；
 这里覆盖的是「判定逻辑」本身。
 """
 
@@ -186,18 +186,6 @@ def test_build_url_variants() -> None:
 def test_resolve_port_falls_back_to_default() -> None:
     assert launcher._resolve_port(0) == launcher.DEFAULT_PORT
     assert launcher._resolve_port(9001) == 9001
-
-
-def test_show_dialog_is_noop_outside_frozen_app(monkeypatch: pytest.MonkeyPatch) -> None:
-    """源码运行时终端里已有输出，弹系统对话框只会打扰开发。"""
-
-    def _explode(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("非冻结环境不应调用 osascript")
-
-    monkeypatch.setattr(launcher.subprocess, "run", _explode)
-    monkeypatch.setattr(launcher, "_is_frozen", lambda: False)
-
-    launcher._show_dialog("标题", "内容")
 
 
 # ---------------------------------------------------------------------------

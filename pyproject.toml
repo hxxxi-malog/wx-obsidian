@@ -6,7 +6,6 @@ requires-python = ">=3.9"
 dependencies = [
     "requests>=2.31.0",
     "pyyaml>=6.0",
-    "textual>=0.40.0",
     "mistune>=3.2.1",
     "jieba>=0.42",
     "fastapi>=0.110",
@@ -46,14 +45,6 @@ python_version = "3.9"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
-
-[[tool.mypy.overrides]]
-module = ["textual.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["wx_obsidian.tui.*"]
-ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["jieba.*", "mistune.*"]
