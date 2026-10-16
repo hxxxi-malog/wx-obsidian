@@ -62,7 +62,7 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 | `tests` | `pytest tests -q`，矩阵 3.9 + 3.12 | 3.9 是 `requires-python` 下限，3.12 是容器实际运行的那档 |
 | `frontend` | `pnpm type-check` → `style-guard` → `test` → `build` | 四道门缺一不可；用 `corepack` 起 pnpm（`package.json` 已钉 `packageManager: pnpm@12.9.1`），与 Dockerfile 同一条路径 |
 | `e2e` | `python tests/e2e/smoke_web.py` | 真跑一轮：临时 HOME + 本地 stub 上游，断言笔记落盘、`processed.json` 写入、日志掩码、`POST /api/shutdown` 干净退出。不花 API 费用 |
-| `docker` | 构建镜像 + **起容器打 `/api/ping`** | 只 build 不算数：镜像里前端产物缺失、依赖装错都会「构建成功但起不来」。本 job 在本次搭建中真的抓到过一个 `NameError` 启动即崩的版本 |
+| `docker` | 构建镜像 + **起容器打 `/api/ping`** | 只 build 不算数：镜像里前端产物缺失、依赖装错都会「构建成功但起不来」。本 job 在本次搭建中真的抓到过一个 `NameError` 启动即崩的版本。它用的是**裸 `docker run`**（不带 compose 的 volume 挂载），所以还顺带守住了「镜像自己在非 root 下能不能落盘」——`/home/wx` 被 root 抢先建出来、导致日志与 token 落不了盘的问题就是这么浮出来的 |
 
 **依赖为什么这么装**（`uv sync --frozen --extra dev --no-install-project`）：
 
