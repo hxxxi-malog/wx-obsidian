@@ -50,13 +50,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 手动触发（workflow_dispatch）时 github.ref 是分支名 refs/heads/main，
+      # metadata-action 的 type=semver 解析不出 tag 会直接跳过（日志里表现为
+      # `value=,match=`），结果只推 latest + sha、版本标签原地不动。
+      # 所以显式把「这次要发布的 tag」解析出来，两条路径共用同一套标签推导。
+      - id: ref
+        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
             type=sha
             type=raw,value=latest
 
