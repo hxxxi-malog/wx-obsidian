@@ -97,7 +97,9 @@ def test_configure_logging_survives_unusable_path(tmp_path: Path) -> None:
 
 
 class _PingHandler(http.server.BaseHTTPRequestHandler):
-    payload: dict[str, str] = {"app": "wx-obsidian", "version": "0.1.0"}
+    # 模拟「我们自己已经在跑」的响应。version 引用 APP_VERSION 而不是硬编码：
+    # 启动器只比对 app 字段（不看 version），硬编码只会在每次发版后变成过期信息。
+    payload: dict[str, str] = {"app": "wx-obsidian", "version": launcher.APP_VERSION}
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定命名
         body = json.dumps(type(self).payload).encode("utf-8")

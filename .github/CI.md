@@ -89,7 +89,7 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 `major.minor` + `sha` + `latest`）→ 建 GitHub Release。
 
 - 只在 tag 上发布，主干推送不推镜像（不把 registry 当 CI 缓存用）。
-- 手动触发必须显式 checkout 目标 tag，否则会拿主干代码发一个「v0.1.0」的镜像。
+- 手动触发必须显式 checkout 目标 tag，否则会拿主干代码发一个「v1.0.0」的镜像。
 - 建 Release 是幂等的（已存在则跳过）。
 - 首次发布后，若要让别人能拉这个包，需在 GitHub 仓库的 Packages 设置里把该
   package 设为 public。

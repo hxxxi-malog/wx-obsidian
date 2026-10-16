@@ -1,6 +1,6 @@
 [project]
 name = "wx-obsidian"
-version = "0.1.0"
+version = "1.0.0"
 description = "公众号文章 → Obsidian 知识库自动化处理器"
 requires-python = ">=3.9"
 dependencies = [

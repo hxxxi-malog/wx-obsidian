@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag（如 v0.1.0），必须已存在"
+        description: "要发布的 tag（如 v1.0.0），必须已存在"
         required: true
         type: string
 
