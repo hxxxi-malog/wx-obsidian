@@ -89,7 +89,13 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
 `major.minor` + `sha` + `latest`）→ 建 GitHub Release。
 
 - 只在 tag 上发布，主干推送不推镜像（不把 registry 当 CI 缓存用）。
-- 手动触发必须显式 checkout 目标 tag，否则会拿主干代码发一个「v1.0.0」的镜像。
+- 手动触发（workflow_dispatch）有**两处**必须显式处理，少一处就会发错：
+  1. `checkout` 的 `ref` 要指向目标 tag，否则拿主干代码去发一个「v1.0.0」的镜像；
+  2. 标签推导：`type=semver` 是从 `github.ref` 取版本的，而 dispatch 时它是**分支名**，
+     解析不出 tag 会静默跳过 —— 日志里表现为 `type=semver,...,value=,match=`，
+     结果是只推 `latest` + `sha`、版本标签原地不动（v1.0.0 重发时踩过）。
+     解法：先解析出 `${{ inputs.tag || github.ref_name }}`，再用 `value=` 喂给
+     两条 semver 规则，tag 推送与手动触发共用同一套推导。
 - 建 Release 是幂等的（已存在则跳过）；重发同一个 tag 会覆盖镜像标签，
   所以补构建配置不需要发新版本号。
 - **多架构（amd64 + arm64）**：CI 里那个容器 job 只验本机架构（快），跨架构那半
