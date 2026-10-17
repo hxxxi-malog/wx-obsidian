@@ -1,6 +1,13 @@
 # wx-obsidian
 
 <p align="center">
+  <a href="README.md"><b>简体中文</b></a> ·
+  <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/hxxxi-malog/wx-obsidian/actions/workflows/ci.yml"><img src="https://github.com/hxxxi-malog/wx-obsidian/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/hxxxi-malog/wx-obsidian/releases"><img src="https://img.shields.io/github/v/release/hxxxi-malog/wx-obsidian" alt="Release"></a>
   <img src="https://img.shields.io/badge/Python-3.12+-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/DeepSeek-API-orange" alt="DeepSeek">
   <img src="https://img.shields.io/badge/we--mp--rss-Docker-green" alt="we-mp-rss">
@@ -9,11 +16,29 @@
 </p>
 
 公众号文章 → Obsidian 知识库自动化流水线：从 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 抓取公众号文章，交给 DeepSeek 生成结构化笔记，写进 Obsidian Vault，并自动维护双向链接与知识图谱。
+适合想把公众号技术长文沉淀进自己的 Obsidian 知识库、又不想手动复制整理的人。
 提供 CLI 与 Web（浏览器界面）两种用法；一条 `docker compose up -d --build` 就能跑起来。
 
 <p align="center">
   <img src="assets/web-dashboard.png" alt="状态总览页：数据源 / LLM / Vision / Vault 四项连通性检查、处理统计与分类分布" width="860">
 </p>
+
+## 目录
+
+- [特性](#特性)
+- [生成的笔记长什么样](#生成的笔记长什么样)
+- [快速开始](#快速开始)
+- [运行方式](#运行方式)
+- [Docker 部署进阶](#docker-部署进阶)
+- [配置](#配置)
+- [工作原理](#工作原理)
+- [项目结构](#项目结构)
+- [定制输出](#定制输出)
+- [常见问题](#常见问题)
+- [开发](#开发)
+- [免责声明](#免责声明)
+- [致谢](#致谢)
+- [许可](#许可)
 
 ## 特性
 
@@ -25,6 +50,7 @@
 - **自动成图**：`[[双向链接]]` + 概念页面 + MOC；文章间相似度用 SQLite FTS5/BM25F + jieba + 概念模糊匹配 + 标签 Jaccard，经 RRF 排名融合
 - **三层格式保障**：自动校验修复 → mistune 结构性检测 → LLM 反馈修正
 - **级联删除 / 可换模型渠道**：一条命令删干净一篇文章及其关联数据；`config.json` 里加一个 provider 即可换模型
+- **一条命令跑起来**：数据源（we-mp-rss 派生镜像）与本项目 Web 服务由同一个 compose 项目拉起
 
 ## 生成的笔记长什么样
 
@@ -64,7 +90,13 @@ Claude Code 采用了「胖核心」设计：query.ts 刻意保持单文件，�
 
 ## 快速开始
 
-需要：Docker、[DeepSeek API Key](https://platform.deepseek.com/)。不想用 Docker 就走源码方式（Python 3.12+），见下面的「运行方式」。
+前置要求：
+
+- Docker 与 Docker Compose v2.20+（compose 文件用到 `include`，可用 `docker compose version` 查看版本）
+- [DeepSeek API Key](https://platform.deepseek.com/)（也可以换成任意 OpenAI 兼容渠道，见[配置](#配置)）
+- 一个 Obsidian vault 目录（在 Web 配置页里填写其路径）
+
+不想用 Docker 就走源码方式（Python 3.12+），见下面的[运行方式](#运行方式)。
 
 **1. 起服务**
 
@@ -230,7 +262,36 @@ process_articles.py / docker compose
 Vault 结构：`_MOC.md`（总目录）→ 各分类目录（`LLM基础/`、`Agent/` …）→ `<sub_topic>/` 子目录（同一子主题满 3 篇后自动建目录并迁移），另有 `Z归档/26/06/07.md` 按日期归档、`概念/` 自动聚合引用它的文章。
 关联关系有三层：文章 → 概念（LLM 提取的 `[[概念名]]`）、概念 → 文章（backlink 自动聚合）、文章 → 文章（混合关联算法，每篇最多 3 篇，阈值 0.05）。
 
-## 定制输出（Skill / Prompt / 分类）
+## 项目结构
+
+```
+wx-obsidian/
+├── process_articles.py      # CLI 入口（cli / web / delete / migrate-vault）
+├── run.sh                   # 手动跑一轮的快捷脚本（输出同时落 logs/run.log）
+├── wx_obsidian/
+│   ├── orchestrator.py      # 核心编排器（6-stage pipeline，CLI / Web 共用）
+│   ├── sources/             # 数据获取层（we-mp-rss 客户端 + 正文提取）
+│   ├── processing/          # 处理层（Vision / LLM / Markdown / 图片 / 相似度）
+│   ├── output/              # 输出层（Vault 写入 / 格式校验 / 级联删除）
+│   └── web/                 # FastAPI + Vue 浏览器界面
+├── skills/                  # 3 个 Skill，控制笔记风格
+├── prompts/                 # LLM prompt 模板（system / user 分开）
+├── deploy/                  # Docker 部署配方（含 we-mp-rss 派生镜像）
+├── tests/                   # 单元测试 + 端到端冒烟
+├── docs/                    # 设计规格与决策记录
+└── assets/                  # README 截图
+```
+
+更细的架构、依赖流向、编码红线（路径安全 / 原子写入 / 异常规范 / 依赖隔离）和「改哪个文件会影响什么」见 [`AGENTS.md`](AGENTS.md)（[`CLAUDE.md`](CLAUDE.md) 是同一份内容的镜像）。
+
+| 文档 | 内容 |
+|------|------|
+| [`AGENTS.md`](AGENTS.md) | 架构、依赖流向、编码红线、改动影响地图、开发任务索引 |
+| [`.github/CI.md`](.github/CI.md) | CI / 安全扫描 / CD 三条流水线与密钥防线说明 |
+| [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md) | 数据源派生镜像的由来、发布期补丁与升级方式 |
+| [`docs/design-docs/`](docs/design-docs/) | 各功能的设计规格与实现决策 |
+
+## 定制输出
 
 3 个 Skill 文件控制 AI 输出，改 Markdown 就能改风格，不用动 Python：
 
@@ -245,6 +306,8 @@ Prompt 拆成 system / user 两份（`string.Template` 的 `$变量` 占位符�
 分类清单的唯一事实来源是 `skills/classification/SKILL.md`（Python 侧不硬编码分类表）；预设 6 组，运行时遇到新分类会自动建目录 / MOC 并追加进 `config.json` 的 `categories`。
 预设分组 —— 模型层：LLM基础、训练与微调、多模态与视觉、具身智能；Agent 层：`Agent`（多 Agent 协同、RAG、MCP、上下文工程、Prompt 工程都归在这里）；应用层：AI编程、后端技术；工程层：Harness Engineering；生态层：AI产业生态；兜底：其他。
 冲突时「专题优先于基础领域」：讲微调 → 训练与微调，讲推理优化 → LLM基础。
+
+> Skill / Prompt 的改动只影响之后处理的文章；想按新风格重跑已有文章用 `python process_articles.py --force`（会重新消耗 API 额度）。
 
 ## 常见问题
 
@@ -272,12 +335,17 @@ python process_articles.py migrate-vault /Users/you/Documents             # 再�
 
 Obsidian 是**按绝对路径**注册仓库的，搬完还要用「打开文件夹作为仓库」重选一次，否则点「打开」会报 Vault not found。
 
+**能换模型吗？**
+可以。`config.json` 的 `llm.providers` / `vision.providers` 里加一个 OpenAI 兼容渠道（`base_url` + `model` + `api_key_env`），再把 `llm.active` / `vision.active` 指过去即可；配置页同样能改。LLM 与 Vision 可以是不同渠道。
+
 **有没有定时抓取？**
 没有，应用内调度功能已整体移除。手动跑 `./run.sh [--limit N]`、`python process_articles.py`，或在 Web 的「文章抓取」页点一次开始。
 
 **想删一篇已经生成的文章？** 见上面 CLI 小节里的 `delete` 子命令：它会清理文章 `.md`、分类 `_MOC.md` 里的条目、概念页面里的相关链接（无剩余链接时删除概念页面）、日归档条目和 `processed.json` 记录。
 
 ## 开发
+
+技术栈：Python 3.12 · FastAPI · requests / mistune / jieba · SQLite FTS5；前端 Vue 3 + TypeScript + Tailwind v4 + Reka UI + Phosphor；部署 Docker Compose。
 
 ```bash
 ruff check .                                                # lint
@@ -291,7 +359,7 @@ python validate_markdown.py --dir <directory>                # 校验 Markdown
 
 前端（`wx_obsidian/web/frontend`，自建设计系统：Tailwind v4 + Reka UI + Phosphor）：`pnpm install` 后 `pnpm verify`（= `type-check && style-guard && test && build`，四道门缺一不可），开发用 `pnpm dev`（5173，`/api` 代理到 8765）。
 
-项目结构、依赖流向、编码红线（路径安全 / 原子写入 / 异常规范 / 依赖隔离）、改动影响地图见 [`AGENTS.md`](AGENTS.md)（[`CLAUDE.md`](CLAUDE.md) 是同一份内容的镜像）。
+欢迎 issue / PR。提交前请让上面的检查全部通过；改 README 时请同步更新 [README.en.md](README.en.md)（英文版与中文版结构一一对应）。变更记录见 [GitHub Releases](https://github.com/hxxxi-malog/wx-obsidian/releases)。
 
 CI / 安全扫描 / CD 三条流水线与 `.env` 密钥防线的三道关见 [`.github/CI.md`](.github/CI.md)。
 
