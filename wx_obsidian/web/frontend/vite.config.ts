@@ -19,10 +19,21 @@ export default defineConfig({
   build: {
     outDir: '../static',
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        // 框架代码与业务代码分开，业务改动不失效框架缓存
-        manualChunks: { vendor: ['vue', 'vue-router', 'pinia'] },
+        // 框架代码与业务代码分开，业务改动不失效框架缓存。
+        // Vite 8 起构建由 Rolldown 负责，旧的对象形式 manualChunks 已被移除，
+        // 函数形式也已废弃，手动分组改用 codeSplitting.groups。
+        // test 按模块真实路径匹配：pnpm 下形如
+        // node_modules/.pnpm/vue@x/node_modules/vue/…，所以只认 node_modules/<包名>/ 这一段。
+        codeSplitting: {
+          groups: [
+            {
+              name: 'vendor',
+              test: /[\\/]node_modules[\\/](?:@vue[\\/]|vue[\\/]|vue-router[\\/]|pinia[\\/])/,
+            },
+          ],
+        },
       },
     },
   },
