@@ -38,7 +38,7 @@ VISION_DEFAULT_MAX_TOKENS = 3072
 
 
 def sanitize_path_segment(text: str, max_len: int = 100) -> str:
-    """清理文本中不能用于文件路径的字符，按 CLAUDE.md 编码红线第 2 条。
+    """清理文本中不能用于文件路径的字符，按 AGENTS.md 编码红线第 2 条。
 
     先将弯引号归一化为直引号（防止 Obsidian 断链），全角冒号归一化为 ASCII 冒号，
     再将 Unicode 空格字符（U+00A0 等）归一化为普通空格，
