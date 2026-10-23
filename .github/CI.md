@@ -188,9 +188,9 @@ cd wx_obsidian/web/frontend && pnpm style-guard && pnpm type-check && pnpm test 
 
 ---
 
-## 六、前端两个上游坑（vue-tsc 3 / TypeScript 7）
+## 六、前端三个上游坑（vue-tsc 3 / TypeScript 7 / Vite 8）
 
-两个都不是本仓库的代码问题，但都会以「CI 红了」的形式出现，所以把边界写清楚，
+三个都来自上游大版本变更，都会以「CI 红了」的形式出现，所以把边界写清楚，
 免得下次又从头查一遍。
 
 ### 1. vue-tsc 3：插槽内属性值出现 `//` 会丢掉插槽 props 作用域
@@ -242,3 +242,49 @@ TS 5.x / 6.x **没有** `exports` map，子路径能正常解析 —— 这就�
 再放开（PR #5 因此关闭，不是代码问题）。顺带一个 TS 6 的坑：`baseUrl` 会报
 `TS5101`（已弃用、7.0 移除），本仓库已删掉 `baseUrl`，改由 `paths` 相对 tsconfig
 解析（`"@/*": ["./src/*"]`）。
+
+### 3. Vite 8：对象形式 `manualChunks` 被移除，构建报 `manualChunks is not a function`
+
+**现象**：`pnpm build` 报 `TypeError: manualChunks is not a function`，报错位置在
+`rolldown/dist/...` 的调用链里；CI 的「前端（style-guard / type-check / test /
+build）」与「容器镜像可构建、可启动」两个 job 一起红 —— 后者是因为 Dockerfile 的
+前端构建阶段跑的也是同一条 `pnpm build`。
+
+**原因**：Vite 8 把构建器从 Rollup 换成了 Rolldown（esbuild 也换成了 Oxc）。
+迁移指南写明对象形式 `build.rollupOptions.output.manualChunks` 已被移除，函数形式
+也已废弃；Rolldown 的手动分组能力在 `output.codeSplitting.groups`，
+`build.rollupOptions` 本身也更名为 `build.rolldownOptions`。
+
+**解法（本仓库采用）**：`vite.config.ts` 改为：
+
+```ts
+build: {
+  rolldownOptions: {
+    output: {
+      codeSplitting: {
+        groups: [
+          {
+            name: 'vendor',
+            test: /[\\/]node_modules[\\/](?:@vue[\\/]|vue[\\/]|vue-router[\\/]|pinia[\\/])/,
+          },
+        ],
+      },
+    },
+  },
+},
+```
+
+保留「框架代码单独成 vendor chunk、业务改动不失效框架缓存」的意图。`test` 只认
+`node_modules/<包名>/` 这一段：pnpm 下模块真实路径是
+`node_modules/.pnpm/vue@x/node_modules/vue/…`，这样写能命中 vue、vue-router、pinia
+与 `@vue/*`，`@vueuse` 这类同前缀包不会被误匹配。产物里 `vendor-<hash>.js` 由
+`index.html` 的 `modulepreload` 引用，入口 chunk 通过 `from"./vendor-<hash>.js"`
+导入。
+
+**排查提示**：`vite.config.ts` 不在 `tsconfig.json` 的 include 里，`pnpm type-check`
+覆盖不到它，配置写错只会在 build 阶段暴露；可以对该文件单独跑一次 `tsc --noEmit`。
+
+参考：Vite 8 迁移指南「Removed object form
+`build.rollupOptions.output.manualChunks` and deprecate function form one」
+（<https://vite.dev/guide/migration>）；Rolldown 的
+[Manual Code Splitting](https://rolldown.rs/in-depth/manual-code-splitting)。
