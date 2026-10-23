@@ -126,6 +126,10 @@ docker compose ps                                          # 两个都应显示 
 
 打开 `http://127.0.0.1:8765/?token=<上一步的 WX_WEB_TOKEN>` —— **token 是必须的**，直接访问只能看到页面、调不通接口（这个服务能写你的硬盘、读你的 API Key）。
 
+> **打开裸地址（不带 token）怎么办**：页面顶部会出现「未授权」横幅，并自动弹出解锁对话框；把 token 或启动器打印的整条地址粘贴进去，点「解锁」即可恢复，不用重启应用。
+> token 随时可取：`cat ~/.wx-obsidian/web.token`（Docker 部署时这是宿主同路径的同一个文件），或 `docker compose logs wx-obsidian | grep 已启动`。
+> 前端读完 URL 里的 token 会立刻从地址栏抹掉，避免进入历史记录与 Referer；收藏夹、历史记录、新标签页里的裸地址因此不带 token。
+
 1. 「配置管理」填 **DeepSeek API Key** 和 **Vault 路径**，点「测试连通性」
 2. 「文章抓取」发起抓取，可以先只跑 5 篇
 3. 「文章管理」看结果；在 Obsidian 里打开 Vault，Graph View 就是知识图谱

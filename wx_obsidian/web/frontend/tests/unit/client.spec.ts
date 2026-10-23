@@ -10,6 +10,10 @@ import {
   getToken,
   hasCode,
   initToken,
+  normalizeTokenInput,
+  onUnauthorized,
+  setToken,
+  verifyToken,
 } from '@/lib/api/client'
 
 const TOKEN_KEY = 'wx-obsidian-token'
@@ -127,10 +131,99 @@ describe('请求层', () => {
   })
 })
 
+describe('token 恢复通道（解锁对话框）', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    sessionStorage.clear()
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('setToken 去空白后写入；空串等于清除', () => {
+    setToken('  abc  ')
+    expect(getToken()).toBe('abc')
+    setToken('   ')
+    expect(getToken()).toBe('')
+  })
+
+  it('normalizeTokenInput 同时接受裸 token 与启动器打印的完整地址', () => {
+    expect(normalizeTokenInput('  abc  ')).toBe('abc')
+    expect(normalizeTokenInput('http://127.0.0.1:8765/?token=xyz')).toBe('xyz')
+    expect(normalizeTokenInput('http://127.0.0.1:8765/settings?first_run=1&token=a%2Bb')).toBe('a+b')
+    expect(normalizeTokenInput('http://127.0.0.1:8765/')).toBe('http://127.0.0.1:8765/')
+  })
+
+  it('verifyToken 用候选 token 探测配置快照，且校验通过前不覆盖存储', async () => {
+    sessionStorage.setItem(TOKEN_KEY, 'old')
+    fetchMock.mockResolvedValue(jsonResponse({ llm: {} }))
+    await expect(verifyToken(' candidate ')).resolves.toBe(true)
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/config')
+    expect((init.headers as Record<string, string>)['X-WX-Token']).toBe('candidate')
+    expect(getToken()).toBe('old')
+  })
+
+  it('verifyToken 对 401 返回 false（界面据此报「token 不对」而不是抛错）', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'unauthorized' }, 401))
+    await expect(verifyToken('nope')).resolves.toBe(false)
+  })
+
+  it('verifyToken 对 5xx 抛 ApiError（区分「服务坏了」与「token 错」）', async () => {
+    fetchMock.mockResolvedValue(new Response('boom', { status: 500 }))
+    await expect(verifyToken('abc')).rejects.toMatchObject({ status: 500 })
+  })
+
+  it('verifyToken 空输入直接 false，不发请求', async () => {
+    await expect(verifyToken('   ')).resolves.toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('401 广播（界面据此打开解锁框）', () => {
+  const fetchMock = vi.fn()
+  /** 反订阅函数：断言结束后必须回归，否则会污染后续用例 */
+  const stops: Array<() => void> = []
+
+  beforeEach(() => {
+    sessionStorage.clear()
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    stops.splice(0).forEach((stop) => stop())
+  })
+
+  it('401 通知订阅者，反订阅后不再通知', async () => {
+    const seen: string[] = []
+    stops.push(onUnauthorized(() => seen.push('401')))
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'unauthorized' }, 401))
+    await expect(apiGet('/api/health')).rejects.toMatchObject({ status: 401 })
+    expect(seen).toEqual(['401'])
+    stops.splice(0).forEach((stop) => stop())
+    await expect(apiGet('/api/health')).rejects.toMatchObject({ status: 401 })
+    expect(seen).toEqual(['401'])
+  })
+
+  it('非 401 错误不广播（避免把普通失败误判成未授权）', async () => {
+    const seen: string[] = []
+    stops.push(onUnauthorized(() => seen.push('401')))
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, 500))
+    await expect(apiGet('/api/health')).rejects.toMatchObject({ status: 500 })
+    expect(seen).toEqual([])
+  })
+})
+
 describe('errorMessage 既有文案', () => {
-  it('401 给出去启动器地址进入的指引', () => {
+  it('401 只描述状态，恢复动作交给全局横幅与解锁框', () => {
     expect(errorMessage(new ApiError(401, 'unauthorized'))).toBe(
-      '未授权：请从应用启动器打开的地址进入（URL 需带 token）',
+      '未授权：当前标签页没有访问令牌（token）',
     )
   })
 

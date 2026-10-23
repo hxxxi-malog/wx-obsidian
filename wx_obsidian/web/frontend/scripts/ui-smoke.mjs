@@ -253,6 +253,88 @@ async function main() {
     }
   }
 
+  /**
+   * 轮询一个返回布尔值的表达式。
+   * 整页刷新/导航期间 evaluate 会失败，每次都是「还没好」，继续等即可。
+   */
+  async function waitFor(expression, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        if (await evaluate(expression)) {
+          return true
+        }
+      } catch {
+        // 页面正在导航：继续等
+      }
+      await sleep(120)
+    }
+    return false
+  }
+
+  /** 给受控输入框赋值并触发 Vue 的 v-model（CDP 里最省事的等价于「用户粘贴」） */
+  function setInputScript(selector, value) {
+    return `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      if (!el) return false
+      el.value = ${JSON.stringify(value)}
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    })()`
+  }
+
+  /**
+   * 关掉自动弹出的令牌解锁对话框。
+   *
+   * 无 token 模式下它每次导航后都会出现，而且它是**模态**的（锁页面滚动）——
+   * 滚动类断言必须先点「稍后」把它收起来，否则 window.scrollTo 会被吃掉。
+   * 有 token 模式下没有这个对话框，这里是 no-op。
+   */
+  async function dismissAuthDialog() {
+    let open = false
+    try {
+      open = await evaluate('!!document.querySelector("[data-token-dialog]")')
+    } catch {
+      return
+    }
+    if (!open) {
+      return
+    }
+    // 关闭按钮在对话框头部（不在 [data-token-dialog] 这个内容容器里），按 role=dialog 往上找
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-token-input]')
+      const dialog = input ? input.closest('[role="dialog"]') : null
+      if (!dialog) return false
+      const button =
+        dialog.querySelector('[aria-label="关闭"]') ??
+        [...dialog.querySelectorAll('button')].find((item) => item.textContent.trim() === '稍后')
+      if (!button) return false
+      button.click()
+      return true
+    })()`)
+    await waitFor('!document.querySelector("[data-token-dialog]")', 4000)
+    await sleep(150) // 等 reka 解除滚动锁
+  }
+
+  /**
+   * 打开一个**确实能滚动**的页面（顶栏遮挡断言的前提）。
+   *
+   * 无 token 模式下仪表盘没有数据，整页比视口还矮（实测 scrollHeight 469px @1000px 视口），
+   * scrollTo(0, 40) 会被夹回 0，遮罩断言就变成假失败。短页面时退到 /settings。
+   */
+  async function gotoScrollablePage() {
+    await goto('/', { expectHeading: '状态总览' })
+    await settle()
+    await dismissAuthDialog()
+    const room = await evaluate('document.documentElement.scrollHeight - window.innerHeight')
+    if (room > 40) {
+      return
+    }
+    await goto('/settings', { expectHeading: '配置管理' })
+    await settle()
+    await dismissAuthDialog()
+  }
+
   async function screenshot(name) {
     if (!args.out) {
       return
@@ -299,11 +381,54 @@ async function main() {
         'document.body.innerText.includes("已处理") || document.body.innerText.includes("暂")',
       )
       check('首屏拿到后端数据', dataLoaded)
+      const gateHidden = await evaluate('!document.querySelector("[data-token-gate]")')
+      check('已鉴权时不显示未授权横幅', gateHidden)
     } else {
       const guidance = await evaluate(
         'document.body.innerText.includes("未授权") || document.body.innerText.includes("token")',
       )
       check('无 token 时给出未授权引导（不是白屏）', guidance)
+      const gateShown = await evaluate('!!document.querySelector("[data-token-gate]")')
+      check('无 token 时展示未授权横幅', gateShown)
+      const dialogShown = await evaluate('!!document.querySelector("[data-token-dialog]")')
+      check('无 token 时自动弹出解锁对话框', dialogShown)
+      const inputShown = await evaluate('!!document.querySelector("[data-token-input]")')
+      check('解锁对话框有 token 输入框', inputShown)
+      await dismissAuthDialog()
+      check('解锁对话框可关闭（等价于点「稍后」）', !(await evaluate('!!document.querySelector("[data-token-dialog]")')))
+      check('关掉对话框后未授权横幅仍在', await evaluate('!!document.querySelector("[data-token-gate]")'))
+    }
+
+    // ── 2b. 裸地址 → 粘贴 token 解锁（恢复链路真跑一遍）─────────────
+    // 这是「打开 localhost:8765 一片 401」那个坑的回归项：应用要能自救，
+    // 用户不必去翻终端找地址。
+    if (args.token) {
+      currentStep = 'token 解锁恢复'
+      await evaluate('sessionStorage.removeItem("wx-obsidian-token")')
+      await cdp.send('Page.navigate', { url: `${args.base}/` }, session)
+      check('裸地址进入时出现未授权横幅', await waitFor('!!document.querySelector("[data-token-gate]")'))
+      check('裸地址进入时自动弹出解锁对话框', await waitFor('!!document.querySelector("[data-token-dialog]")'))
+      const inputShown = await evaluate('!!document.querySelector("[data-token-input]")')
+      check('解锁对话框有 token 输入框', inputShown)
+      if (inputShown) {
+        await screenshot('token-gate')
+
+        await evaluate(setInputScript('[data-token-input]', 'definitely-wrong'))
+        await evaluate('document.querySelector("[data-token-submit]").click()')
+        check('错误 token 被明确拒绝', await waitFor('document.body.innerText.includes("不被服务接受")'))
+
+        // 粘贴「启动器打印的整条地址」——这是用户最可能复制的形式，也验证地址解析
+        await evaluate(setInputScript('[data-token-input]', `${args.base}/?token=${args.token}`))
+        await evaluate('document.querySelector("[data-token-submit]").click()')
+        // 解锁后会整页刷新：等到「数据回来 + 横幅消失」两个条件同时成立
+        const recovered = await waitFor(
+          '(() => { const body = document.body.innerText; return !document.querySelector("[data-token-gate]") && (body.includes("已处理") || body.includes("暂")) })()',
+          15000,
+        )
+        check('粘贴正确 token 后解锁并恢复数据', recovered)
+        const stored = await evaluate('sessionStorage.getItem("wx-obsidian-token") ?? ""')
+        check('解锁后的 token 写入 sessionStorage', stored === args.token)
+      }
     }
 
     // ── 3. 主题切换 ─────────────────────────────────────────────────
@@ -420,8 +545,7 @@ async function main() {
     })()`
 
     await evaluate('localStorage.setItem("wx-obsidian-theme", "dark")')
-    await goto('/', { expectHeading: '状态总览' })
-    await settle() // 骨架屏没退场时页面还没长高，scrollTo 会被夹到 0
+    await gotoScrollablePage() // 无 token 模式仪表盘比视口矮，这里会退到 /settings
     const resting = await evaluate(veilProbe)
     check('静止时顶栏遮罩不绘制', !!resting && resting.visibility === 'hidden', JSON.stringify(resting))
 
@@ -439,6 +563,7 @@ async function main() {
 
     await goto('/settings', { expectHeading: '配置管理' })
     await settle()
+    await dismissAuthDialog()
     await evaluate('window.scrollTo(0, 600)')
     await sleep(350)
     const deep = await evaluate(veilProbe)
@@ -452,8 +577,7 @@ async function main() {
     await screenshot('scrolled-topbar-deep')
 
     await evaluate('localStorage.setItem("wx-obsidian-theme", "light")')
-    await goto('/', { expectHeading: '状态总览' })
-    await settle()
+    await gotoScrollablePage()
     await evaluate('window.scrollTo(0, 40)')
     await sleep(350)
     const light = await evaluate(veilProbe)
@@ -463,6 +587,7 @@ async function main() {
     currentStep = '浅色保存条'
     await goto('/settings', { expectHeading: '配置管理' })
     await settle()
+    await dismissAuthDialog()
     await evaluate('window.scrollTo(0, 600)')
     await sleep(350)
     await screenshot('savebar-light')

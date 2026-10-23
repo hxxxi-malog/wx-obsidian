@@ -67,7 +67,7 @@ const probedLabel = computed(() => (probedAt.value ? formatRelative(probedAt.val
       v-if="state.error.value"
       class="mb-5"
       :message="state.error.value"
-      hint="探活请求本身失败（例如未授权）：先确认页面是从启动器打开的地址进入的。"
+      hint="探活请求本身失败（例如未授权）：未授权时页面顶部会给出「输入 token」入口，粘贴后即可恢复。"
       @retry="state.run()"
     />
 
