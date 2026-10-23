@@ -43,6 +43,8 @@ Both a CLI and a Web UI (browser) ship on top of the same orchestrator; a single
 ## Features
 
 - **One orchestrator, two front ends**: batch processing from the command line and a FastAPI + Vue browser UI
+- **Latest-articles timeline**: browse articles from every subscribed account in reverse publish order, open the original with one click, filter by account, load more page by page, and articles that already have a note are tagged "in vault"
+- **Data-source login recoverable in the UI**: the Account page really verifies the WeChat Reading credential; when it has expired you can scan a new QR code there and the app triggers a fetch for every subscribed account afterwards
 - **Incremental fetching**: `processed.json` deduplicates articles, so you never pay twice for the same one
 - **Parallel + retries**: ThreadPoolExecutor concurrency with exponential backoff (up to 3 attempts, covering 429 / 5xx / network errors)
 - **Multimodal Vision**: a vision model enriches images with semantic descriptions for the LLM; when Vision is unavailable the pipeline degrades gracefully to plain text + keyword-based image matching instead of failing
@@ -122,6 +124,7 @@ By default the compose file mounts `~/Documents/公众号文章` — the **artic
 **2. Initialize the data source**
 
 Open <http://localhost:8001>, finish initialization → scan the QR code to log in to WeChat Reading → add the public accounts you want to follow. To run only the data source: `cd deploy/we-mp-rss && docker compose up -d --build`.
+You won't need that admin UI when the credential expires: the app's **Account** page can scan a new QR code (see [Running Modes](#running-modes)).
 The collection channel is fixed to `weread_mp` (WeChat Reading web), which sidesteps the `ret=200013` risk-control block on the official platform backend API. The original WeWe RSS is archived and its closed-source relay went offline, hence we-mp-rss — for why we use a derived image and how to upgrade the patch, see [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md) (Chinese).
 
 **3. Configure and fetch**
@@ -164,14 +167,15 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 # equivalent env form: WX_WEB_HOST=0.0.0.0 python process_articles.py web
 ```
 
-Seven pages: Dashboard / Fetch Articles / Articles / Settings / Public Accounts / Data Source Status / Account.
-The Articles page has search / filters / sorting / pagination / detail drawer / multi-select bulk delete / cascade delete / open in Obsidian; the Settings page has a native directory picker and an unsaved-changes guard; on list pages `/` focuses the search box.
+Eight pages: Dashboard / Fetch Articles / Latest / Articles / Settings / Public Accounts / Data Source Status / Account.
+The Latest page lists articles from every subscribed account in reverse publish order — click a title to open the original, filter by account and load more pages, and articles that already have a note are tagged "in vault"; the Public Accounts page shows each account's sync and update time; the Account page shows the WeChat Reading login state and the data-source token, and when the credential has expired you can scan a QR code right there, after which the app triggers a fetch for every subscribed account; the Articles page has search / filters / sorting / pagination / detail drawer / multi-select bulk delete / cascade delete / open in Obsidian; the Settings page has a native directory picker and an unsaved-changes guard; on list pages `/` focuses the search box.
 Cross-cutting capabilities: a persistent **task dock** (switch pages without losing the stream), a **command palette** (`⌘K`), light and dark themes, filter & pagination state kept in the URL (survives refresh, back navigation and link sharing), proper empty / skeleton / error states, and automatic motion reduction under `prefers-reduced-motion`.
 Things you must know:
 
 - **Bound to `127.0.0.1` only; every `/api/*` except `/api/ping` requires the token printed at startup** (`X-WX-Token` header or `?token=`), so other machines on your LAN cannot reach it; progress is streamed over SSE and the client reconnects and replays events by sequence number after a disconnect or refresh
 - **Secrets are only echoed as masks**: leaving a field empty on the Settings page means "don't change it" and won't wipe the stored key; logs go through the same masking filter (`sk-` / `token=` / `Bearer`)
 - **Single-flight tasks**: only one fetch job at a time; a second request gets a 409 — `processed.json`, MOCs and concept pages must not be written concurrently
+- **A successful QR login triggers fetching**: a fresh WeChat Reading cookie brings no new articles by itself (the upstream scheduler only refetches article bodies), so after the scan the app triggers a fetch for every subscribed account, 3 seconds apart to stay clear of rate limiting; progress shows in the bottom-right corner and you can keep using other pages
 - **⚠️ Do not fetch from the CLI and the Web UI at the same time**: each holds its own job state and they will fight over `processed.json`. Pick one.
 - **Shutting down**: "Quit" in the web UI (`POST /api/shutdown`) lets the service wrap up cleanly — in a container that is the "stop the service" entry point; Ctrl+C / SIGTERM in a terminal, or `pkill -f wx-obsidian`, work too
 
@@ -265,6 +269,8 @@ Two more steps follow: computing article-to-article similarity (`processing/simi
 Vault layout: `_MOC.md` (master index) → per-category directories (`LLM基础/`, `Agent/` …) → `<sub_topic>/` sub-directories (a sub-directory is created and articles are migrated once a sub-topic reaches 3 articles), plus `Z归档/26/06/07.md` date archives and a `概念/` folder that aggregates every article referencing a concept.
 Links come in three layers: article → concept (`[[concept name]]` extracted by the LLM), concept → article (backlinks aggregated automatically), article → article (a hybrid similarity algorithm, at most 3 related articles per note, threshold 0.05).
 
+On the web side two flows talk to the data source directly: the Latest page reads the article list through `/api/source/articles` (read-only — no fetching, no vault writes, no API cost), and after a successful QR login `web/feed_sync.py` triggers a fetch for every subscribed account one by one; each trigger makes the upstream start a collection thread, hence the gap between them.
+
 ## Project Structure
 
 ```
@@ -314,9 +320,13 @@ When in conflict, "a specific topic wins over a foundational field": fine-tuning
 
 ## FAQ
 
-**The Account / Public Accounts pages show "not found".**
-`/feed/*.json` is a public read-only endpoint — **fetching requires no credentials**. Those two pages, however, read we-mp-rss's `/api/v1/wx/*` admin API, which requires a Bearer token.
-Without one, the upstream returns 401 and the UI can only show "not found / not logged in". The token is a JWT and the Settings page shows its expiry; the command to obtain one is in [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md) (Chinese).
+**The Account / Public Accounts / Latest pages show no data.**
+`/feed/*.json` is a public read-only endpoint — **fetching requires no credentials**. Those three pages, however, read we-mp-rss's `/api/v1/wx/*` admin API, which requires a Bearer token.
+Without one, the upstream returns 401: the Account and Public Accounts pages can only show "not found / not logged in", and the Latest page reports a missing or expired token. The token is a JWT and the Settings page shows its expiry; the command to obtain one is in [`deploy/we-mp-rss/README.md`](deploy/we-mp-rss/README.md) (Chinese).
+
+**The WeChat Reading login has expired, so accounts stop updating.**
+The Account page verifies the credential for real every time it opens — the QR dialog pops up only when the credential itself has expired, and you can click "Scan to log in again" at any time. After a successful scan the dialog closes, the app triggers a fetch for every subscribed account in the background, and once the progress card in the bottom-right corner finishes you can refresh the Public Accounts page to see the new update times. Use "Refresh QR code" when the code expires; if the scan still fails, "Open authorization page" takes you back to the we-mp-rss admin as a fallback.
+No QR dialog appears for "token invalid" or "data source unreachable" states — fix the access token as described above, or confirm the data-source container is running.
 
 **Where are the logs?**
 With Docker: `docker compose logs -f wx-obsidian` (also written to `~/.wx-obsidian/logs/app.log`). For source-code runs, logs go to `~/Library/Logs/wx-obsidian/app.log` on macOS and `~/.wx-obsidian/logs/app.log` on other platforms (2MB × 3 rotation).
