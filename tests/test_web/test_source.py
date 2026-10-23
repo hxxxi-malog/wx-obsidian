@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -9,20 +10,27 @@ from fastapi.testclient import TestClient
 
 from tests.test_web.fakes import FakeOrchestrator, make_runtime
 from wx_obsidian.config_manager import ConfigManager
-from wx_obsidian.models import Feed
+from wx_obsidian.models import AccountProbe, Feed
 from wx_obsidian.web.api import create_app
 
 TOKEN = "test-token-123"
 AUTH = {"X-WX-Token": TOKEN}
 
 
-def _client(tmp_path: Path, orchestrator: FakeOrchestrator) -> TestClient:
+def _client(
+    tmp_path: Path, orchestrator: FakeOrchestrator, *, feed_sync_interval: float = 0.0
+) -> TestClient:
     cm = ConfigManager(config_dir=tmp_path / "cfg")
     cm.load()
     cm.set("source.type", "we_mp_rss")
     cm.set("source.base_url", "http://127.0.0.1:8001")
     runtime, _ = make_runtime(orchestrator=orchestrator, config_manager=cm)
-    app = create_app(runtime, token=TOKEN, extra_allowed_hosts=frozenset({"testclient"}))
+    app = create_app(
+        runtime,
+        token=TOKEN,
+        extra_allowed_hosts=frozenset({"testclient"}),
+        feed_sync_interval=feed_sync_interval,
+    )
     return TestClient(app)
 
 
@@ -173,3 +181,105 @@ def test_source_base_url_can_be_overridden_by_env(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setenv("WX_SOURCE_BASE_URL", "http://we-mp-rss:8001")
     assert build_runtime(cm).source._base_url == "http://we-mp-rss:8001"
+
+
+# ---------------------------------------------------------------------------
+# 凭据探针 / 扫码登录 / 登录后采集
+# ---------------------------------------------------------------------------
+
+
+def _wait_sync(client: TestClient, timeout: float = 5.0) -> dict:
+    """等后台同步跑完（测试里间隔传 0，几毫秒就结束）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        payload = client.get("/api/source/sync", headers=AUTH).json()
+        if not payload["running"]:
+            return payload
+        time.sleep(0.01)
+    raise AssertionError("登录后的采集触发没有在超时前结束")
+
+
+def test_probe_reports_credential_state(tmp_path: Path) -> None:
+    """探针要把「凭据失效」和「令牌失效」分开报，前端据此决定弹不弹二维码。"""
+    fake = FakeOrchestrator(probe_state="expired")
+    with _client(tmp_path, fake) as client:
+        payload = client.post("/api/source/probe", headers=AUTH).json()
+
+    assert payload["state"] == "expired"
+    assert payload["feed_name"] == "测试公众号"
+    assert fake.calls[-1]["kind"] == "probe"
+
+
+def test_probe_failure_is_reported_not_500(tmp_path: Path) -> None:
+    class _Broken(FakeOrchestrator):
+        def probe_account(self) -> AccountProbe:
+            raise ConnectionError("连不上")
+
+    with _client(tmp_path, _Broken()) as client:
+        response = client.post("/api/source/probe", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "unknown"
+    assert "连不上" in response.json()["message"]
+
+
+def test_login_qr_returns_data_url(tmp_path: Path) -> None:
+    with _client(tmp_path, FakeOrchestrator()) as client:
+        payload = client.get("/api/source/login-qr", headers=AUTH).json()
+
+    assert payload["image"].startswith("data:image/png;base64,")
+    assert payload["uid"] == "uid-1"
+
+
+def test_login_qr_failure_is_reported(tmp_path: Path) -> None:
+    class _Broken(FakeOrchestrator):
+        def get_login_qr(self) -> dict:
+            raise ValueError("上游没有返回二维码地址")
+
+    with _client(tmp_path, _Broken()) as client:
+        payload = client.get("/api/source/login-qr", headers=AUTH).json()
+
+    assert payload["error"] == "qr_unavailable"
+    assert "二维码" in payload["detail"]
+
+
+def test_login_qr_status_passthrough(tmp_path: Path) -> None:
+    with _client(tmp_path, FakeOrchestrator(qr_logged_in=True)) as client:
+        status = client.get("/api/source/login-qr/status", headers=AUTH).json()
+
+    assert status["login_status"] is True
+    assert status["message"] == "登录成功"
+
+
+def test_login_qr_over_triggers_feed_sync(tmp_path: Path) -> None:
+    """登录成功必须触发一轮采集，否则公众号管理页刷新也看不到新时间。"""
+    feeds = [Feed(id="f1", name="一号"), Feed(id="f2", name="二号")]
+    fake = FakeOrchestrator(feeds=feeds, qr_logged_in=True)
+    with _client(tmp_path, fake) as client:
+        before = client.get("/api/source/sync", headers=AUTH).json()
+        assert before["running"] is False
+        assert before["total"] == 0
+
+        over = client.post("/api/source/login-qr/over", headers=AUTH).json()
+        assert over["login_status"] is True
+        assert over["sync_started"] is True
+
+        state = _wait_sync(client)
+
+    assert state["total"] == 2
+    assert state["triggered"] == 2
+    assert state["failed"] == 0
+    assert fake.refreshed_feeds == ["f1", "f2"]
+    assert fake.qr_finished == 1
+
+
+def test_login_qr_over_without_login_does_not_sync(tmp_path: Path) -> None:
+    fake = FakeOrchestrator(feeds=[Feed(id="f1", name="一号")], qr_logged_in=False)
+    with _client(tmp_path, fake) as client:
+        over = client.post("/api/source/login-qr/over", headers=AUTH).json()
+        state = client.get("/api/source/sync", headers=AUTH).json()
+
+    assert over["login_status"] is False
+    assert over["sync_started"] is False
+    assert state["running"] is False
+    assert fake.refreshed_feeds == []

@@ -15,6 +15,7 @@ import TokenGate from '@/components/domain/TokenGate.vue'
 import AppRail from '@/components/layout/AppRail.vue'
 import AppTopbar from '@/components/layout/AppTopbar.vue'
 import CommandPalette from '@/components/layout/CommandPalette.vue'
+import FeedSyncDock from '@/components/layout/FeedSyncDock.vue'
 import JobDock from '@/components/layout/JobDock.vue'
 import AppDrawer from '@/components/ui/AppDrawer.vue'
 import Toaster from '@/components/ui/Toaster.vue'
@@ -24,12 +25,14 @@ import { apiGet, onUnauthorized } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type { SourceHealth } from '@/lib/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useFeedSyncStore } from '@/stores/feed-sync'
 import { useJobsStore } from '@/stores/jobs'
 import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
 const jobs = useJobsStore()
 const auth = useAuthStore()
+const sync = useFeedSyncStore()
 const toast = useToast()
 
 const sourceHealth = ref<SourceHealth | null>(null)
@@ -54,6 +57,8 @@ onMounted(() => {
   ui.applyTheme()
   // 刷新页面后重新挂上正在跑的任务（旧行为保留）
   void jobs.refresh()
+  // 登录后触发的公众号更新是后台线程：刷新页面后把右下角进度卡接回来
+  void sync.resume()
   // 裸地址/新标签页进来时没有 token：直接给解锁入口，用户不必对着一屏 401 提示自行摸索
   auth.promptIfNeeded()
 })
@@ -186,6 +191,7 @@ onBeforeUnmount(() => {
     </AppDrawer>
 
     <JobDock :open="ui.dockOpen" @update:open="ui.toggleDock($event)" />
+    <FeedSyncDock />
     <CommandPalette :open="ui.paletteOpen" @update:open="ui.togglePalette($event)" />
     <Toaster />
   </div>

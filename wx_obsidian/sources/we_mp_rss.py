@@ -10,27 +10,48 @@ we-mp-rss 为 WeWe RSS 的替代数据源（详见 docs/design-docs/wewe-rss-rep
 - `is_update=false` 明确只读库、不触发采集。
 - 文章 ID 归一化为 `mp.weixin.qq.com/s/<token>` 的 token，
   与 processed.json / 旧 wewe-rss 的 22 字符 ID 体系保持一致。
+- 订阅列表接口 `GET /api/v1/wx/mps` 不返回 sync_time / update_time，只有
+  单号详情接口返回；因此列表读完后按号补一次详情请求（并发，见
+  `_fill_feed_times`），否则界面上「同步」「更新」永远是空的。
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from wx_obsidian.models import AccountStatus, Feed
+from wx_obsidian.models import AccountProbe, AccountStatus, Feed
 
 logger = logging.getLogger(__name__)
 
 # 上游 /feed/{feed_id}.json 的 limit 上限（Query(ge=1, le=100)）
 PAGE_LIMIT = 100
 
+# 补订阅时间戳时并发请求详情的上限。29 个订阅实测：串行 113ms，8 并发 45ms。
+FEED_DETAIL_WORKERS = 8
+
 # 无法从链接解析 token 时的 ID 前缀，避免与 22 字符短链 token 混淆
 FALLBACK_ID_PREFIX = "wemprss_"
+
+# 凭据探针的状态（web 层原样透传给前端，前端据此决定要不要弹扫码登录）
+PROBE_VALID = "valid"
+PROBE_EXPIRED = "expired"
+PROBE_TOKEN_INVALID = "token_invalid"
+PROBE_UNREACHABLE = "unreachable"
+PROBE_UNKNOWN = "unknown"
+
+# 微信读书表示「登录态失效」的错误码：401 是 HTTP 状态，-2012 是服务端 errCode
+_EXPIRED_CODES = {401, -2012}
+
+# 单号「更新」被上游判为「过于频繁」时返回的业务码（sync_interval 内的重复请求）
+FEED_REFRESH_TOO_FREQUENT = 40402
 
 # 文章短链：https://mp.weixin.qq.com/s/<token>
 #
@@ -99,6 +120,18 @@ def _to_iso8601(value: Any) -> str:
         logger.warning("无法解析发布时间: %r", text)
         return text
     return parsed.isoformat()
+
+
+def _to_datetime(value: Any) -> datetime | None:
+    """把上游的 Unix 秒时间戳转成 UTC 时间。
+
+    0、负数、空值都表示「还没有过」，一律返回 None，避免界面上显示 1970 年。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return datetime.fromtimestamp(float(value), tz=UTC)
 
 
 class WeMpRssClient:
@@ -186,6 +219,42 @@ class WeMpRssClient:
             "_account_name": channel or "未知",
         }
 
+    def _fetch_feed_times(self, feed_id: str) -> tuple[datetime | None, datetime | None]:
+        """读取单个公众号的（同步时间, 更新时间）。
+
+        列表接口不返回这两列，只有 `GET /api/v1/wx/mps/{id}` 返回；本方法供
+        `_fill_feed_times` 并发调用。
+
+        Raises:
+            requests.RequestException: 网络失败或非 2xx 响应。
+            ValueError: 响应结构异常（缺少 data 对象）。
+        """
+        response = requests.get(
+            f"{self._base_url}/api/v1/wx/mps/{feed_id}",
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError(f"we-mp-rss 公众号详情结构异常（缺少 data）: {feed_id}")
+        return _to_datetime(data.get("sync_time")), _to_datetime(data.get("update_time"))
+
+    def _fill_feed_times(self, feeds: list[Feed]) -> None:
+        """给缺时间的订阅补上同步/更新时间（并发请求详情接口）。"""
+        pending = [feed for feed in feeds if feed.sync_time is None or feed.update_time is None]
+        if not pending:
+            return
+
+        workers = min(FEED_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(lambda feed: self._fetch_feed_times(feed.id), pending))
+
+        for feed, (sync_time, update_time) in zip(pending, results, strict=True):
+            feed.sync_time = sync_time
+            feed.update_time = update_time
+
     # -- 公开方法 -----------------------------------------------------------
 
     def is_healthy(self, feed_id: str = "all") -> bool:
@@ -248,6 +317,9 @@ class WeMpRssClient:
         该接口需要 Bearer Token 或 AK，未配置凭据时会返回 401；此时返回空列表而非
         抛错，避免拖垮主流程。`/feed/*` 才是无需鉴权的公开接口。
 
+        列表接口不返回 sync_time / update_time（只有单号详情返回），因此这里读完后
+        逐号补一次详情请求；补不到就保持 None，界面显示「—」。
+
         Args:
             limit: 最多返回条数（上游上限 100）。
 
@@ -286,8 +358,12 @@ class WeMpRssClient:
                     name=str(row.get("mp_name") or ""),
                     intro=str(row.get("mp_intro") or ""),
                     cover=str(row.get("mp_cover") or ""),
+                    sync_time=_to_datetime(row.get("sync_time")),
+                    update_time=_to_datetime(row.get("update_time")),
                 )
             )
+
+        self._fill_feed_times(feeds)
         return feeds
 
     # -- ArticleSource 协议方法 ---------------------------------------------
@@ -356,6 +432,132 @@ class WeMpRssClient:
     def get_login_url(self) -> str:
         """微信读书扫码授权页面。"""
         return f"{self._base_url}/weread"
+
+    def probe_account(self) -> AccountProbe:
+        """真实校验微信读书 Cookie 是否还有效。
+
+        上游 `POST /api/v1/wx/weread/mp/test` 会拿 Cookie 请求一次公众号封面：
+        200 + code=0 说明凭据可用。失败原因分四类，账号页据此决定弹不弹扫码窗
+        （只有 `expired` 才弹；令牌或可达性问题弹窗会误导）。
+
+        Returns:
+            探针结果。任何失败都以 `state` 表达，不抛异常——页面需要显示原因。
+        """
+        checked_at = datetime.now(UTC)
+        try:
+            response = requests.post(
+                f"{self._base_url}/api/v1/wx/weread/mp/test",
+                json={},
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            return AccountProbe(PROBE_UNREACHABLE, f"数据源连不上：{exc}", checked_at=checked_at)
+
+        if response.status_code in (401, 403):
+            return AccountProbe(
+                PROBE_TOKEN_INVALID, "数据源访问令牌无效或已过期", checked_at=checked_at
+            )
+        if response.status_code != 200:
+            return AccountProbe(
+                PROBE_UNKNOWN, f"探针请求失败：HTTP {response.status_code}", checked_at=checked_at
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            return AccountProbe(PROBE_UNKNOWN, "探针返回的不是 JSON", checked_at=checked_at)
+        if not isinstance(payload, dict):
+            return AccountProbe(PROBE_UNKNOWN, "探针返回结构异常", checked_at=checked_at)
+
+        if payload.get("code") == 0:
+            data = payload.get("data")
+            feed_name = str(data.get("mp_name") or "") if isinstance(data, dict) else ""
+            return AccountProbe(
+                PROBE_VALID, "微信读书凭据有效", feed_name=feed_name, checked_at=checked_at
+            )
+
+        message = str(payload.get("message") or "")
+        inner = payload.get("data")
+        inner_code = inner.get("code") if isinstance(inner, dict) else None
+        if inner_code in _EXPIRED_CODES or "401" in message or "-2012" in message:
+            return AccountProbe(
+                PROBE_EXPIRED, message or "微信读书登录态已失效", checked_at=checked_at
+            )
+        if inner_code == "empty_cover":
+            # 能拿到「该号没有文章」，说明凭据本身是通的
+            return AccountProbe(
+                PROBE_VALID, "微信读书凭据有效（所选公众号暂无文章）", checked_at=checked_at
+            )
+        return AccountProbe(
+            PROBE_UNKNOWN, message or f"探针返回异常：{payload}", checked_at=checked_at
+        )
+
+    def get_login_qr(self) -> dict[str, Any]:
+        """取扫码登录二维码，转成 data URL（前端直接塞进 `<img>`）。
+
+        Raises:
+            ValueError: 上游没有返回二维码地址，或图片取不回来。
+            requests.RequestException: 网络失败或非 2xx 响应。
+        """
+        payload = self._get_json("/api/v1/wx/weread/qr/code")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError(str(payload.get("message") or "上游没有返回二维码"))
+        code = str(data.get("code") or "").strip()
+        uid = str(data.get("uid") or "")
+        if not code:
+            raise ValueError("上游没有返回二维码地址")
+        if code.startswith("data:"):
+            return {"image": code, "uid": uid}
+
+        url = code if code.startswith("http") else f"{self._base_url}/{code.lstrip('/')}"
+        response = requests.get(url, timeout=self._timeout)
+        response.raise_for_status()
+        encoded = base64.b64encode(response.content).decode("ascii")
+        return {"image": f"data:image/png;base64,{encoded}", "uid": uid}
+
+    def get_login_qr_status(self) -> dict[str, Any]:
+        """轮询扫码状态。返回 `{"login_status", "message", "logic_code"}`。"""
+        payload = self._get_json("/api/v1/wx/weread/qr/status")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return {"login_status": False, "message": "读取扫码状态失败", "logic_code": ""}
+        detail = data.get("data")
+        logic_code = str(detail.get("logicCode") or "") if isinstance(detail, dict) else ""
+        return {
+            "login_status": bool(data.get("login_status")),
+            "message": str(data.get("msg") or ""),
+            "logic_code": logic_code,
+        }
+
+    def finish_login_qr(self) -> dict[str, Any]:
+        """扫码完成后收尾（上游会停轮询、删二维码图）。"""
+        payload = self._get_json("/api/v1/wx/weread/qr/over")
+        data = payload.get("data")
+        logged_in = bool(data)
+        return {
+            "login_status": logged_in,
+            "message": "登录成功" if logged_in else "尚未完成扫码登录",
+        }
+
+    def refresh_feed(self, feed_id: str) -> str:
+        """触发单个公众号的上游采集（上游自己起线程，本调用立即返回）。
+
+        Returns:
+            `triggered`（已触发）/ `skipped`（上游判定过于频繁）/ `failed`。
+        """
+        response = requests.get(
+            f"{self._base_url}/api/v1/wx/mps/update/{feed_id}",
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("code") == 0:
+            return "triggered"
+        if isinstance(payload, dict) and payload.get("code") == FEED_REFRESH_TOO_FREQUENT:
+            return "skipped"
+        return "failed"
 
     # -- 内部请求封装 --------------------------------------------------------
 

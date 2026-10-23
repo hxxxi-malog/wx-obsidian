@@ -8,7 +8,12 @@
  *  2. 路径参数统一 `encodeURIComponent`（article_id / job_id / feed_id 都可能含特殊字符）。
  */
 
-import type { ArticleQuery, ArticleSort, ConnectionTestTarget, SortOrder } from './types'
+import type {
+  ArticleQuery,
+  ArticleSort,
+  ConnectionTestTarget,
+  SortOrder,
+} from './types'
 
 type QueryValue = string | number | boolean | undefined | null
 
@@ -77,6 +82,16 @@ export const endpoints = {
     account: () => '/api/source/account',
     loginUrl: () => '/api/source/login-url',
     refresh: () => '/api/source/refresh',
+    /** 真实探针：向上游要一次公众号信息，确认微信读书凭据还能用 */
+    probe: () => '/api/source/probe',
+    /** 扫码登录：取二维码（data URL） */
+    loginQr: () => '/api/source/login-qr',
+    /** 扫码登录：轮询扫码状态 */
+    loginQrStatus: () => '/api/source/login-qr/status',
+    /** 扫码登录：登录成功后收尾（后端顺带触发公众号采集） */
+    loginQrOver: () => '/api/source/login-qr/over',
+    /** 登录后后端自动触发的公众号采集进度 */
+    sync: () => '/api/source/sync',
   },
 
   feeds: {

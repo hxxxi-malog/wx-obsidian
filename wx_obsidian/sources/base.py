@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from wx_obsidian.models import AccountStatus, Feed
+from wx_obsidian.models import AccountProbe, AccountStatus, Feed
 
 
 @runtime_checkable
@@ -59,4 +59,24 @@ class ArticleSource(Protocol):
 
     def get_login_url(self) -> str:
         """引导用户完成登录/授权的页面地址。"""
+        ...
+
+    def probe_account(self) -> AccountProbe:
+        """真实校验一次登录凭据是否还有效（不是「有没有存凭据」）。"""
+        ...
+
+    def get_login_qr(self) -> dict[str, Any]:
+        """取扫码登录二维码，返回 `{"image": "data:image/png;base64,...", "uid": str}`。"""
+        ...
+
+    def get_login_qr_status(self) -> dict[str, Any]:
+        """二维码/扫码状态，返回 `{"login_status", "message", "logic_code"}`。"""
+        ...
+
+    def finish_login_qr(self) -> dict[str, Any]:
+        """扫码完成后收尾，返回 `{"login_status", "message"}`。"""
+        ...
+
+    def refresh_feed(self, feed_id: str) -> str:
+        """触发单个公众号采集，返回 triggered / skipped / failed。"""
         ...

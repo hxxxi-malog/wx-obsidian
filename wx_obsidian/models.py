@@ -60,6 +60,22 @@ class AccountStatus:
 
 
 @dataclass
+class AccountProbe:
+    """微信读书凭据探针结果：真的向上游要一次公众号信息。
+
+    与 `AccountStatus.is_logged_in` 的区别：后者只说明「上游存了 Cookie」，
+    这个探针说明「Cookie 还能用」。账号页据此决定要不要弹扫码登录。
+
+    `state` 取值由数据源定义：valid / expired / token_invalid / unreachable / unknown。
+    """
+
+    state: str
+    message: str = ""
+    feed_name: str = ""
+    checked_at: datetime | None = None
+
+
+@dataclass
 class ContainerStatus:
     """数据源服务/容器状态。"""
 

@@ -32,6 +32,7 @@ from wx_obsidian.web import APP_NAME, APP_VERSION
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web import fs as fs_api
 from wx_obsidian.web import logs as logs_api
+from wx_obsidian.web.feed_sync import FEED_SYNC_INTERVAL, FeedSyncRunner
 from wx_obsidian.web.jobs import JobBusyError, JobManager
 from wx_obsidian.web.runtime import WebRuntime
 
@@ -475,6 +476,7 @@ def create_app(
     extra_allowed_hosts: frozenset[str] = frozenset(),
     on_quit: Callable[[], None] | None = None,
     allow_remote: bool = False,
+    feed_sync_interval: float = FEED_SYNC_INTERVAL,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
@@ -487,6 +489,8 @@ def create_app(
             必须有一个能真正退出的入口。
         allow_remote: 是否放行私有网段来源（默认否）。容器/局域网部署由启动器的
             `WX_ALLOW_REMOTE` 显式打开；打开后 token 校验依然强制。
+        feed_sync_interval: 扫码登录成功后逐个触发采集的间隔（秒）。测试传 0
+            以跳过等待；生产保持默认值以避开上游风控。
 
     Returns:
         可直接交给 uvicorn 的应用实例。
@@ -506,6 +510,7 @@ def create_app(
         title=APP_NAME, version=APP_VERSION, docs_url=None, redoc_url=None, lifespan=lifespan
     )
     jobs = JobManager(runtime.orchestrator)
+    feed_sync = FeedSyncRunner(runtime.orchestrator, interval=feed_sync_interval)
     # 日志同时推给正在跑的任务，前端就能在进度面板里看到告警
     log_buffer.subscribe(
         lambda entry: jobs.emit_log(entry.message, level=entry.level, logger_name=entry.logger)
@@ -942,6 +947,69 @@ def create_app(
         except Exception as exc:
             error = error or f"{type(exc).__name__}: {exc}"
         return {"ok": healthy, "error": error, "account": account}
+
+    @app.post("/api/source/probe")
+    def source_probe() -> dict[str, Any]:
+        """真实校验一次微信读书凭据。
+
+        `/api/source/account` 只反映「上游存了 Cookie」，Cookie 过期时照样显示
+        已登录。账号页进入或刷新时调这里，凭据失效（state=expired）才弹扫码
+        登录；令牌失效/数据源不可达不弹，否则会把用户引到错误的排查方向。
+        """
+        try:
+            return dict(jsonable(runtime.orchestrator.probe_account()))
+        except Exception as exc:  # 探针失败要能显示原因，而不是 500
+            return {
+                "state": "unknown",
+                "message": f"{type(exc).__name__}: {exc}",
+                "feed_name": "",
+                "checked_at": "",
+            }
+
+    @app.get("/api/source/login-qr")
+    def source_login_qr() -> dict[str, Any]:
+        """取微信读书扫码登录二维码（data URL，前端直接渲染）。"""
+        try:
+            return runtime.orchestrator.get_login_qr()
+        except Exception as exc:
+            return {"error": "qr_unavailable", "detail": f"{type(exc).__name__}: {exc}"}
+
+    @app.get("/api/source/login-qr/status")
+    def source_login_qr_status() -> dict[str, Any]:
+        """轮询扫码状态（前端每 2 秒调一次）。"""
+        try:
+            return runtime.orchestrator.get_login_qr_status()
+        except Exception as exc:
+            return {
+                "login_status": False,
+                "message": f"{type(exc).__name__}: {exc}",
+                "logic_code": "",
+            }
+
+    @app.post("/api/source/login-qr/over")
+    def source_login_qr_over() -> dict[str, Any]:
+        """扫码完成后收尾；登录成功时顺手触发全部订阅的采集。
+
+        只换 Cookie 不会产生新文章（上游的定时任务只补抓正文），所以登录成功后
+        必须触发一轮采集，公众号管理页刷新才能看到新的更新时间。
+        """
+        try:
+            result = dict(runtime.orchestrator.finish_login_qr())
+        except Exception as exc:
+            return {
+                "login_status": False,
+                "message": f"{type(exc).__name__}: {exc}",
+                "sync_started": False,
+            }
+        if result.get("login_status"):
+            feed_sync.start()
+        result["sync_started"] = bool(result.get("login_status"))
+        return result
+
+    @app.get("/api/source/sync")
+    def source_sync() -> dict[str, Any]:
+        """登录后触发的采集进度。"""
+        return feed_sync.snapshot().to_dict()
 
     @app.get("/api/feeds")
     def list_feeds() -> Response:

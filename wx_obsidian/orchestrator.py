@@ -26,6 +26,7 @@ from wx_obsidian.config import (
 )
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.models import (
+    AccountProbe,
     AccountStatus,
     ConnectionTestResult,
     FailedArticle,
@@ -670,6 +671,26 @@ class Orchestrator:
     def get_login_url(self) -> str:
         """获取数据源的登录/授权页面 URL。"""
         return self._source.get_login_url()
+
+    def probe_account(self) -> AccountProbe:
+        """真实校验一次登录凭据（不是「有没有存凭据」）。"""
+        return self._source.probe_account()
+
+    def get_login_qr(self) -> dict[str, Any]:
+        """取扫码登录二维码（data URL）。"""
+        return self._source.get_login_qr()
+
+    def get_login_qr_status(self) -> dict[str, Any]:
+        """轮询扫码登录状态。"""
+        return self._source.get_login_qr_status()
+
+    def finish_login_qr(self) -> dict[str, Any]:
+        """扫码完成后收尾。"""
+        return self._source.finish_login_qr()
+
+    def refresh_feed(self, feed_id: str) -> str:
+        """触发单个公众号的上游采集。"""
+        return self._source.refresh_feed(feed_id)
 
     async def fetch_and_process(
         self,

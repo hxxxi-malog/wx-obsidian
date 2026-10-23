@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -22,6 +24,48 @@ _LEGACY_DATA = (
     _PROJECT_ROOT / "docs" / "design-docs" / "wewe-rss-replacement" / "legacy-wewe-data.json"
 )
 _PROCESSED = Path.home() / ".wx-obsidian" / "processed.json"
+
+
+def _response(payload: dict[str, Any]) -> MagicMock:
+    """把一段 JSON 包成 requests 响应 mock（默认 HTTP 200）。"""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+    mock_resp.raise_for_status = MagicMock()
+    return mock_resp
+
+
+def _feed_list_payload(*rows: dict[str, Any]) -> dict[str, Any]:
+    """构造 /api/v1/wx/mps 的列表响应（上游真实形态不带时间戳）。"""
+    return {"code": 0, "data": {"list": list(rows), "total": len(rows)}}
+
+
+def _feed_detail_payload(feed_id: str, sync_time: Any = 0, update_time: Any = 0) -> dict[str, Any]:
+    """构造 /api/v1/wx/mps/{id} 的详情响应（时间戳为 Unix 秒）。"""
+    return {
+        "code": 0,
+        "data": {
+            "id": feed_id,
+            "sync_time": sync_time,
+            "update_time": update_time,
+        },
+    }
+
+
+def _route(
+    list_payload: dict[str, Any], details: dict[str, dict[str, Any]]
+) -> Callable[..., MagicMock]:
+    """按 URL 分流列表与详情请求。"""
+
+    def _get(url: str, **_kwargs: Any) -> MagicMock:
+        if url.endswith("/mps"):
+            return _response(list_payload)
+        feed_id = url.rsplit("/", 1)[-1]
+        if feed_id not in details:
+            raise AssertionError(f"未预期的详情请求: {url}")
+        return _response(details[feed_id])
+
+    return _get
 
 
 def _feed_payload(items: list[dict[str, Any]], name: str = "聚合订阅") -> dict[str, Any]:
@@ -298,30 +342,94 @@ class TestListFeeds:
     """订阅列表读取。"""
 
     def test_normal_list(self, client: WeMpRssClient) -> None:
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "code": 0,
-            "data": {
-                "list": [
-                    {
-                        "id": "MP_WXS_2399148061",
-                        "mp_name": "腾讯研究院",
-                        "mp_intro": "简介",
-                        "mp_cover": "http://x/cover.jpg",
-                    }
-                ],
-                "total": 1,
-            },
-        }
-        mock_resp.raise_for_status = MagicMock()
+        """列表字段 + 详情补上的同步/更新时间。"""
+        list_payload = _feed_list_payload(
+            {
+                "id": "MP_WXS_2399148061",
+                "mp_name": "腾讯研究院",
+                "mp_intro": "简介",
+                "mp_cover": "http://x/cover.jpg",
+            }
+        )
+        detail = _feed_detail_payload(
+            "MP_WXS_2399148061", sync_time=1791652021, update_time=1791626400
+        )
 
-        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+        with patch(
+            "wx_obsidian.sources.we_mp_rss.requests.get",
+            side_effect=_route(list_payload, {"MP_WXS_2399148061": detail}),
+        ):
             feeds = client.list_feeds()
 
         assert len(feeds) == 1
         assert feeds[0].id == "MP_WXS_2399148061"
         assert feeds[0].name == "腾讯研究院"
         assert feeds[0].cover == "http://x/cover.jpg"
+        assert feeds[0].sync_time == datetime(2026, 10, 10, 17, 7, 1, tzinfo=UTC)
+        assert feeds[0].update_time == datetime(2026, 10, 10, 10, 0, 0, tzinfo=UTC)
+
+    def test_list_timestamps_skip_detail_requests(self, client: WeMpRssClient) -> None:
+        """列表若已带时间戳（上游补全后的形态），不再逐号请求详情。"""
+        list_payload = _feed_list_payload(
+            {
+                "id": "MP_WXS_2399148061",
+                "mp_name": "腾讯研究院",
+                "sync_time": 1791652021,
+                "update_time": 1791626400,
+            }
+        )
+        mock_get = MagicMock()
+        mock_get.return_value = _response(list_payload)
+
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", mock_get):
+            feeds = client.list_feeds()
+
+        assert feeds[0].sync_time == datetime(2026, 10, 10, 17, 7, 1, tzinfo=UTC)
+        assert mock_get.call_count == 1
+
+    def test_zero_timestamp_means_never(self, client: WeMpRssClient) -> None:
+        """上游用 0 表示「还没有过」，不能显示成 1970 年。"""
+        list_payload = _feed_list_payload({"id": "MP_WXS_1", "mp_name": "新订阅"})
+        detail = _feed_detail_payload("MP_WXS_1", sync_time=0, update_time=None)
+
+        with patch(
+            "wx_obsidian.sources.we_mp_rss.requests.get",
+            side_effect=_route(list_payload, {"MP_WXS_1": detail}),
+        ):
+            feeds = client.list_feeds()
+
+        assert feeds[0].sync_time is None
+        assert feeds[0].update_time is None
+
+    def test_detail_error_propagates(self, client: WeMpRssClient) -> None:
+        """详情接口失败要抛出来：界面报错可重试，不能静默显示「—」。"""
+        list_payload = _feed_list_payload({"id": "MP_WXS_1", "mp_name": "某号"})
+        failure = MagicMock()
+        failure.json.return_value = {"code": 50001, "message": "获取公众号详情失败"}
+        failure.raise_for_status.side_effect = requests.HTTPError("500")
+
+        def _get(url: str, **_kwargs: Any) -> MagicMock:
+            return _response(list_payload) if url.endswith("/mps") else failure
+
+        with (
+            patch("wx_obsidian.sources.we_mp_rss.requests.get", side_effect=_get),
+            pytest.raises(requests.HTTPError),
+        ):
+            client.list_feeds()
+
+    def test_detail_missing_data_raises(self, client: WeMpRssClient) -> None:
+        """详情响应缺 data 时当错误处理，避免把结构异常显示成「没同步过」。"""
+        list_payload = _feed_list_payload({"id": "MP_WXS_1", "mp_name": "某号"})
+        broken = _response({"code": 0})
+
+        def _get(url: str, **_kwargs: Any) -> MagicMock:
+            return _response(list_payload) if url.endswith("/mps") else broken
+
+        with (
+            patch("wx_obsidian.sources.we_mp_rss.requests.get", side_effect=_get),
+            pytest.raises(ValueError, match="详情结构异常"),
+        ):
+            client.list_feeds()
 
     def test_missing_data_returns_empty(self, client: WeMpRssClient) -> None:
         mock_resp = MagicMock()
@@ -496,3 +604,169 @@ class TestGetAccountStatus:
         assert status.queried is True
         assert status.is_logged_in is False
         assert status.need_refresh is True
+
+
+# ---------------------------------------------------------------------------
+# 凭据探针 / 扫码登录 / 单号采集
+# ---------------------------------------------------------------------------
+
+
+class TestProbeAccount:
+    """探针要真的去上游验一次，且把失败原因分类（前端只有 expired 才弹二维码）。"""
+
+    def _client(self) -> WeMpRssClient:
+        return WeMpRssClient(base_url="http://localhost:8001", timeout=5, token="t")
+
+    def test_valid(self) -> None:
+        mock_resp = _response(
+            {"code": 0, "data": {"mp_id": "MP_WXS_1", "mp_name": "腾讯研究院", "article_count": 1}}
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "valid"
+        assert probe.feed_name == "腾讯研究院"
+        assert probe.checked_at is not None
+
+    def test_expired_cookie(self) -> None:
+        """上游把微信读书的 401 包在业务错误里返回（HTTP 仍是 200）。"""
+        mock_resp = _response(
+            {
+                "code": 400,
+                "message": "WeRead MP API error 401: mp cover returned HTTP 401",
+                "data": {"code": 401, "retriable": True},
+            }
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "expired"
+        assert "401" in probe.message
+
+    def test_empty_cover_still_means_credential_ok(self) -> None:
+        """能拿到「该号暂无文章」说明凭据是通的，不能当作失效。"""
+        mock_resp = _response(
+            {
+                "code": 400,
+                "message": "WeRead MP API error empty_cover: 公众号未返回最新文章",
+                "data": {"code": "empty_cover", "retriable": False},
+            }
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "valid"
+
+    def test_upstream_token_rejected(self) -> None:
+        mock_resp = _response({"detail": "invalid token"})
+        mock_resp.status_code = 401
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "token_invalid"
+
+    def test_unreachable(self) -> None:
+        with patch(
+            "wx_obsidian.sources.we_mp_rss.requests.post",
+            side_effect=requests.RequestException("boom"),
+        ):
+            probe = self._client().probe_account()
+
+        assert probe.state == "unreachable"
+
+    def test_other_failure_is_unknown(self) -> None:
+        mock_resp = _response({"code": 400, "message": "公众号不存在", "data": {"code": 40401}})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "unknown"
+        assert "公众号不存在" in probe.message
+
+
+class TestLoginQr:
+    """扫码登录：二维码转 data URL、状态透传、收尾。"""
+
+    def _client(self) -> WeMpRssClient:
+        return WeMpRssClient(base_url="http://localhost:8001", timeout=5, token="t")
+
+    def test_code_is_downloaded_and_encoded(self) -> None:
+        code_resp = _response(
+            {"code": 0, "data": {"code": "/static/weread_qrcode.png", "uid": "uid-1"}}
+        )
+        image_resp = MagicMock()
+        image_resp.content = b"\x89PNG\r\n\x1a\n"
+        image_resp.raise_for_status = MagicMock()
+
+        with patch(
+            "wx_obsidian.sources.we_mp_rss.requests.get",
+            side_effect=[code_resp, image_resp],
+        ) as mock_get:
+            payload = self._client().get_login_qr()
+
+        assert payload["image"].startswith("data:image/png;base64,")
+        assert payload["uid"] == "uid-1"
+        assert mock_get.call_args_list[1].args[0].endswith("/static/weread_qrcode.png")
+
+    def test_missing_code_raises(self) -> None:
+        with (
+            patch(
+                "wx_obsidian.sources.we_mp_rss.requests.get",
+                return_value=_response({"code": 500, "message": "获取二维码失败，请稍后重试"}),
+            ),
+            pytest.raises(ValueError, match="二维码"),
+        ):
+            self._client().get_login_qr()
+
+    def test_status_maps_logic_code(self) -> None:
+        mock_resp = _response(
+            {
+                "code": 0,
+                "data": {
+                    "login_status": False,
+                    "msg": "登录成功但 Cookie 验证失败",
+                    "data": {"logicCode": "COOKIE_INVALID"},
+                },
+            }
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            status = self._client().get_login_qr_status()
+
+        assert status["login_status"] is False
+        assert status["logic_code"] == "COOKIE_INVALID"
+        assert "Cookie" in status["message"]
+
+    def test_finish_reports_logged_in(self) -> None:
+        mock_resp = _response({"code": 0, "data": {"vid": "399397397"}})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            result = self._client().finish_login_qr()
+
+        assert result["login_status"] is True
+
+    def test_finish_reports_not_logged_in(self) -> None:
+        mock_resp = _response({"code": 0, "data": {}})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            result = self._client().finish_login_qr()
+
+        assert result["login_status"] is False
+
+
+class TestRefreshFeed:
+    """触发单号采集：区分「已触发 / 太频繁 / 失败」。"""
+
+    def _client(self) -> WeMpRssClient:
+        return WeMpRssClient(base_url="http://localhost:8001", timeout=5, token="t")
+
+    def test_triggered(self) -> None:
+        mock_resp = _response({"code": 0, "data": {"time_span": 1000, "list": []}})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            assert self._client().refresh_feed("MP_WXS_1") == "triggered"
+
+    def test_too_frequent_is_skipped(self) -> None:
+        mock_resp = _response({"code": 40402, "message": "请不要频繁更新操作"})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            assert self._client().refresh_feed("MP_WXS_1") == "skipped"
+
+    def test_other_error_is_failed(self) -> None:
+        mock_resp = _response({"code": 40401, "message": "请选择一个公众号"})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            assert self._client().refresh_feed("MP_WXS_1") == "failed"

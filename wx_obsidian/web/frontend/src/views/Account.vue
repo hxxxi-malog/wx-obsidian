@@ -2,24 +2,28 @@
 /**
  * 账号管理：微信读书登录态 + 数据源访问令牌。
  *
- * 两条语义必须严格保留（写错会直接误导用户）：
+ * 四条语义必须严格保留（写错会直接误导用户）：
  *  1. **三态机**：`queried=false` 是「查不到」，不是「未登录」——
  *     未配置令牌时上游只会 401，把它显示成「未登录」会让人白跑一趟扫码；
- *  2. 本页的按钮**不能**刷新微信读书登录态（Cookie 由 we-mp-rss 自己维护），
- *     它只能重新探测 + 重读，所以提示只说它实际做了什么。
+ *  2. 上游的 `is_logged_in` 只说明「存了 Cookie」，不说明 Cookie 还能用：
+ *     所以这里另外调用探针真实校验，凭据失效时才引导扫码重新登录；
+ *  3. 凭据由 we-mp-rss 保存，本页负责校验与扫码登录，不接管凭据；
+ *  4. 扫码成功后后端会自动逐个触发公众号采集，本页只轮询进度并展示。
  */
 import {
   PhArrowClockwise,
   PhArrowsClockwise,
   PhKey,
+  PhQrCode,
   PhShieldCheck,
   PhSignIn,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
-import { computed, ref } from 'vue'
+import { computed, onMounted, onScopeDispose, ref } from 'vue'
 
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCopyButton from '@/components/ui/AppCopyButton.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import AppErrorState from '@/components/ui/AppErrorState.vue'
 import AppSkeleton from '@/components/ui/AppSkeleton.vue'
 import AppStatusDot from '@/components/ui/AppStatusDot.vue'
@@ -27,16 +31,26 @@ import AppTag from '@/components/ui/AppTag.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
-import { ApiError, apiGet, apiPost } from '@/lib/api/client'
+import { ApiError, apiGet, apiPost, errorMessage } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
-import type { AccountStatus, SourceRefreshResult } from '@/lib/api/types'
+import type {
+  AccountProbe,
+  AccountStatus,
+  QrLoginImage,
+  QrLoginOver,
+  QrLoginStatus,
+} from '@/lib/api/types'
 import { formatCountdown, formatDateTime } from '@/lib/format'
 import type { Tone } from '@/lib/status'
+import { useFeedSyncStore } from '@/stores/feed-sync'
 
 const toast = useToast()
+const feedSync = useFeedSyncStore()
 
-const refreshing = ref(false)
-const opening = ref(false)
+/** 二维码状态 2 秒轮询一次（与后端契约一致） */
+const QR_STATUS_INTERVAL_MS = 2000
+
+type ProbeTrigger = 'initial' | 'manual' | 'silent'
 
 const state = useAsync<AccountStatus>(
   async (signal) => {
@@ -48,14 +62,14 @@ const state = useAsync<AccountStatus>(
     }
     return data
   },
-  { immediate: true },
+  { immediate: false },
 )
 
 const account = computed(() => state.data.value)
 const tokenConfigured = computed(() => account.value?.token?.configured ?? false)
 const tokenExpired = computed(() => account.value?.token?.expired ?? false)
 
-/** 登录态三态：查不到（info）≠ 未登录（danger） */
+/** 登录态三态：查不到（neutral）≠ 未登录（danger） */
 const loginMeta = computed<{ label: string; tone: Tone }>(() => {
   const value = account.value
   if (!value) {
@@ -91,6 +105,50 @@ const tokenCountdownLabel = computed(() =>
   tokenExpiresAt.value ? formatCountdown(tokenExpiresAt.value) : '未知',
 )
 
+// -- 凭据探针 --------------------------------------------------------------
+
+const PROBE_META: Record<AccountProbe['state'], { label: string; tone: Tone }> = {
+  valid: { label: '有效', tone: 'success' },
+  expired: { label: '已失效', tone: 'danger' },
+  token_invalid: { label: '令牌无效', tone: 'warning' },
+  unreachable: { label: '数据源不可达', tone: 'warning' },
+  unknown: { label: '未知', tone: 'neutral' },
+}
+
+const probing = ref(false)
+const refreshing = ref(false)
+const opening = ref(false)
+const probeResult = ref<AccountProbe | null>(null)
+
+const probeMeta = computed(() => {
+  const value = probeResult.value
+  return value ? PROBE_META[value.state] : null
+})
+
+const probeCheckedLabel = computed(() => {
+  const value = probeResult.value
+  return value?.checked_at ? formatDateTime(value.checked_at) : '未知'
+})
+
+/** 每次进入页面最多自动弹一次扫码对话框：用户关掉后不再自动弹 */
+let autoQrShown = false
+let disposed = false
+
+// -- 扫码登录对话框 --------------------------------------------------------
+
+const qrOpen = ref(false)
+const qrLoading = ref(false)
+const qrImage = ref('')
+const qrError = ref('')
+const qrMessage = ref('')
+const qrExpired = ref(false)
+/** 扫了码但 Cookie 校验失败，或收尾未确认登录：错误块用「重新获取二维码」 */
+const qrInvalid = ref(false)
+const overLoading = ref(false)
+
+let statusTimer: number | null = null
+let statusBusy = false
+
 /**
  * 取一个访问令牌的一句话命令。
  * 刻意不放凭据：账号密码在 deploy/we-mp-rss/.env 里，界面只给占位符。
@@ -99,40 +157,253 @@ const tokenCommand = `curl -s -X POST http://localhost:8001/api/v1/wx/auth/token
   -d "username=<WERSS_USER>&password=<WERSS_PASS>" \\
   | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])"`
 
-async function refresh(): Promise<void> {
+async function bootstrap(): Promise<void> {
+  await state.run()
+  await runProbe('initial')
+}
+
+async function refreshAll(): Promise<void> {
+  if (refreshing.value) {
+    return
+  }
   refreshing.value = true
   try {
-    const result = await apiPost<SourceRefreshResult>(endpoints.source.refresh())
-    const next = result.account
-    const token = next?.token
-    // 响应里没有 token 字段说明账号快照是空的（上游异常）：保留上一次的已知状态，
-    // 否则会把「读不到」误画成「未配置令牌」。
-    if (next?.token) {
-      state.data.value = next
-    }
-
-    // 五种分支逐条保留：先讲令牌，再讲查询结果，最后才是服务可达性
-    if (!token?.configured) {
-      toast.warn('未配置访问令牌，读不到真实登录态', '请按下面的命令取一个令牌并填入配置')
-    } else if (!next?.queried) {
-      toast.error(
-        token?.expired
-          ? '访问令牌已过期，读不到登录态；请重新取一个'
-          : '读不到登录态：令牌无效或 we-mp-rss 不可达',
-      )
-    } else if (next?.is_logged_in) {
-      toast.success('已重新读取：微信读书处于登录状态')
-    } else {
-      toast.warn('已重新读取：微信读书未登录，请到授权页面重新扫码')
-    }
-
-    if (!result.ok) {
-      toast.error(`we-mp-rss 不可达${result.error ? `：${result.error}` : ''}`)
-    }
-  } catch (err) {
-    toast.error(err)
+    await state.run()
+    await runProbe('manual')
   } finally {
     refreshing.value = false
+  }
+}
+
+async function runProbe(trigger: ProbeTrigger): Promise<void> {
+  probing.value = true
+  try {
+    const result = await apiPost<AccountProbe>(endpoints.source.probe())
+    if (disposed) {
+      return
+    }
+    probeResult.value = result
+    applyProbe(result, trigger)
+  } catch (err) {
+    if (disposed) {
+      return
+    }
+    if (trigger !== 'silent') {
+      toast.error(err, '凭据校验失败')
+    }
+  } finally {
+    probing.value = false
+  }
+}
+
+function applyProbe(result: AccountProbe, trigger: ProbeTrigger): void {
+  // 只有 expired 才弹二维码：令牌问题与数据源不可达弹窗只会误导。
+  // 登录收尾时的静默校验不弹窗——对话框正开着，弹了会打断结果展示。
+  if (result.state === 'expired') {
+    if (trigger === 'silent') {
+      return
+    }
+    if (trigger === 'initial' && autoQrShown) {
+      toast.warn('微信读书凭据已失效，可点「扫码重新登录」', result.message)
+      return
+    }
+    autoQrShown = true
+    void openQrDialog()
+    return
+  }
+  if (trigger === 'silent') {
+    return
+  }
+  switch (result.state) {
+    case 'valid':
+      if (trigger === 'manual') {
+        toast.success(
+          '微信读书凭据有效',
+          result.feed_name ? `探测公众号：${result.feed_name}` : result.message,
+        )
+      }
+      break
+    case 'token_invalid':
+      toast.warn('访问令牌无效，请到「配置管理 → 文章数据源」重新填写访问令牌', result.message)
+      break
+    case 'unreachable':
+      toast.warn('数据源不可达，请确认 we-mp-rss 已启动', result.message)
+      break
+    default:
+      toast.info('凭据状态未知', result.message)
+  }
+}
+
+// -- 扫码登录 --------------------------------------------------------------
+
+function clearTimers(): void {
+  if (statusTimer !== null) {
+    window.clearInterval(statusTimer)
+    statusTimer = null
+  }
+}
+
+function resetQrState(): void {
+  clearTimers()
+  statusBusy = false
+  qrLoading.value = false
+  qrImage.value = ''
+  qrError.value = ''
+  qrMessage.value = ''
+  qrExpired.value = false
+  qrInvalid.value = false
+  overLoading.value = false
+}
+
+async function openQrDialog(): Promise<void> {
+  resetQrState()
+  qrOpen.value = true
+  await loadQr()
+}
+
+function closeQrDialog(): void {
+  qrOpen.value = false
+  clearTimers()
+}
+
+function onQrOpenChange(open: boolean): void {
+  if (open) {
+    void openQrDialog()
+    return
+  }
+  closeQrDialog()
+}
+
+async function loadQr(): Promise<void> {
+  clearTimers()
+  qrLoading.value = true
+  qrImage.value = ''
+  qrError.value = ''
+  qrMessage.value = ''
+  qrExpired.value = false
+  qrInvalid.value = false
+  try {
+    const data = await apiGet<QrLoginImage>(endpoints.source.loginQr())
+    if (disposed || !qrOpen.value) {
+      return
+    }
+    // 失败也是 200：{error, detail}，没有 image 就按失败处理
+    if (!data.image) {
+      qrError.value = data.detail || data.error || '数据源没有返回二维码'
+      return
+    }
+    qrImage.value = data.image
+    startStatusPoll()
+  } catch (err) {
+    if (disposed) {
+      return
+    }
+    qrError.value = errorMessage(err)
+  } finally {
+    qrLoading.value = false
+  }
+}
+
+function startStatusPoll(): void {
+  stopStatusPoll()
+  statusTimer = window.setInterval(() => {
+    void pollQrStatus()
+  }, QR_STATUS_INTERVAL_MS)
+}
+
+function stopStatusPoll(): void {
+  if (statusTimer !== null) {
+    window.clearInterval(statusTimer)
+    statusTimer = null
+  }
+}
+
+async function pollQrStatus(): Promise<void> {
+  if (statusBusy || !qrOpen.value) {
+    return
+  }
+  statusBusy = true
+  try {
+    const status = await apiGet<QrLoginStatus>(endpoints.source.loginQrStatus())
+    if (disposed || !qrOpen.value) {
+      return
+    }
+    qrMessage.value = status.message
+    qrExpired.value = status.message.includes('已过期')
+    // 扫了码但 Cookie 校验失败：停轮询，让用户重新获取二维码
+    if (status.logic_code === 'COOKIE_INVALID') {
+      stopStatusPoll()
+      qrInvalid.value = true
+      qrError.value = status.message || '扫码完成，但微信读书 Cookie 校验失败'
+      return
+    }
+    if (status.login_status) {
+      stopStatusPoll()
+      await finishLogin()
+    }
+  } catch (err) {
+    if (disposed) {
+      return
+    }
+    stopStatusPoll()
+    qrError.value = errorMessage(err)
+  } finally {
+    statusBusy = false
+  }
+}
+
+/**
+ * 扫码成功后立刻关掉对话框，把后台更新交给右下角的进度卡。
+ *
+ * 后面的采集是后端线程在跑，用户不需要等：关掉窗口就能去「公众号管理」
+ * 刷新列表，进度卡会自己走完并收起。
+ */
+async function finishLogin(): Promise<void> {
+  overLoading.value = true
+  try {
+    const over = await apiPost<QrLoginOver>(endpoints.source.loginQrOver())
+    if (disposed) {
+      return
+    }
+    if (!over.login_status) {
+      // 收尾没确认登录：留在二维码界面让用户重扫
+      qrInvalid.value = true
+      qrError.value = over.message || '扫码登录未完成，请重新获取二维码'
+      return
+    }
+
+    closeQrDialog()
+    if (over.sync_started) {
+      feedSync.start()
+      toast.success('扫码登录成功', '正在后台触发公众号更新，可继续使用其他页面')
+    } else {
+      toast.success('扫码登录成功', over.message || '微信读书凭据已恢复')
+    }
+
+    // 账号快照与凭据校验在后台刷新，不挡对话框关闭
+    void (async () => {
+      await state.run()
+      await runProbe('silent')
+      if (disposed) {
+        return
+      }
+      if (probeResult.value?.state === 'valid') {
+        toast.success('微信读书凭据已恢复', '稍等片刻后到「公众号管理」刷新即可看到最新时间')
+      } else {
+        toast.warn(
+          '登录已完成，但凭据校验仍未通过',
+          probeResult.value?.message || '请稍后点「刷新状态」重新校验',
+        )
+      }
+    })()
+  } catch (err) {
+    if (disposed) {
+      return
+    }
+    qrInvalid.value = true
+    qrError.value = errorMessage(err)
+  } finally {
+    overLoading.value = false
   }
 }
 
@@ -151,16 +422,30 @@ async function openLogin(): Promise<void> {
     opening.value = false
   }
 }
+
+onMounted(() => {
+  void bootstrap()
+})
+
+onScopeDispose(() => {
+  disposed = true
+  clearTimers()
+})
 </script>
 
 <template>
   <div>
     <PageHeader
       title="账号管理"
-      description="微信读书登录态由数据源自行维护；本页只读取，不代为登录。"
+      description="微信读书凭据由 we-mp-rss 保存；这里可以校验凭据是否仍然有效，失效时扫码重新登录。"
     >
       <template #actions>
-        <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="state.run()">
+        <AppButton
+          variant="outline"
+          size="sm"
+          :loading="state.loading.value || probing || refreshing"
+          @click="refreshAll"
+        >
           <template #icon>
             <PhArrowClockwise :size="14" aria-hidden="true" />
           </template>
@@ -186,7 +471,7 @@ async function openLogin(): Promise<void> {
       class="mb-5"
       :message="state.error.value"
       hint="状态读不到时不要按「未登录」处理——先修好接口，再判断登录态。"
-      @retry="state.run()"
+      @retry="bootstrap"
     />
 
     <!-- 登录态 -->
@@ -198,7 +483,7 @@ async function openLogin(): Promise<void> {
             微信读书登录态
           </h2>
           <p class="m-0 mt-1 text-xs leading-relaxed text-muted">
-            登录态由 we-mp-rss 自行维护（微信读书 Cookie），本项目不持有凭据，因此这里只能读取、不能刷新。
+            登录态由 we-mp-rss 保存（微信读书 Cookie）。Cookie 过期后公众号文章不再更新，可在这里扫码重新登录。
           </p>
         </div>
         <AppTag :tone="loginMeta.tone" variant="outline">{{ loginMeta.label }}</AppTag>
@@ -256,29 +541,59 @@ async function openLogin(): Promise<void> {
             </dd>
           </div>
         </dl>
-
-        <div class="mt-5 flex flex-wrap items-center gap-2">
-          <AppButton variant="solid" :loading="refreshing" @click="refresh">
-            <template #icon>
-              <PhArrowsClockwise :size="14" aria-hidden="true" />
-            </template>
-            重新读取状态
-          </AppButton>
-          <AppButton variant="outline" :loading="opening" @click="openLogin">
-            <template #icon>
-              <PhSignIn :size="14" aria-hidden="true" />
-            </template>
-            打开授权页面
-          </AppButton>
-        </div>
-
-        <p class="m-0 mt-4 border-t border-hairline pt-4 text-xs leading-relaxed text-muted">
-          「重新读取状态」只重新探测服务可达性并重读登录态，不会替你刷新 Cookie。失败时请到
-          <code>http://localhost:8001</code> 重新登录。
-        </p>
       </template>
 
       <p v-else class="m-0 text-[13px] text-muted">还没有读到账号状态。</p>
+
+      <!-- 真实探针结果：「存了 Cookie」与「Cookie 还能用」不是一回事 -->
+      <div class="mt-4 rounded-panel border border-hairline bg-inset px-3.5 py-3">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <span class="text-[12.5px] text-faint">凭据校验</span>
+          <AppTag v-if="probeMeta" :tone="probeMeta.tone" variant="outline">
+            {{ probeMeta.label }}
+          </AppTag>
+          <AppTag v-else tone="neutral" variant="outline">
+            {{ probing ? '校验中…' : '未校验' }}
+          </AppTag>
+          <span v-if="probeResult?.feed_name" class="text-xs text-muted">
+            探测公众号：{{ probeResult.feed_name }}
+          </span>
+          <span v-if="probeResult" class="ml-auto text-xs text-faint">
+            最近校验 {{ probeCheckedLabel }}
+          </span>
+        </div>
+        <p v-if="probeResult?.message" class="m-0 mt-2 text-xs leading-relaxed text-muted">
+          {{ probeResult.message }}
+        </p>
+      </div>
+
+      <!-- 扫码登录任何时候都能点：账号快照读不到时也可能只是令牌问题 -->
+      <div class="mt-5 flex flex-wrap items-center gap-2">
+        <AppButton variant="solid" :loading="refreshing" @click="refreshAll">
+          <template #icon>
+            <PhArrowsClockwise :size="14" aria-hidden="true" />
+          </template>
+          重新读取状态
+        </AppButton>
+        <AppButton variant="tonal" @click="openQrDialog">
+          <template #icon>
+            <PhQrCode :size="14" aria-hidden="true" />
+          </template>
+          扫码重新登录
+        </AppButton>
+        <AppButton variant="outline" :loading="opening" @click="openLogin">
+          <template #icon>
+            <PhSignIn :size="14" aria-hidden="true" />
+          </template>
+          打开授权页面
+        </AppButton>
+      </div>
+
+      <p class="m-0 mt-4 border-t border-hairline pt-4 text-xs leading-relaxed text-muted">
+        「重新读取状态」会重新读取账号快照，并真实校验一次微信读书凭据；凭据失效时直接在本页扫码重新登录即可。
+        扫码成功后窗口会自动关闭，公众号更新在后台进行，进度显示在右下角，期间可以正常使用其他页面。
+        「打开授权页面」是兜底入口，打开的是 we-mp-rss 自带后台。
+      </p>
     </section>
 
     <!-- 访问令牌 -->
@@ -333,5 +648,51 @@ async function openLogin(): Promise<void> {
         <code>token_expire_minutes</code> 决定（本部署配方是 3 天），到期后本页会提示。
       </p>
     </section>
+
+    <!-- 扫码重新登录：只负责扫码；登录后的公众号更新在右下角进度卡里跑，不挡操作 -->
+    <AppDialog
+      :open="qrOpen"
+      title="扫码重新登录微信读书"
+      description="凭据由 we-mp-rss 保存；登录成功后会在后台触发公众号更新。"
+      width="md"
+      @update:open="onQrOpenChange"
+    >
+      <AppErrorState
+        v-if="qrError"
+        :message="qrError"
+        hint="若二维码已过期请重新获取；扫码后仍失败可改用「打开授权页面」兜底。"
+        :retry-label="qrInvalid ? '重新获取二维码' : '重试'"
+        @retry="loadQr"
+      />
+
+      <div v-else-if="qrLoading" class="flex flex-col items-center gap-3 py-8">
+        <AppProgress indeterminate size="sm" class="w-40" />
+        <p class="m-0 text-[13px] text-muted">正在向数据源获取二维码…</p>
+      </div>
+
+      <div v-else-if="qrImage" class="flex flex-col items-center gap-3">
+        <div class="rounded-panel border border-hairline bg-inset p-3">
+          <img :src="qrImage" alt="微信读书登录二维码" class="block h-56 w-56" />
+        </div>
+        <p class="m-0 min-h-[20px] text-center text-[13px] leading-relaxed text-muted">
+          {{ qrMessage || '请用微信扫描二维码完成登录' }}
+        </p>
+        <AppButton v-if="qrExpired" size="sm" variant="outline" :loading="qrLoading" @click="loadQr">
+          <template #icon>
+            <PhArrowsClockwise :size="14" aria-hidden="true" />
+          </template>
+          刷新二维码
+        </AppButton>
+      </div>
+
+      <p v-else class="m-0 text-[13px] text-muted">还没有拿到二维码。</p>
+
+      <template #footer>
+        <p v-if="overLoading" class="m-0 mr-auto text-xs text-muted">正在确认登录状态…</p>
+        <AppButton variant="ghost" :disabled="overLoading" @click="closeQrDialog">
+          关闭
+        </AppButton>
+      </template>
+    </AppDialog>
   </div>
 </template>
