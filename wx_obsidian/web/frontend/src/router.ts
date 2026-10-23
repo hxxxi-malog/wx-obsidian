@@ -27,6 +27,12 @@ export const router = createRouter({
       meta: { navKey: 'run' },
     },
     {
+      path: '/latest',
+      name: 'latest',
+      component: () => import('./views/Latest.vue'),
+      meta: { navKey: 'latest' },
+    },
+    {
       path: '/articles',
       name: 'articles',
       component: () => import('./views/Articles.vue'),

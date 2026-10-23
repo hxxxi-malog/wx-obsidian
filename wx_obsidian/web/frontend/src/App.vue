@@ -11,22 +11,28 @@
 import { useEventListener } from '@vueuse/core'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import TokenGate from '@/components/domain/TokenGate.vue'
 import AppRail from '@/components/layout/AppRail.vue'
 import AppTopbar from '@/components/layout/AppTopbar.vue'
 import CommandPalette from '@/components/layout/CommandPalette.vue'
+import FeedSyncDock from '@/components/layout/FeedSyncDock.vue'
 import JobDock from '@/components/layout/JobDock.vue'
 import AppDrawer from '@/components/ui/AppDrawer.vue'
 import Toaster from '@/components/ui/Toaster.vue'
 import { usePolling } from '@/composables/usePolling'
 import { useToast } from '@/composables/useToast'
-import { apiGet } from '@/lib/api/client'
+import { apiGet, onUnauthorized } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type { SourceHealth } from '@/lib/api/types'
+import { useAuthStore } from '@/stores/auth'
+import { useFeedSyncStore } from '@/stores/feed-sync'
 import { useJobsStore } from '@/stores/jobs'
 import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
 const jobs = useJobsStore()
+const auth = useAuthStore()
+const sync = useFeedSyncStore()
 const toast = useToast()
 
 const sourceHealth = ref<SourceHealth | null>(null)
@@ -51,7 +57,14 @@ onMounted(() => {
   ui.applyTheme()
   // 刷新页面后重新挂上正在跑的任务（旧行为保留）
   void jobs.refresh()
+  // 登录后触发的公众号更新是后台线程：刷新页面后把右下角进度卡接回来
+  void sync.resume()
+  // 裸地址/新标签页进来时没有 token：直接给解锁入口，用户不必对着一屏 401 提示自行摸索
+  auth.promptIfNeeded()
 })
+
+// 任何接口的 401 都走同一条恢复路径（令牌缺失或服务重启后失效）
+const stopAuthWatch = onUnauthorized(() => auth.markUnauthorized())
 
 // 空闲时低频轮询：捕捉定时任务发起的抓取，让任务坞在任何页面都能自己冒出来
 usePolling(
@@ -130,7 +143,10 @@ useEventListener(window, 'keydown', (event: KeyboardEvent) => {
   }
 })
 
-onBeforeUnmount(() => stopWatchingTheme())
+onBeforeUnmount(() => {
+  stopWatchingTheme()
+  stopAuthWatch()
+})
 </script>
 
 <template>
@@ -152,6 +168,9 @@ onBeforeUnmount(() => stopWatchingTheme())
         @toggle-dock="ui.toggleDock()"
       />
 
+      <!-- 令牌闸门：未解锁时横幅常驻（任何页面都能一键粘贴 token 恢复） -->
+      <TokenGate />
+
       <main class="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 sm:py-6">
         <router-view v-slot="{ Component }">
           <Transition
@@ -172,6 +191,7 @@ onBeforeUnmount(() => stopWatchingTheme())
     </AppDrawer>
 
     <JobDock :open="ui.dockOpen" @update:open="ui.toggleDock($event)" />
+    <FeedSyncDock />
     <CommandPalette :open="ui.paletteOpen" @update:open="ui.togglePalette($event)" />
     <Toaster />
   </div>

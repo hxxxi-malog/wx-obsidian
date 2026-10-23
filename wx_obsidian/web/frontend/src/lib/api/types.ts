@@ -213,6 +213,48 @@ export interface FeedItem {
   update_time: string | null
 }
 
+/** GET /api/source/articles 返回的一篇文章（列表投影，不含正文） */
+export interface SourceArticleItem {
+  article_id: string
+  title: string
+  url: string
+  account: string
+  account_id: string
+  /** 上游没有给出发布时间时为 null，界面归入「时间未知」 */
+  published_at: string | null
+  cover: string
+  has_content: boolean
+  /** 这篇已在 processed.json 里入库 */
+  processed: boolean
+}
+
+/** GET /api/source/articles 的查询参数；mp_id 为空串表示全部公众号 */
+export interface SourceArticleQuery {
+  offset?: number
+  limit?: number
+  mp_id?: string
+}
+
+/** GET /api/source/articles 的成功响应 */
+export interface SourceArticlePage {
+  total: number
+  offset: number
+  limit: number
+  token_configured: boolean
+  items: SourceArticleItem[]
+}
+
+/**
+ * GET /api/source/articles 的失败响应：HTTP 仍是 200，靠 error 字段区分原因。
+ *
+ * 已知取值：source_token_invalid（访问令牌未配置或失效）、source_unavailable（上游不可达）。
+ */
+export interface SourceArticleListError {
+  error: string
+  detail: string
+  token_configured: boolean
+}
+
 /** 数据源访问令牌状态（不回显令牌本身） */
 export interface SourceTokenState {
   configured: boolean
@@ -242,6 +284,56 @@ export interface SourceRefreshResult {
   ok: boolean
   error: string
   account: AccountStatus
+}
+
+/**
+ * POST /api/source/probe：真实校验一次微信读书凭据。
+ *
+ * 与 `AccountStatus.is_logged_in` 的区别：后者只说明上游存了 Cookie，这个说明 Cookie
+ * 还能不能用。只有 `expired` 应该弹扫码对话框；`token_invalid` / `unreachable` 弹了
+ * 只会误导（问题不在二维码）。
+ */
+export interface AccountProbe {
+  state: 'valid' | 'expired' | 'token_invalid' | 'unreachable' | 'unknown'
+  message: string
+  /** 探测用的公众号名（可能为空串） */
+  feed_name: string
+  /** ISO 时间；空串表示上游没给 */
+  checked_at: string
+}
+
+/** GET /api/source/login-qr：成功给 image（data URL）+ uid；失败是 200 + {error, detail} */
+export interface QrLoginImage {
+  image: string
+  uid: string
+  error?: string
+  detail?: string
+}
+
+/** GET /api/source/login-qr/status：`logic_code` 为 COOKIE_INVALID 表示扫码后 Cookie 校验失败 */
+export interface QrLoginStatus {
+  login_status: boolean
+  message: string
+  logic_code: string
+}
+
+/** POST /api/source/login-qr/over：后端在登录成功时会自动触发公众号采集 */
+export interface QrLoginOver {
+  login_status: boolean
+  message: string
+  sync_started: boolean
+}
+
+/** GET /api/source/sync：登录后逐个触发公众号采集的进度 */
+export interface FeedSyncState {
+  running: boolean
+  total: number
+  triggered: number
+  skipped: number
+  failed: number
+  started_at: string
+  finished_at: string
+  error: string
 }
 
 export interface LogEntry {

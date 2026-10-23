@@ -41,6 +41,18 @@ describe('endpoints 路径', () => {
     expect(endpoints.logs.list(7)).toBe('/api/logs?since=7')
   })
 
+  it('最新文章列表拼装查询串（offset/limit/mp_id）', () => {
+    expect(endpoints.source.articles()).toBe('/api/source/articles')
+    expect(endpoints.source.articles({ offset: 0, limit: 30 })).toBe(
+      '/api/source/articles?offset=0&limit=30',
+    )
+    expect(endpoints.source.articles({ offset: 30, limit: 30, mp_id: 'MP_WXS_1' })).toBe(
+      '/api/source/articles?offset=30&limit=30&mp_id=MP_WXS_1',
+    )
+    // 空 mp_id 表示全部公众号，不写进查询串
+    expect(endpoints.source.articles({ mp_id: '' })).toBe('/api/source/articles')
+  })
+
   it('目录浏览对绝对路径编码', () => {
     expect(endpoints.fs.list('/Users/me/Documents')).toBe(
       '/api/fs/list?path=%2FUsers%2Fme%2FDocuments',

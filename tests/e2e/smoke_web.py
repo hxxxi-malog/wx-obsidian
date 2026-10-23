@@ -71,6 +71,28 @@ def _feed_payload() -> dict[str, Any]:
     }
 
 
+def _article_list_payload() -> dict[str, Any]:
+    """上游文章库列表（管理接口形态）：一行数据即可验证分页与 processed 标记。"""
+    return {
+        "code": 0,
+        "data": {
+            "list": [
+                {
+                    "id": "smoke-article-1",
+                    "title": ARTICLE_TITLE,
+                    "url": "https://mp.weixin.qq.com/s/smoke-test-article",
+                    "mp_name": ACCOUNT_NAME,
+                    "mp_id": "MP_WXS_SMOKE",
+                    "publish_time": int(datetime.now(UTC).timestamp()),
+                    "pic_url": "",
+                    "has_content": 1,
+                }
+            ],
+            "total": 1,
+        },
+    }
+
+
 def _note_payload() -> dict[str, Any]:
     section = f"{NOTE_MARKER}。" * 12
     return {
@@ -115,6 +137,9 @@ class _StubHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定命名
         if self.path.startswith("/feed/"):
             self._send_json(_feed_payload())
+            return
+        if self.path.startswith("/api/v1/wx/articles"):
+            self._send_json(_article_list_payload())
             return
         self._send_json({"error": "not_found"}, 404)
 
@@ -405,7 +430,47 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
             else 1
         )
 
-        print("\n5) 日志落盘、掩码正确")
+        print("\n5) 最新文章接口读到数据源文章，并标出已入库")
+        page = requests.get(
+            f"http://127.0.0.1:{web_port}/api/source/articles",
+            headers={"X-WX-Token": token},
+            timeout=10.0,
+        ).json()
+        items = page.get("items") or []
+        first = items[0] if items else {}
+        failures += (
+            0 if _check(page.get("total") == 1, "返回总数", f"total={page.get('total')}") else 1
+        )
+        failures += (
+            0
+            if _check(
+                first.get("article_id") == "smoke-test-article"
+                and first.get("url") == "https://mp.weixin.qq.com/s/smoke-test-article",
+                "文章 ID 归一化 + 原文链接",
+                f"article_id={first.get('article_id')}",
+            )
+            else 1
+        )
+        failures += 0 if _check(first.get("processed") is True, "已抓取文章标记为已入库") else 1
+        failures += (
+            0
+            if _check(
+                first.get("account") == ACCOUNT_NAME and bool(first.get("published_at")),
+                "公众号名与发布时间",
+                f"account={first.get('account')}",
+            )
+            else 1
+        )
+        failures += (
+            0
+            if _check(
+                page.get("token_configured") is False,
+                "未配置访问令牌时如实返回 token_configured=false",
+            )
+            else 1
+        )
+
+        print("\n6) 日志落盘、掩码正确")
         log_text = log_file.read_text(encoding="utf-8") if log_file.is_file() else ""
         failures += 0 if _check(bool(log_text), "日志文件非空", str(log_file)) else 1
         failures += 0 if _check("已启动" in log_text, "日志含启动记录") else 1
@@ -413,7 +478,7 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
         failures += 0 if _check("token=****" in log_text, "日志里的 token 已掩码") else 1
         failures += 0 if _check("uvicorn.error" in log_text, "uvicorn 日志经 root 落盘") else 1
 
-        print("\n6) POST /api/shutdown 让进程干净退出")
+        print("\n7) POST /api/shutdown 让进程干净退出")
         code = _shutdown(web_port, token, proc)
         failures += 0 if _check(code == 0, "退出码 0", f"exit={code}") else 1
         proc = None

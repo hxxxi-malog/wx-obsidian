@@ -35,6 +35,12 @@ describe('时间格式化', () => {
     expect(formatRelative('2026-10-12T13:00:00+08:00', NOW)).toBe('1 小时后')
   })
 
+  it('后端给的 UTC 偏移时间按同一时刻换算', () => {
+    // /api/feeds 的 sync_time / update_time 由 Unix 秒转成 UTC ISO（+00:00）
+    expect(formatRelative('2026-10-12T03:30:00+00:00', NOW)).toBe('30 分钟前')
+    expect(formatRelative('2026-10-09T04:00:00+00:00', NOW)).toBe('3 天前')
+  })
+
   it('超过一周回落到绝对时间', () => {
     expect(formatRelative('2026-09-01T12:00:00+08:00', NOW)).toContain('2026')
   })

@@ -10,11 +10,13 @@ from typing import Any, cast
 
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.models import (
+    AccountProbe,
     AccountStatus,
     ConnectionTestResult,
     Feed,
     HealthStatus,
     ProcessingResult,
+    SourceArticlePage,
     Statistics,
 )
 from wx_obsidian.web.runtime import WebRuntime
@@ -40,6 +42,11 @@ class FakeOrchestrator:
         source_healthy: bool = True,
         account_logged_in: bool = True,
         account_queried: bool = True,
+        probe_state: str = "valid",
+        qr_logged_in: bool = False,
+        refresh_feed_outcome: str = "triggered",
+        articles: SourceArticlePage | None = None,
+        articles_error: Exception | None = None,
     ) -> None:
         self.healthy = healthy
         self.steps = steps if steps is not None else ["第一篇", "第二篇", "第三篇"]
@@ -51,6 +58,14 @@ class FakeOrchestrator:
         self.source_healthy = source_healthy
         self.account_logged_in = account_logged_in
         self.account_queried = account_queried
+        self.probe_state = probe_state
+        self.qr_logged_in = qr_logged_in
+        self.refresh_feed_outcome = refresh_feed_outcome
+        self.articles = articles
+        self.articles_error = articles_error
+        self.article_queries: list[dict[str, Any]] = []
+        self.refreshed_feeds: list[str] = []
+        self.qr_finished = 0
         self.cancelled = threading.Event()
         self.calls: list[dict[str, Any]] = []
         self.opened: list[str] = []
@@ -88,6 +103,25 @@ class FakeOrchestrator:
     def get_feeds(self) -> list[Feed]:
         return list(self.feeds)
 
+    def list_source_articles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 30,
+        feed_id: str = "",
+    ) -> SourceArticlePage:
+        self.article_queries.append({"offset": offset, "limit": limit, "feed_id": feed_id})
+        if self.articles_error is not None:
+            raise self.articles_error
+        if self.articles is not None:
+            return SourceArticlePage(
+                total=self.articles.total,
+                offset=offset,
+                limit=limit,
+                items=self.articles.items,
+            )
+        return SourceArticlePage(total=0, offset=offset, limit=limit, items=[])
+
     def add_feed(self, article_url: str) -> Feed | None:
         self.calls.append({"kind": "add_feed", "url": article_url})
         if not self.add_feed_supported:
@@ -116,6 +150,38 @@ class FakeOrchestrator:
     def refresh_cookie(self) -> bool:
         self.refreshed += 1
         return True
+
+    # -- 凭据探针 / 扫码登录 / 单号采集 -------------------------------------
+
+    def probe_account(self) -> AccountProbe:
+        self.calls.append({"kind": "probe"})
+        return AccountProbe(
+            state=self.probe_state,
+            message=f"探针结果：{self.probe_state}",
+            feed_name="测试公众号",
+        )
+
+    def get_login_qr(self) -> dict[str, Any]:
+        self.calls.append({"kind": "login_qr"})
+        return {"image": "data:image/png;base64,AAAA", "uid": "uid-1"}
+
+    def get_login_qr_status(self) -> dict[str, Any]:
+        return {
+            "login_status": self.qr_logged_in,
+            "message": "登录成功" if self.qr_logged_in else "等待扫码...",
+            "logic_code": "",
+        }
+
+    def finish_login_qr(self) -> dict[str, Any]:
+        self.qr_finished += 1
+        return {
+            "login_status": self.qr_logged_in,
+            "message": "登录成功" if self.qr_logged_in else "尚未完成扫码登录",
+        }
+
+    def refresh_feed(self, feed_id: str) -> str:
+        self.refreshed_feeds.append(feed_id)
+        return self.refresh_feed_outcome
 
     # -- 任务 ---------------------------------------------------------------
 

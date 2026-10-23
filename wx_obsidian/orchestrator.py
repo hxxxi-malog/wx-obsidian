@@ -26,12 +26,14 @@ from wx_obsidian.config import (
 )
 from wx_obsidian.config_manager import ConfigManager
 from wx_obsidian.models import (
+    AccountProbe,
     AccountStatus,
     ConnectionTestResult,
     FailedArticle,
     Feed,
     HealthStatus,
     ProcessingResult,
+    SourceArticlePage,
     Statistics,
 )
 from wx_obsidian.output.validator import validate_and_fix
@@ -655,6 +657,16 @@ class Orchestrator:
         """获取已订阅的公众号列表。"""
         return self._source.get_feeds()
 
+    def list_source_articles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 30,
+        feed_id: str = "",
+    ) -> SourceArticlePage:
+        """读取数据源文章库（按发布时间倒序，供 Web「最新文章」页浏览）。"""
+        return self._source.list_articles(offset=offset, limit=limit, feed_id=feed_id)
+
     def add_feed(self, article_url: str) -> Feed | None:
         """通过文章链接添加公众号（we-mp-rss 不支持，返回 None）。"""
         return self._source.add_feed(article_url)
@@ -670,6 +682,26 @@ class Orchestrator:
     def get_login_url(self) -> str:
         """获取数据源的登录/授权页面 URL。"""
         return self._source.get_login_url()
+
+    def probe_account(self) -> AccountProbe:
+        """真实校验一次登录凭据（不是「有没有存凭据」）。"""
+        return self._source.probe_account()
+
+    def get_login_qr(self) -> dict[str, Any]:
+        """取扫码登录二维码（data URL）。"""
+        return self._source.get_login_qr()
+
+    def get_login_qr_status(self) -> dict[str, Any]:
+        """轮询扫码登录状态。"""
+        return self._source.get_login_qr_status()
+
+    def finish_login_qr(self) -> dict[str, Any]:
+        """扫码完成后收尾。"""
+        return self._source.finish_login_qr()
+
+    def refresh_feed(self, feed_id: str) -> str:
+        """触发单个公众号的上游采集。"""
+        return self._source.refresh_feed(feed_id)
 
     async def fetch_and_process(
         self,

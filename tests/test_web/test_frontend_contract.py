@@ -130,6 +130,7 @@ def test_frontend_covers_the_critical_endpoints(frontend_paths: set[str]) -> Non
         "/api/source/account",
         "/api/source/login-url",
         "/api/source/refresh",
+        "/api/source/articles",
         "/api/feeds",
         "/api/feeds/{}",
         "/api/logs",

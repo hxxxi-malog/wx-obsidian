@@ -285,7 +285,7 @@ wx-obsidian/
 └── assets/                  # README screenshots
 ```
 
-Detailed architecture, dependency flow, coding red lines (path safety / atomic writes / exception handling / layer isolation) and a "which file changes what" map live in [`AGENTS.md`](AGENTS.md) (Chinese; [`CLAUDE.md`](CLAUDE.md) is a mirror of the same content).
+Detailed architecture, dependency flow, coding red lines (path safety / atomic writes / exception handling / layer isolation) and a "which file changes what" map live in [`AGENTS.md`](AGENTS.md) (Chinese).
 
 | Document | Contents |
 |----------|----------|

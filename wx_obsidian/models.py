@@ -60,6 +60,22 @@ class AccountStatus:
 
 
 @dataclass
+class AccountProbe:
+    """微信读书凭据探针结果：真的向上游要一次公众号信息。
+
+    与 `AccountStatus.is_logged_in` 的区别：后者只说明「上游存了 Cookie」，
+    这个探针说明「Cookie 还能用」。账号页据此决定要不要弹扫码登录。
+
+    `state` 取值由数据源定义：valid / expired / token_invalid / unreachable / unknown。
+    """
+
+    state: str
+    message: str = ""
+    feed_name: str = ""
+    checked_at: datetime | None = None
+
+
+@dataclass
 class ContainerStatus:
     """数据源服务/容器状态。"""
 
@@ -79,6 +95,33 @@ class Feed:
     cover: str = ""
     sync_time: datetime | None = None
     update_time: datetime | None = None
+
+
+@dataclass
+class SourceArticle:
+    """数据源文章库的一篇文章（Web「最新文章」页浏览用）。
+
+    与管线里的文章 dict 不同：这里只承载列表页需要的字段，不带正文。
+    """
+
+    article_id: str
+    title: str
+    url: str
+    account: str
+    account_id: str
+    published_at: datetime | None = None
+    cover: str = ""
+    has_content: bool = False
+
+
+@dataclass
+class SourceArticlePage:
+    """数据源文章库的分页结果（total 是上游总数，items 是当前页）。"""
+
+    total: int
+    offset: int
+    limit: int
+    items: list[SourceArticle] = field(default_factory=list)
 
 
 @dataclass
