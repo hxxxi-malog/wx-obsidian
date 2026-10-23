@@ -29,6 +29,7 @@ const CHROME_CANDIDATES = [
 const ROUTES = [
   { path: '/', label: '状态总览' },
   { path: '/run', label: '文章抓取' },
+  { path: '/latest', label: '最新文章' },
   { path: '/articles', label: '文章管理' },
   { path: '/settings', label: '配置管理' },
   { path: '/feeds', label: '公众号管理' },
@@ -366,6 +367,25 @@ async function main() {
       check(`${route.path} 无未捕获异常`, exceptions.length === 0, exceptions[0] ?? '')
       const httpErrors = consoleErrors.filter((line) => !/favicon|ERR_/.test(line))
       check(`${route.path} 无 console.error`, httpErrors.length === 0, httpErrors[0] ?? '')
+      if (route.path === '/latest' && args.token) {
+        // 只验证页面标题不够：这个页面的价值全在「真的列出文章 + 链接可点」
+        const rowsReady = await waitFor(
+          'document.querySelectorAll(\'main a[target="_blank"]\').length > 0',
+          10000,
+        )
+        check('/latest 渲染出文章行', rowsReady)
+        if (rowsReady) {
+          const rows = await evaluate(
+            'document.querySelectorAll(\'main a[target="_blank"]\').length',
+          )
+          const originalLinks = await evaluate(
+            '[...document.querySelectorAll(\'main a[target="_blank"]\')].every((a) => (a.getAttribute("href") || "").startsWith("https://mp.weixin.qq.com/"))',
+          )
+          const dayGroups = await evaluate('document.querySelectorAll("main section h2").length')
+          check('/latest 每行都指向公众号原文', originalLinks, `${rows} 行`)
+          check('/latest 按日期分组', dayGroups >= 1, `${dayGroups} 组`)
+        }
+      }
       await screenshot(`route-${route.path === '/' ? 'dashboard' : route.path.slice(1)}`)
     }
 

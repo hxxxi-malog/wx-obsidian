@@ -213,6 +213,48 @@ export interface FeedItem {
   update_time: string | null
 }
 
+/** GET /api/source/articles 返回的一篇文章（列表投影，不含正文） */
+export interface SourceArticleItem {
+  article_id: string
+  title: string
+  url: string
+  account: string
+  account_id: string
+  /** 上游没有给出发布时间时为 null，界面归入「时间未知」 */
+  published_at: string | null
+  cover: string
+  has_content: boolean
+  /** 这篇已在 processed.json 里入库 */
+  processed: boolean
+}
+
+/** GET /api/source/articles 的查询参数；mp_id 为空串表示全部公众号 */
+export interface SourceArticleQuery {
+  offset?: number
+  limit?: number
+  mp_id?: string
+}
+
+/** GET /api/source/articles 的成功响应 */
+export interface SourceArticlePage {
+  total: number
+  offset: number
+  limit: number
+  token_configured: boolean
+  items: SourceArticleItem[]
+}
+
+/**
+ * GET /api/source/articles 的失败响应：HTTP 仍是 200，靠 error 字段区分原因。
+ *
+ * 已知取值：source_token_invalid（访问令牌未配置或失效）、source_unavailable（上游不可达）。
+ */
+export interface SourceArticleListError {
+  error: string
+  detail: string
+  token_configured: boolean
+}
+
 /** 数据源访问令牌状态（不回显令牌本身） */
 export interface SourceTokenState {
   configured: boolean

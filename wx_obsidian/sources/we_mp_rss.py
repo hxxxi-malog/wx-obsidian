@@ -27,7 +27,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from wx_obsidian.models import AccountProbe, AccountStatus, Feed
+from wx_obsidian.models import AccountProbe, AccountStatus, Feed, SourceArticle, SourceArticlePage
+from wx_obsidian.sources.base import SourceAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,26 @@ class WeMpRssClient:
             "_account_name": channel or "未知",
         }
 
+    @staticmethod
+    def _to_source_article(item: dict[str, Any]) -> SourceArticle:
+        """把管理接口返回的文章行转成列表页 DTO。
+
+        上游行里的 id 是内部复合 ID（`<mp_id>-<mp_id>_<token>`），这里用链接重新
+        归一化成短链 token，才能和 processed.json 里的记录对上。
+        """
+        url = str(item.get("url") or "")
+        upstream_id = str(item.get("id") or "")
+        return SourceArticle(
+            article_id=normalize_article_id(url, fallback=upstream_id) or upstream_id,
+            title=str(item.get("title") or "无标题"),
+            url=url,
+            account=str(item.get("mp_name") or ""),
+            account_id=str(item.get("mp_id") or ""),
+            published_at=_to_datetime(item.get("publish_time")),
+            cover=str(item.get("pic_url") or ""),
+            has_content=bool(item.get("has_content")),
+        )
+
     def _fetch_feed_times(self, feed_id: str) -> tuple[datetime | None, datetime | None]:
         """读取单个公众号的（同步时间, 更新时间）。
 
@@ -371,6 +392,63 @@ class WeMpRssClient:
     def get_feeds(self) -> list[Feed]:
         """已订阅的公众号列表（ArticleSource 协议名）。"""
         return self.list_feeds()
+
+    def list_articles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 30,
+        feed_id: str = "",
+    ) -> SourceArticlePage:
+        """读取上游文章库（按发布时间倒序，支持按公众号过滤与分页）。
+
+        走管理接口 `GET /api/v1/wx/articles`：只查本地库、不触发采集，返回的是
+        `ArticleBase` 投影（不含正文），因此响应体远小于 `/feed/all.json`；
+        同时带 `total`，界面才能显示总数并判断「加载更多」何时结束。
+
+        Args:
+            offset: 起始偏移。
+            limit: 单页条数（上游上限 100）。
+            feed_id: 只取单个公众号；空串表示全部订阅。
+
+        Returns:
+            分页结果（`total` 为上游总数，`items` 为当前页）。
+
+        Raises:
+            SourceAuthError: 访问令牌缺失或失效（上游 401/403）。
+            requests.RequestException: 网络失败或非 2xx 响应。
+            ValueError: 响应结构异常，或分页参数越界。
+        """
+        if not 1 <= limit <= PAGE_LIMIT:
+            raise ValueError(f"limit 必须在 1..{PAGE_LIMIT} 之间，收到 {limit}")
+        if offset < 0:
+            raise ValueError(f"offset 不能为负数，收到 {offset}")
+
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
+        if feed_id:
+            params["mp_id"] = feed_id
+
+        response = requests.get(
+            f"{self._base_url}/api/v1/wx/articles",
+            params=params,
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        if response.status_code in (401, 403):
+            raise SourceAuthError("数据源访问令牌未配置或已失效（上游返回 401/403）")
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        rows = data.get("list") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or not isinstance(rows, list):
+            raise ValueError("we-mp-rss 文章列表结构异常（缺少 data.list）")
+
+        return SourceArticlePage(
+            total=int(data.get("total") or 0),
+            offset=offset,
+            limit=limit,
+            items=[self._to_source_article(row) for row in rows if isinstance(row, dict)],
+        )
 
     def get_account_status(self) -> AccountStatus:
         """微信读书登录态。

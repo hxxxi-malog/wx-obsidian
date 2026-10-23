@@ -16,6 +16,7 @@ from wx_obsidian.models import (
     Feed,
     HealthStatus,
     ProcessingResult,
+    SourceArticlePage,
     Statistics,
 )
 from wx_obsidian.web.runtime import WebRuntime
@@ -44,6 +45,8 @@ class FakeOrchestrator:
         probe_state: str = "valid",
         qr_logged_in: bool = False,
         refresh_feed_outcome: str = "triggered",
+        articles: SourceArticlePage | None = None,
+        articles_error: Exception | None = None,
     ) -> None:
         self.healthy = healthy
         self.steps = steps if steps is not None else ["第一篇", "第二篇", "第三篇"]
@@ -58,6 +61,9 @@ class FakeOrchestrator:
         self.probe_state = probe_state
         self.qr_logged_in = qr_logged_in
         self.refresh_feed_outcome = refresh_feed_outcome
+        self.articles = articles
+        self.articles_error = articles_error
+        self.article_queries: list[dict[str, Any]] = []
         self.refreshed_feeds: list[str] = []
         self.qr_finished = 0
         self.cancelled = threading.Event()
@@ -96,6 +102,25 @@ class FakeOrchestrator:
 
     def get_feeds(self) -> list[Feed]:
         return list(self.feeds)
+
+    def list_source_articles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 30,
+        feed_id: str = "",
+    ) -> SourceArticlePage:
+        self.article_queries.append({"offset": offset, "limit": limit, "feed_id": feed_id})
+        if self.articles_error is not None:
+            raise self.articles_error
+        if self.articles is not None:
+            return SourceArticlePage(
+                total=self.articles.total,
+                offset=offset,
+                limit=limit,
+                items=self.articles.items,
+            )
+        return SourceArticlePage(total=0, offset=offset, limit=limit, items=[])
 
     def add_feed(self, article_url: str) -> Feed | None:
         self.calls.append({"kind": "add_feed", "url": article_url})

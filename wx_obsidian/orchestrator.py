@@ -33,6 +33,7 @@ from wx_obsidian.models import (
     Feed,
     HealthStatus,
     ProcessingResult,
+    SourceArticlePage,
     Statistics,
 )
 from wx_obsidian.output.validator import validate_and_fix
@@ -655,6 +656,16 @@ class Orchestrator:
     def get_feeds(self) -> list[Feed]:
         """获取已订阅的公众号列表。"""
         return self._source.get_feeds()
+
+    def list_source_articles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 30,
+        feed_id: str = "",
+    ) -> SourceArticlePage:
+        """读取数据源文章库（按发布时间倒序，供 Web「最新文章」页浏览）。"""
+        return self._source.list_articles(offset=offset, limit=limit, feed_id=feed_id)
 
     def add_feed(self, article_url: str) -> Feed | None:
         """通过文章链接添加公众号（we-mp-rss 不支持，返回 None）。"""

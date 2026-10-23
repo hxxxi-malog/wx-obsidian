@@ -98,6 +98,33 @@ class Feed:
 
 
 @dataclass
+class SourceArticle:
+    """数据源文章库的一篇文章（Web「最新文章」页浏览用）。
+
+    与管线里的文章 dict 不同：这里只承载列表页需要的字段，不带正文。
+    """
+
+    article_id: str
+    title: str
+    url: str
+    account: str
+    account_id: str
+    published_at: datetime | None = None
+    cover: str = ""
+    has_content: bool = False
+
+
+@dataclass
+class SourceArticlePage:
+    """数据源文章库的分页结果（total 是上游总数，items 是当前页）。"""
+
+    total: int
+    offset: int
+    limit: int
+    items: list[SourceArticle] = field(default_factory=list)
+
+
+@dataclass
 class MigrationReport:
     """配置迁移报告。"""
 

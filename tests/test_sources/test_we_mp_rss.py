@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
+from wx_obsidian.sources.base import SourceAuthError
 from wx_obsidian.sources.we_mp_rss import (
     FALLBACK_ID_PREFIX,
     WeMpRssClient,
@@ -770,3 +771,131 @@ class TestRefreshFeed:
         mock_resp = _response({"code": 40401, "message": "请选择一个公众号"})
         with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
             assert self._client().refresh_feed("MP_WXS_1") == "failed"
+
+
+class TestListArticles:
+    """文章库读取：管理接口分页、ID/时间归一化、令牌失效的显式区分。"""
+
+    def _client(self) -> WeMpRssClient:
+        return WeMpRssClient(base_url="http://localhost:8001", timeout=5, token="tok-123")
+
+    def _payload(self, *rows: dict[str, Any], total: int | None = None) -> dict[str, Any]:
+        return {"code": 0, "data": {"list": list(rows), "total": total or len(rows)}}
+
+    def _row(self, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "id": "3537616032-3537616032_wpHU8~UqRh-D-XYfzfZe1Q",
+            "title": "LiteLLM 半年两度被投毒",
+            "url": "https://mp.weixin.qq.com/s/wpHU8~UqRh-D-XYfzfZe1Q",
+            "mp_name": "阿里云云原生",
+            "mp_id": "MP_WXS_3537616032",
+            "publish_time": 1792732008,
+            "pic_url": "https://mmbiz.qpic.cn/cover.jpg",
+            "has_content": 1,
+        }
+        base.update(overrides)
+        return base
+
+    def test_parses_page_and_sends_pagination(self) -> None:
+        """字段归一化 + offset/limit/mp_id 透传 + Bearer 头。"""
+        mock_resp = _response(self._payload(self._row(), total=54))
+        with patch(
+            "wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp
+        ) as mock_get:
+            page = self._client().list_articles(offset=30, limit=15, feed_id="MP_WXS_3537616032")
+
+        assert page.total == 54
+        assert page.offset == 30
+        assert page.limit == 15
+        assert len(page.items) == 1
+        article = page.items[0]
+        assert article.article_id == "wpHU8~UqRh-D-XYfzfZe1Q"
+        assert article.title == "LiteLLM 半年两度被投毒"
+        assert article.url == "https://mp.weixin.qq.com/s/wpHU8~UqRh-D-XYfzfZe1Q"
+        assert article.account == "阿里云云原生"
+        assert article.account_id == "MP_WXS_3537616032"
+        assert article.published_at == datetime(2026, 10, 23, 5, 6, 48, tzinfo=UTC)
+        assert article.cover == "https://mmbiz.qpic.cn/cover.jpg"
+        assert article.has_content is True
+
+        call = mock_get.call_args
+        assert call.args[0] == "http://localhost:8001/api/v1/wx/articles"
+        assert call.kwargs["params"] == {
+            "offset": 30,
+            "limit": 15,
+            "mp_id": "MP_WXS_3537616032",
+        }
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok-123"
+        assert call.kwargs["timeout"] == 5
+
+    def test_omits_mp_id_when_not_filtering(self) -> None:
+        """不筛公众号时不发空的 mp_id：上游按空串处理只会多一层误解。"""
+        mock_get = MagicMock()
+        mock_get.return_value = _response(self._payload())
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", mock_get):
+            page = self._client().list_articles()
+
+        assert page.items == []
+        assert mock_get.call_args.kwargs["params"] == {"offset": 0, "limit": 30}
+
+    def test_zero_publish_time_is_none(self) -> None:
+        """上游用 0 表示「时间未知」，不能显示成 1970 年。"""
+        mock_resp = _response(self._payload(self._row(publish_time=0)))
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            page = self._client().list_articles()
+
+        assert page.items[0].published_at is None
+
+    def test_url_fallback_when_link_unparsable(self) -> None:
+        """链接解析不出 token 时退回带前缀的上游 id，与 get_articles 的 ID 约定一致。"""
+        mock_resp = _response(self._payload(self._row(url="", id="internal-id-1")))
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            page = self._client().list_articles()
+
+        assert page.items[0].article_id == f"{FALLBACK_ID_PREFIX}internal-id-1"
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_token_rejected_raises_auth_error(self, status_code: int) -> None:
+        """401/403 单列成 SourceAuthError：界面要提示去配令牌，而不是重试网络。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        with (
+            patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp),
+            pytest.raises(SourceAuthError),
+        ):
+            self._client().list_articles()
+        mock_resp.raise_for_status.assert_not_called()
+
+    def test_missing_data_raises(self) -> None:
+        """响应缺 data.list 时按结构异常抛出，不能当成「没有文章」。"""
+        mock_resp = _response({"code": 0})
+        with (
+            patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp),
+            pytest.raises(ValueError, match="文章列表结构异常"),
+        ):
+            self._client().list_articles()
+
+    def test_network_error_propagates(self) -> None:
+        with (
+            patch(
+                "wx_obsidian.sources.we_mp_rss.requests.get",
+                side_effect=requests.RequestException("boom"),
+            ),
+            pytest.raises(requests.RequestException),
+        ):
+            self._client().list_articles()
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [({"limit": 0}, "limit"), ({"limit": 101}, "limit"), ({"offset": -1}, "offset")],
+    )
+    def test_invalid_pagination_rejected_before_request(
+        self, kwargs: dict[str, int], match: str
+    ) -> None:
+        """越界分页参数在本地就拒绝，不把非法请求发给上游。"""
+        with (
+            patch("wx_obsidian.sources.we_mp_rss.requests.get") as mock_get,
+            pytest.raises(ValueError, match=match),
+        ):
+            self._client().list_articles(**kwargs)
+        mock_get.assert_not_called()

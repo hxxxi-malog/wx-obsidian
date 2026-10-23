@@ -6,6 +6,7 @@ import {
   PhGear,
   PhGauge,
   PhHardDrives,
+  PhNewspaper,
   PhRss,
   PhUserCircle,
 } from '@phosphor-icons/vue'
@@ -36,6 +37,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: '内容',
     items: [
+      { key: 'latest', label: '最新文章', path: '/latest', icon: PhNewspaper, description: '按发布时间浏览所有订阅公众号的文章，点击打开原文' },
       { key: 'articles', label: '文章管理', path: '/articles', icon: PhArticle, description: '搜索、筛选、打开与级联删除' },
     ],
   },

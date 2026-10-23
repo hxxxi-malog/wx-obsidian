@@ -13,6 +13,7 @@ import type {
   ArticleSort,
   ConnectionTestTarget,
   SortOrder,
+  SourceArticleQuery,
 } from './types'
 
 type QueryValue = string | number | boolean | undefined | null
@@ -92,6 +93,13 @@ export const endpoints = {
     loginQrOver: () => '/api/source/login-qr/over',
     /** 登录后后端自动触发的公众号采集进度 */
     sync: () => '/api/source/sync',
+    /** 数据源文章库：按发布时间倒序分页，mp_id 为空表示全部订阅 */
+    articles: (params: SourceArticleQuery = {}) =>
+      `/api/source/articles${buildQuery({
+        offset: params.offset,
+        limit: params.limit,
+        mp_id: params.mp_id,
+      })}`,
   },
 
   feeds: {

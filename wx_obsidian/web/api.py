@@ -23,11 +23,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
+import requests
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from wx_obsidian.config import load_processed
+from wx_obsidian.sources.base import SourceAuthError
 from wx_obsidian.web import APP_NAME, APP_VERSION
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web import fs as fs_api
@@ -1010,6 +1013,47 @@ def create_app(
     def source_sync() -> dict[str, Any]:
         """登录后触发的采集进度。"""
         return feed_sync.snapshot().to_dict()
+
+    @app.get("/api/source/articles")
+    def source_articles(
+        offset: int = Query(0, ge=0),
+        limit: int = Query(30, ge=1, le=100),
+        mp_id: str = "",
+    ) -> Response:
+        """数据源文章库（按发布时间倒序），供「最新文章」页浏览。
+
+        走上游管理接口（需要访问令牌）。令牌缺失/失效与数据源不可达都返回
+        200 + `error`，前端据此分别给出「去配置令牌」与「重试」两种引导；
+        真正的意外错误照常抛 500，不在这里吞掉。
+        """
+        token_configured = bool(str(runtime.config_manager.get("source.token", "") or ""))
+        try:
+            page = runtime.orchestrator.list_source_articles(
+                offset=offset, limit=limit, feed_id=mp_id
+            )
+        except SourceAuthError as exc:
+            return JSONResponse(
+                {
+                    "error": "source_token_invalid",
+                    "detail": str(exc),
+                    "token_configured": token_configured,
+                }
+            )
+        except requests.RequestException as exc:
+            return JSONResponse(
+                {
+                    "error": "source_unavailable",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                    "token_configured": token_configured,
+                }
+            )
+
+        processed = load_processed()
+        payload = jsonable(page)
+        for item in payload["items"]:
+            item["processed"] = str(item["article_id"]) in processed
+        payload["token_configured"] = token_configured
+        return JSONResponse(payload)
 
     @app.get("/api/feeds")
     def list_feeds() -> Response:

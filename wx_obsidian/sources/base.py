@@ -12,7 +12,14 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from wx_obsidian.models import AccountProbe, AccountStatus, Feed
+from wx_obsidian.models import AccountProbe, AccountStatus, Feed, SourceArticlePage
+
+
+class SourceAuthError(Exception):
+    """数据源管理接口的访问令牌缺失或已失效（上游返回 401/403）。
+
+    Web 层据此提示用户去配置访问令牌；把它混进普通网络故障会让人查错方向。
+    """
 
 
 @runtime_checkable
@@ -43,6 +50,25 @@ class ArticleSource(Protocol):
 
     def get_feeds(self) -> list[Feed]:
         """已订阅的公众号列表。"""
+        ...
+
+    def list_articles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 30,
+        feed_id: str = "",
+    ) -> SourceArticlePage:
+        """读取数据源文章库（按发布时间倒序，分页）。
+
+        Args:
+            offset: 起始偏移。
+            limit: 单页条数（上游上限 100）。
+            feed_id: 只取单个公众号；空串表示全部订阅。
+
+        Raises:
+            SourceAuthError: 访问令牌缺失或失效。
+        """
         ...
 
     def add_feed(self, article_url: str) -> Feed | None:
