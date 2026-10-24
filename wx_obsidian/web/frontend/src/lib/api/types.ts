@@ -178,6 +178,8 @@ export interface ConfigSnapshot {
   obsidian: { vault_path: string; articles_dir: string }
   fetch: { max_days: number; max_workers: number; feed_limit: number }
   web: { port: number; open_browser: boolean }
+  /** 原生目录面板能力：源码方式看 osascript，容器方式看宿主选择器 */
+  fs: { native_pick: boolean; native_pick_detail: string }
 }
 
 export interface ConfigSaveResult {
@@ -211,6 +213,12 @@ export interface FsListing {
 export interface FsPickResult {
   path: string
   cancelled: boolean
+  /** 当前服务能否看到这个目录（容器部署时只有挂载进去的目录为 true） */
+  visible: boolean
+  /** 当前服务能否写入 <path>/<articles_dir> */
+  writable: boolean
+  /** 不可见或不可写时的说明，可直接展示 */
+  detail: string
 }
 
 export interface FeedItem {

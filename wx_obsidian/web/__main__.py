@@ -34,7 +34,8 @@ from types import FrameType
 import requests
 import uvicorn
 
-from wx_obsidian.config_manager import CONFIG_DIR, ConfigManager
+from wx_obsidian.config_manager import ConfigManager
+from wx_obsidian.paths import CONFIG_DIR
 from wx_obsidian.web import APP_NAME, APP_VERSION
 from wx_obsidian.web.api import create_app
 from wx_obsidian.web.logging_setup import (

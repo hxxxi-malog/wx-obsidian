@@ -43,7 +43,7 @@ import AppTag from '@/components/ui/AppTag.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import { useDirtyGuard } from '@/composables/useDirtyGuard'
 import { useToast } from '@/composables/useToast'
-import { ApiError, apiPost, hasCode } from '@/lib/api/client'
+import { ApiError, apiPost, errorMessage, hasCode } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type { ConnectionTestTarget, FsPickResult } from '@/lib/api/types'
 import { formFromSnapshot, useConfigStore } from '@/stores/config'
@@ -110,6 +110,15 @@ const llmOptions = computed(() =>
 const visionOptions = computed(() =>
   (config.snapshot?.vision.available ?? []).map((name) => ({ label: name, value: name })),
 )
+
+/** 原生面板的可用性由后端判断：容器部署要靠 Mac 上的宿主选择器。 */
+const nativePickHint = computed(() => {
+  const state = config.snapshot?.fs
+  if (!state || state.native_pick) {
+    return '推荐用「原生面板」在系统弹窗里选；「浏览…」可以直接选已挂载的目录'
+  }
+  return state.native_pick_detail || '当前环境没有可用的原生目录面板，请用「浏览…」选择目录'
+})
 
 // -- 校验：只做「能立刻说清对错」的本地校验，服务端仍是最终裁判 -----------------
 
@@ -232,7 +241,7 @@ async function runTest(target: ConnectionTestTarget): Promise<void> {
   }
 }
 
-/** 原生目录选择面板：同时是解决 macOS TCC 权限的正确姿势。 */
+/** 原生目录选择面板：容器部署时由 Mac 上的宿主选择器弹出。 */
 async function pickNative(): Promise<void> {
   picking.value = true
   try {
@@ -240,11 +249,22 @@ async function pickNative(): Promise<void> {
     if (result.cancelled) {
       return
     }
+    if (!result.visible) {
+      // 容器里看不到的目录写不进去：提示怎么改挂载，不把坏路径填进表单
+      toast.warn('已选中，但当前服务看不到这个目录', result.detail || undefined)
+      return
+    }
     config.form.vaultPath = result.path
-    toast.success('已选中，记得点「保存配置」')
+    if (result.writable) {
+      toast.success('已选中，记得点「保存配置」')
+    } else {
+      toast.warn('已选中，但写不进文章目录', result.detail || undefined)
+    }
   } catch (err) {
-    if (hasCode(err, 'picker_unavailable') || (err instanceof ApiError && err.status === 501)) {
-      toast.warn('当前启动方式不支持原生面板', '请改用旁边的「浏览…」在页面里选目录。')
+    if (hasCode(err, 'picker_busy')) {
+      toast.warn('已经有一个目录面板打开', '请先处理屏幕上那个选择框。')
+    } else if (hasCode(err, 'picker_unavailable') || (err instanceof ApiError && err.status === 501)) {
+      toast.warn('原生面板不可用', errorMessage(err))
     } else {
       toast.error(err)
     }
@@ -338,7 +358,7 @@ onMounted(reload)
           <ol class="mt-2 mb-0 flex list-decimal flex-col gap-1 pl-5 text-[13px] leading-relaxed text-muted">
             <li>填 <strong class="text-ink">API Key</strong>（语言模型那一栏，留空等于没配）</li>
             <li>
-              选 <strong class="text-ink">Vault 路径</strong>——点「原生面板」在系统弹窗里挑，顺带完成 macOS 授权
+              选 <strong class="text-ink">Vault 路径</strong>——用「原生面板」在系统弹窗里挑，或用「浏览…」选已挂载的目录
             </li>
             <li>回「文章抓取」跑一轮；本页改动都要先点 <strong class="text-ink">保存配置</strong></li>
           </ol>
@@ -605,7 +625,7 @@ onMounted(reload)
         >
           <AppField
             label="Vault 路径"
-            hint="建议用「原生面板」在系统弹窗里选，顺带完成 macOS 的目录授权"
+            :hint="nativePickHint"
           >
             <template #default="{ id }">
               <div class="flex flex-col gap-2 sm:flex-row sm:items-center">

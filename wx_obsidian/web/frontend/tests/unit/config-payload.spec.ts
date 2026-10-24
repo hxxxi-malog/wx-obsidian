@@ -34,6 +34,7 @@ const SNAPSHOT: ConfigSnapshot = {
   obsidian: { vault_path: '/Users/me/Documents/vault', articles_dir: '公众号文章' },
   fetch: { max_days: 7, max_workers: 5, feed_limit: 20 },
   web: { port: 8765, open_browser: true },
+  fs: { native_pick: true, native_pick_detail: '' },
 }
 
 describe('formFromSnapshot', () => {

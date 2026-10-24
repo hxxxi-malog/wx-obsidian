@@ -210,6 +210,20 @@ python -m wx_obsidian.web --host 0.0.0.0 --allow-remote
 
 > 从旧方式（直接 `cd deploy/we-mp-rss && docker compose up -d`）迁过来，先 `cd deploy/we-mp-rss && docker compose down`，否则容器名冲突。数据在挂载卷里，不受影响。
 
+### 原生目录面板（可选）
+
+容器里的 Web 后端跑在 Linux 上，弹不出 macOS 的系统目录面板。要在配置页用「原生面板」选 Vault，先在 Mac 上装一次宿主选择器：
+
+```bash
+./scripts/host-picker.sh install     # 装成 LaunchAgent，登录后自动运行
+```
+
+它只监听回环的随机端口，端点信息写在 `~/.wx-obsidian/host-picker.json`（0600）；容器的请求经 `host.docker.internal` 转过去，面板仍然出现在这台 Mac 上，选完的路径回填到页面。安装时会把运行所需的模块复制到 `~/.wx-obsidian/host-picker/`（仓库可能位于 `~/Downloads` 这类 macOS 保护目录，launchd 起的进程读不到）；仓库代码更新后重新执行一次 `install`。首次点「原生面板」时，macOS 会问是否允许控制 System Events，选「允许」，之后不再询问。
+
+- 常用命令：`./scripts/host-picker.sh status` 看状态，`run` 前台调试，`uninstall` 卸载
+- 不装也能用：配置页的「浏览…」直接浏览容器里挂载的目录，选完同样能保存
+- 容器里能看到的目录只有 compose 挂载进去的那些；面板选到没挂载的目录时，页面会给出提示，不会把它当成选中成功
+
 ## 配置
 
 | 内容 | 位置 | 谁在用 |

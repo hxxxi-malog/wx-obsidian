@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import ipaddress
 import json
 import logging
@@ -31,7 +32,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from wx_obsidian.config import load_processed
 from wx_obsidian.sources.base import SourceAuthError
-from wx_obsidian.web import APP_NAME, APP_VERSION
+from wx_obsidian.web import APP_NAME, APP_VERSION, picker_bridge
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web import fs as fs_api
 from wx_obsidian.web import logs as logs_api
@@ -265,11 +266,28 @@ def _providers_view(config_manager: Any, section: str) -> dict[str, dict[str, st
     return view
 
 
+def _native_pick_state() -> tuple[bool, str]:
+    """原生目录面板是否可用；容器部署由宿主选择器提供。
+
+    Returns:
+        (可用, 不可用时给页面展示的说明)
+    """
+    if fs_api.picker_available():
+        return True, ""
+    if fs_api.native_platform():
+        return False, "找不到 osascript：请改用「浏览…」手动选择目录"
+    available, detail = picker_bridge.bridge_state()
+    if available:
+        return True, ""
+    return False, detail
+
+
 def _config_snapshot(runtime: WebRuntime) -> dict[str, Any]:
     """配置快照（密钥一律掩码）。"""
     cm = runtime.config_manager
     llm = cm.resolve_llm_channel()
     vision = cm.resolve_vision_channel()
+    native_pick, native_pick_detail = _native_pick_state()
     return {
         "llm": {
             "active": str(cm.get("llm.active", "") or ""),
@@ -320,6 +338,11 @@ def _config_snapshot(runtime: WebRuntime) -> dict[str, Any]:
         "web": {
             "port": int(cm.get("web.port", 8765) or 8765),
             "open_browser": bool(cm.get("web.open_browser", True)),
+        },
+        # 原生目录面板能力：源码方式看 osascript，容器方式看宿主选择器
+        "fs": {
+            "native_pick": native_pick,
+            "native_pick_detail": native_pick_detail,
         },
     }
 
@@ -372,6 +395,64 @@ def _first_existing(path: Path) -> Path:
     while not current.exists() and current.parent != current:
         current = current.parent
     return current
+
+
+def pick_visibility(runtime: WebRuntime, raw_path: str) -> tuple[bool, bool, str]:
+    """当前进程能否看到并写入选中的目录。
+
+    容器部署时只有挂载进来的目录可见；这里如实判断，页面才能提示用户去改挂载，
+    而不是等保存后抓取写文件时才失败。
+
+    Returns:
+        (可见, 可写, 不可见或不可写时的说明)
+    """
+    if not raw_path:
+        return False, False, ""
+    target = Path(raw_path).expanduser()
+    if not target.is_dir():
+        return (
+            False,
+            False,
+            f"当前服务看不到这个目录：{raw_path}。容器部署时只有挂载进容器的目录可用；"
+            "要换 Vault 位置，请同步修改 docker-compose.yml 的 WX_VAULT_DIR 并重启服务。",
+        )
+    articles_dir = str(runtime.config_manager.get("obsidian.articles_dir", "") or "公众号文章")
+    probe = _first_existing(target / articles_dir)
+    if not os.access(probe, os.W_OK):
+        return True, False, f"当前服务写不进文章目录：{probe}"
+    return True, True, ""
+
+
+def _pick_prompt(payload: dict[str, Any]) -> str:
+    """页面传来的提示文案；空值回落到默认文案。"""
+    raw = (payload or {}).get("prompt")
+    text = str(raw or "").strip()
+    return text or "选择 Obsidian Vault"
+
+
+async def _cancel_native_pick(direct: bool) -> None:
+    """页面断开时尽力取消面板；取消失败只记日志（响应已经无人接收）。"""
+    try:
+        if direct:
+            await asyncio.to_thread(fs_api.cancel_pick)
+        else:
+            await asyncio.to_thread(picker_bridge.cancel_via_bridge)
+    except Exception:
+        logger.warning("取消原生目录面板失败", exc_info=True)
+
+
+def _consume_task_result(task: asyncio.Task[str]) -> None:
+    """取走后台线程的结果/异常，避免 asyncio 报「未取回的异常」。"""
+    with contextlib.suppress(BaseException):
+        task.exception()
+
+
+def _drain_task(task: asyncio.Task[str]) -> None:
+    """客户端断开后让后台线程收尾：已完成就取走结果，未完成就挂回调取走。"""
+    if task.done():
+        _consume_task_result(task)
+    else:
+        task.add_done_callback(_consume_task_result)
 
 
 def vault_warnings(runtime: WebRuntime) -> list[dict[str, str]]:
@@ -1219,22 +1300,54 @@ def create_app(
             return JSONResponse({"error": "forbidden", "detail": str(exc)}, status_code=403)
 
     @app.post("/api/fs/pick")
-    def fs_pick(payload: dict[str, Any] = Body(default_factory=dict)) -> Response:
-        """弹 macOS 原生「选择文件夹」面板，返回绝对路径。
+    async def fs_pick(
+        request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+    ) -> Response:
+        """弹系统「选择文件夹」面板，返回绝对路径与容器可见性。
 
-        这是浏览器沙箱拿不到绝对路径的正解（spec §4.8）：用户在系统面板里
-        主动选中的目录，会顺带为该 app 建立 TCC 访问许可。
+        容器里没有桌面连接，请求转给宿主上的选择器服务（`scripts/host-picker.sh`
+        安装）；源码方式直接调 osascript。取消返回空路径，不算错误。
         """
-        prompt = str((payload or {}).get("prompt") or "选择 Obsidian Vault")
+        prompt = _pick_prompt(payload)
+        direct = fs_api.native_platform()
+        runner: Callable[[str], str] = (
+            fs_api.pick_directory if direct else picker_bridge.pick_via_bridge
+        )
+        worker: asyncio.Task[str] = asyncio.ensure_future(asyncio.to_thread(runner, prompt))
+        while not worker.done():
+            await asyncio.wait({worker}, timeout=0.5)
+            if worker.done():
+                break
+            if await request.is_disconnected():
+                # 浏览器关掉标签页：面板还留在屏幕上，通知宿主侧关掉它
+                await _cancel_native_pick(direct)
+                await asyncio.wait({worker}, timeout=5.0)
+                _drain_task(worker)
+                return Response(status_code=204)
         try:
-            chosen = fs_api.pick_directory(prompt)
+            chosen = worker.result()
         except fs_api.PickerUnavailableError as exc:
             return JSONResponse(
                 {"error": "picker_unavailable", "detail": str(exc)}, status_code=501
             )
-        except fs_api.PickerError as exc:
+        except picker_bridge.BridgeUnavailableError as exc:
+            return JSONResponse(
+                {"error": "picker_unavailable", "detail": str(exc)}, status_code=501
+            )
+        except (fs_api.PickerBusyError, picker_bridge.BridgeBusyError) as exc:
+            return JSONResponse({"error": "picker_busy", "detail": str(exc)}, status_code=409)
+        except (fs_api.PickerError, picker_bridge.BridgeError) as exc:
             return JSONResponse({"error": "picker_failed", "detail": str(exc)}, status_code=500)
-        return JSONResponse({"path": chosen, "cancelled": not chosen})
+        visible, writable, detail = pick_visibility(runtime, chosen)
+        return JSONResponse(
+            {
+                "path": chosen,
+                "cancelled": not chosen,
+                "visible": visible,
+                "writable": writable,
+                "detail": detail,
+            }
+        )
 
     _mount_frontend(app)
     return app

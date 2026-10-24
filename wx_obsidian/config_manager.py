@@ -18,6 +18,7 @@ import yaml
 
 from wx_obsidian.config import resolve_source_base_url
 from wx_obsidian.models import ConnectionTestResult, MigrationReport
+from wx_obsidian.paths import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,8 @@ logger = logging.getLogger(__name__)
 # 常量
 # ---------------------------------------------------------------------------
 
-CONFIG_DIR = Path.home() / ".wx-obsidian"
+# CONFIG_DIR 定义在 wx_obsidian.paths：宿主目录选择器也要读同一个目录，
+# 而那个进程只用标准库运行，不能 import 本模块（会拉进 requests / yaml）。
 CONFIG_FILE = CONFIG_DIR / "config.json"
 ENV_FILE = CONFIG_DIR / ".env"
 LOGS_DIR = CONFIG_DIR / "logs"

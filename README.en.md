@@ -208,6 +208,20 @@ Things you must know:
 
 > Migrating from the old setup (running `cd deploy/we-mp-rss && docker compose up -d` directly)? Run `cd deploy/we-mp-rss && docker compose down` first, otherwise container names collide. Data lives in mounted volumes and is unaffected.
 
+### Native folder picker (optional)
+
+The web backend runs on Linux inside the container, so it cannot raise the macOS folder panel. To use **Native panel** on the settings page, install the host picker once on the Mac:
+
+```bash
+./scripts/host-picker.sh install     # installs a LaunchAgent; starts at login
+```
+
+It listens on a random loopback port and writes its endpoint to `~/.wx-obsidian/host-picker.json` (0600). The container reaches it through `host.docker.internal`, and the panel still appears on this Mac; the chosen path is filled back into the page. Installation copies the modules it needs to `~/.wx-obsidian/host-picker/` (the repo may live under a macOS-protected directory such as `~/Downloads`, which a launchd process cannot read); re-run `install` after updating the repo. The first time you click **Native panel**, macOS asks whether the helper may control System Events — choose Allow and it will not ask again.
+
+- Commands: `./scripts/host-picker.sh status`, `run` (foreground, for debugging), `uninstall`
+- Without it, **Browse…** still lists the directories mounted into the container and the path can be saved the same way
+- The container only sees directories mounted into it; picking an unmounted directory shows a warning instead of pretending the pick succeeded
+
 ## Configuration
 
 | What | Where | Used by |

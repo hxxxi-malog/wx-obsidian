@@ -276,6 +276,11 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `web/logging_setup.py` | 日志落盘 + 密钥掩码 | 容器/无终端部署唯一的排错通道；掩码过滤器不能漏 |
 | `web/logs.py` | 日志环形缓冲（页面告警面板） | 只收 WARNING+，与文件日志互不影响 |
 | `web/__main__.py` | 启动器（端口/单实例/退出/日志） | 改判定逻辑要同步 `tests/test_web/test_launcher.py` |
+| `web/fs.py` | 目录列举 + macOS 原生面板（System Events 承载、可取消） | 面板命令必须带 `with timeout`；取消是 -128，不能当错误 |
+| `web/picker_bridge.py` | 宿主目录选择器的桥接（端点文件 + 容器侧转发） | 只用标准库；端点文件路径与 HTTP 协议是和宿主 helper 共用的契约 |
+| `web/host_picker.py` | 宿主选择器服务（macOS LaunchAgent，弹系统面板） | 只在 macOS 运行；协议变更要同步 `picker_bridge.py` |
+| `paths.py` | 用户配置目录常量（只用标准库） | 宿主 helper 也 import 它，不能引入第三方依赖 |
+| `scripts/host-picker.sh` | 安装/卸载/前台运行宿主选择器 | 改 plist 要同步 README 的「原生目录面板」 |
 | `tests/e2e/smoke_web.py` | 端到端冒烟（临时 HOME + stub 上游） | 改启动器 / 日志 / 抓取链路后跑一次；断言笔记落盘、账本写入、日志掩码、干净退出 |
 | `docker-compose.yml` | 一条命令拉起全部服务 | `include` 引入 we-mp-rss 配方；`ports` 默认只绑 127.0.0.1 |
 | `deploy/wx-obsidian/Dockerfile` | Web 服务镜像 | 多阶段构建前端；改依赖只改 pyproject（单一来源） |
@@ -300,6 +305,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | 新增 Web 接口 | `web/api.py`、`web/frontend/src/lib/api/{endpoints,types}.ts`、`tests/test_web/test_frontend_contract.py` |
 | 调整 Web 启动器行为（端口/单实例/退出） | `web/__main__.py`, `web/logging_setup.py`, `tests/test_web/test_launcher.py` |
 | 调整数据源自动采集（开关/间隔） | `web/source_sync.py`, `config_manager.py`, `web/api.py`, `web/__main__.py`, `tests/test_web/test_source_sync.py` |
+| 调整原生目录面板 | `web/fs.py`, `web/picker_bridge.py`, `web/host_picker.py`, `scripts/host-picker.sh`, `tests/test_web/test_fs.py` |
 | 端到端自检 | `tests/e2e/smoke_web.py`（临时 HOME + stub 上游，真跑一轮并断言笔记/账本/日志/退出） |
 | 调整容器部署 | `docker-compose.yml`, `deploy/wx-obsidian/Dockerfile`, `deploy/wx-obsidian/.env.example` |
 | 改动 Web 启动期行为 | `web/__main__.py`（`--host`/`WX_WEB_HOST`、`WX_WEB_TOKEN`、`WX_ALLOW_REMOTE`、`source.auto_sync`） |
@@ -333,6 +339,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 - 数据源地址走 `config.resolve_source_base_url()`（`WX_SOURCE_BASE_URL` 优先），容器用服务名、宿主用 `localhost`，而 `config.json` 只有一份。**新增任何读 `source.base_url` 的代码都必须走这个函数**，否则会出现「抓取正常但探活失败」这类只在一侧暴露的问题。
 - 容器构建的两个坑：`package.json` 里的 `pnpm.onlyBuiltDependencies` 在 pnpm 12 已失效（10.13+ 移到 `pnpm-workspace.yaml`），`pnpm install --frozen-lockfile` 会直接报错退出，故 Dockerfile 显式带 `--config.strict-dep-builds=false`；`COPY` 会保留源文件权限，而本机检出的文件可能是 0600（git 只记可执行位），必须 `chown -R wx:wx /app`，否则非 root 启动即 `PermissionError`。
 - 构建期默认走国内镜像（npm→npmmirror、pip→腾讯云），可用 `--build-arg NPM_REGISTRY=... / PIP_INDEX_URL=...` 覆盖：实测直连 npmjs 3.1s 且会 ECONNRESET。
+- 容器里的「原生面板」由宿主选择器提供：`./scripts/host-picker.sh install` 装成 LaunchAgent（仅 macOS），`/api/fs/pick` 在非 macOS 时经 `host.docker.internal` 转发到它；面板命令交给 System Events 承载（裸 osascript 会落到浏览器后面），首次使用要允许自动化授权；没装时页面提示改用「浏览…」。
 - 没有系统级定时任务，抓取管线仍靠手动或外部触发：手动跑 `./run.sh [--limit N]`、`python process_articles.py`，或在 Web 的「文章抓取」页点一次；历史上有过 TUI 的 Scheduler 与 Web 的定时任务页，已整体移除。`_DEFAULT_CONFIG` 里不再有 `scheduler` 段，加载时会自动剔除历史遗留的该配置段。
 - 数据源采集由 Web 服务自动触发（`web/source_sync.py`）：启动 10 秒后执行首轮，之后按 `source.auto_sync` / `source.sync_interval_minutes`（默认 30 分钟）循环；只调用上游「更新」接口，不碰 `processed.json`，抓取任务运行期间跳过。配置页改这两项会提示需重启服务。
 - Model channels are switchable through `llm.active` / `vision.active` + `providers`; both default to `deepseek-flash` (supports image input).
