@@ -24,13 +24,21 @@ class WereadMPAPIError(Exception):
         self.retriable = retriable
 
 
+def restore_short_link_token(token: str) -> str:
+    """把 WeRead token 里的 `~` 还原成 `_`。
+
+    WeRead 的 reviewId 用 `_` 分隔 bookId 与 token，token 内部的 `_` 因此被它
+    改写成了 `~`；微信短链只认 `_` 形式，`~` 形式打开是「参数错误」页面，
+    正文补抓拿不到内容（实测 16 篇带 `~` 的文章全部如此）。
+    """
+    return str(token or "").replace("~", "_")
+
+
 def build_mp_url(original_id: str) -> str:
     original_id = str(original_id or "").strip()
     if not original_id:
         return ""
-    # 注意：微信文章短链 token 中可能含 '~'（如 4OcS7~rrtk2Lwe4P0YPiGg），
-    # 这是合法字符，必须原样保留。若替换为 '_'，微信会 302 跳转、部分阅读器无法打开。
-    article_token = quote(original_id, safe="~")
+    article_token = quote(restore_short_link_token(original_id), safe="")
     return f"https://mp.weixin.qq.com/s/{article_token}"
 
 
@@ -38,9 +46,8 @@ def build_mp_link_from_review_id(review_id: str, book_id: str = "") -> str:
     """从 WeRead 的 reviewId 推导公众号原文链接。
 
     reviewId 形如 ``MP_WXS_<bookId>_<articleToken>``，末尾段即为
-    mp.weixin.qq.com 原文短链的 token。token 中可能含 ``~``（如
-    ``4OcS7~rrtk2Lwe4P0YPiGg``），须原样保留。新版接口 ``/api/mp/cover``
-    不返回 originalId，只能由此推导。
+    mp.weixin.qq.com 原文短链的 token（其中的 ``_`` 被 WeRead 写成了 ``~``，
+    这里还原）。新版接口 ``/api/mp/cover`` 不返回 originalId，只能由此推导。
     """
     review_id = str(review_id or "").strip()
     if not review_id:
@@ -51,7 +58,7 @@ def build_mp_link_from_review_id(review_id: str, book_id: str = "") -> str:
         token = review_id[len(prefix):]
     elif "_" in token:
         token = token.split("_")[-1]
-    return f"https://mp.weixin.qq.com/s/{quote(token, safe='~')}"
+    return f"https://mp.weixin.qq.com/s/{quote(restore_short_link_token(token), safe='')}"
 
 
 def _raise_response_error(payload: dict):

@@ -43,7 +43,7 @@ Both a CLI and a Web UI (browser) ship on top of the same orchestrator; a single
 ## Features
 
 - **One orchestrator, two front ends**: batch processing from the command line and a FastAPI + Vue browser UI
-- **Latest-articles timeline**: browse articles from every subscribed account in reverse publish order, open the original with one click, filter by account, load more page by page, and articles that already have a note are tagged "in vault"
+- **Latest-articles timeline**: browse articles from every subscribed account in reverse publish order, open the original with one click, filter by account, load more page by page; articles that already have a note are tagged "in vault", and ones whose body the data source hasn't fetched yet are tagged "no content"
 - **Data-source login recoverable in the UI**: the Account page really verifies the WeChat Reading credential; when it has expired you can scan a new QR code there and the app triggers a fetch for every subscribed account afterwards
 - **Incremental fetching**: `processed.json` deduplicates articles, so you never pay twice for the same one
 - **Parallel + retries**: ThreadPoolExecutor concurrency with exponential backoff (up to 3 attempts, covering 429 / 5xx / network errors)

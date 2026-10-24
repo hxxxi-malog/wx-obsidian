@@ -3,11 +3,15 @@
 wx-obsidian 的文章数据源。[we-mp-rss](https://github.com/rachelos/we-mp-rss) 取代了已归档的
 WeWe RSS（其闭源中转已下线）。本目录是**唯一权威的部署配方**，全部纳入版本管理。
 
-> 为什么用派生镜像而不是直接用上游 `ghcr.io/rachelos/we-mp-rss:latest`：
-> 上游把文章的发布时间写成了抓取时刻（`_collect_latest_via_cover()` 里硬编码
+> 为什么用派生镜像而不是直接用上游 `ghcr.io/rachelos/we-mp-rss:latest`：上游有两处缺陷。
+> 一是把文章的发布时间写成了抓取时刻（`_collect_latest_via_cover()` 里硬编码
 > `int(time.time())`）。这会让 wx-obsidian 侧 `fetch.max_days` 的日期过滤失效、
 > 笔记 frontmatter 的 `date` 变成抓取日。`patch/` 下的补丁把真实发布时间
 > （从同一次请求的 `/web/mp/content` 页面里已有的 `var ct`）回填回去。
+> 二是短链 token 里的 `~`：WeRead 的 reviewId 用 `_` 分隔 bookId 与 token，token
+> 内部的 `_` 被改写成 `~`，而微信只认 `_`，`~` 形式的地址打开是「参数错误」页面，
+> 正文补抓因此永远失败、文章被标记 FAILED（最新文章页显示「无正文」）。补丁在
+> 构造短链时把 `~` 还原成 `_`。
 > 详见 `Dockerfile` 顶部注释。
 
 ## 首次部署
@@ -79,14 +83,50 @@ curl -s "http://localhost:8001/feed/all.json?limit=1" | head -c 200
 docker inspect --format '{{.State.Health.Status}}' we-mp-rss
 ```
 
+## 历史数据迁移（短链 `~` → `_`）
+
+补丁只影响之后采集的新文章。升级前入库的旧 URL 仍是 `~` 形式，正文补抓会继续失败
+（`fix_fail_count` 攒满 3 次后文章状态变成 FAILED，最新文章页显示「无正文」）。
+升级镜像后执行一次迁移，先停数据源再改库：
+
+```bash
+cd deploy/we-mp-rss
+docker compose stop we-mp-rss
+
+# 1) URL 里的 `~` 还原成 `_`
+sqlite3 data/we_mp_rss.db "UPDATE articles SET url = replace(url, '~', '_') WHERE url LIKE '%~%';"
+
+# 2) 无正文的文章重置失败计数与状态，让补抓队列重新排队
+sqlite3 data/we_mp_rss.db "UPDATE articles SET fix_fail_count = 0, status = 1, fetch_started_at = NULL WHERE has_content = 0;"
+
+docker compose up -d we-mp-rss
+```
+
+补抓队列每小时跑一轮（每轮最多 5 篇，单篇最多失败 3 次），也可以立刻单篇刷新：
+
+```bash
+set -a; . ./deploy/we-mp-rss/.env; set +a
+TOKEN=$(curl -s -X POST http://localhost:8001/api/v1/wx/auth/token \
+  -d "username=$WERSS_USER&password=$WERSS_PASS" | python3 -c \
+  "import json,sys;print(json.load(sys.stdin)['access_token'])")
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8001/api/v1/wx/articles/<article_id>/refresh"
+```
+
+校验：
+
+```bash
+sqlite3 data/we_mp_rss.db "SELECT sum(url LIKE '%~%') AS tilde, sum(has_content = 0) AS no_content FROM articles;"
+```
+
 ## 维护提示（升级上游镜像时必读）
 
 `patch/weread_mp.py` 是从 `ghcr.io/rachelos/we-mp-rss:latest` 容器里拷出的**整文件副本**，
-只改了发布时间回填那一处。升级上游后必须重新导出并重新打补丁，否则会用旧文件
-覆盖掉上游的新修复（例如上游对短链 token 中 `~` 的处理变更）：
+改了两处：把真实发布时间回填进 `publish_time`、在构造微信短链前把 token 里的 `~`
+还原成 `_`。升级上游后必须重新导出并重新打补丁，否则会用旧文件覆盖掉上游的新修复：
 
 ```bash
 docker cp we-mp-rss:/app/core/wx/model/weread_mp.py patch/weread_mp.py
-# 重新应用补丁，然后 diff 确认唯一差异就是发布时间回填
+# 重新应用补丁，然后 diff 确认唯一差异就是这两处
 docker compose up -d --build
 ```
