@@ -144,7 +144,8 @@ jobs:
             if ! printf '%s' "$body" | grep -qF "@${owner}"; then
               prefix="$maintainer"
             fi
-            if [ -n "$marker" ] && ! printf '%s' "$body" | grep -qF "$marker"; then
+            # marker 是 tag 说明的第一条要点，通常以 "-" 开头，必须用 `--` 结束选项解析
+            if [ -n "$marker" ] && ! printf '%s' "$body" | grep -qF -- "$marker"; then
               if [ -n "$prefix" ]; then
                 prefix="${prefix}"$'\n\n'"${tag_notes}"
               else
