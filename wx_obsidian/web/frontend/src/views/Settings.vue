@@ -141,6 +141,11 @@ const daysError = computed(() =>
 const workersError = computed(() =>
   config.form.maxWorkers >= 1 && config.form.maxWorkers <= 32 ? '' : '并行数需在 1–32 之间',
 )
+const syncIntervalError = computed(() =>
+  config.form.sourceSyncInterval >= 5 && config.form.sourceSyncInterval <= 1440
+    ? ''
+    : '采集间隔需在 5–1440 分钟之间',
+)
 
 const hasErrors = computed(() =>
   [
@@ -152,6 +157,7 @@ const hasErrors = computed(() =>
     portError.value,
     daysError.value,
     workersError.value,
+    syncIntervalError.value,
   ].some(Boolean),
 )
 
@@ -190,7 +196,7 @@ async function save(): Promise<void> {
     result.skipped.length ? `跳过 ${result.skipped.length} 项（留空的密钥不修改）` : undefined,
   )
   if (result.restart_required) {
-    toast.warn('数据源地址改动需重启服务后生效')
+    toast.warn('数据源相关设置需重启服务后生效')
   }
   markClean()
   if (firstRun.value) {
@@ -550,6 +556,36 @@ onMounted(reload)
             :masked="config.snapshot?.source.token ?? ''"
             hint="留空则不修改；登录态与订阅列表都要它，文章抓取不需要"
           />
+
+          <AppField
+            label="自动采集"
+            hint="Web 服务按间隔主动触发订阅公众号采集；改动需重启服务后生效"
+          >
+            <div class="flex h-9 items-center gap-3">
+              <AppSwitch v-model="config.form.sourceAutoSync" label="自动采集" />
+              <span class="text-[12.5px] text-muted">
+                {{ config.form.sourceAutoSync ? '已开启' : '已关闭（只能手动采集）' }}
+              </span>
+            </div>
+          </AppField>
+
+          <AppField
+            label="采集间隔（分钟）"
+            :error="syncIntervalError"
+            hint="5–1440；改动需重启服务后生效"
+          >
+            <template #default="{ id, invalid }">
+              <AppNumberInput
+                :id="id"
+                v-model="config.form.sourceSyncInterval"
+                :min="5"
+                :max="1440"
+                :presets="[15, 30, 60, 120]"
+                suffix="分钟"
+                :invalid="invalid"
+              />
+            </template>
+          </AppField>
         </ConfigSection>
 
         <!-- 知识库与抓取 -->

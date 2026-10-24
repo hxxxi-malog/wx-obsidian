@@ -12,11 +12,12 @@
 import {
   PhArrowClockwise,
   PhArrowSquareOut,
+  PhCloudArrowDown,
   PhFunnelX,
   PhKey,
   PhNewspaper,
 } from '@phosphor-icons/vue'
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import AppButton from '@/components/ui/AppButton.vue'
@@ -32,12 +33,14 @@ import { ApiError, apiGet, errorMessage } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type {
   FeedItem,
+  FeedSyncState,
   SourceArticleItem,
   SourceArticleListError,
   SourceArticlePage,
 } from '@/lib/api/types'
 import { groupByPublishedDay } from '@/lib/article-timeline'
 import { formatDateTime, formatNumber, formatRelative, initialOf, stableHue } from '@/lib/format'
+import { useFeedSyncStore } from '@/stores/feed-sync'
 
 /** 单页条数：一次 30 条，继续往下靠「加载更多」 */
 const PAGE_SIZE = 30
@@ -45,6 +48,7 @@ const PAGE_SIZE = 30
 const ALL_FEEDS = '__all__'
 
 const router = useRouter()
+const sync = useFeedSyncStore()
 
 const feedFilter = ref(ALL_FEEDS)
 const selectedFeedId = computed(() => (feedFilter.value === ALL_FEEDS ? '' : feedFilter.value))
@@ -116,6 +120,92 @@ const feedOptions = computed<SelectOption[]>(() => [
   { label: '全部公众号', value: ALL_FEEDS },
   ...(feedData.value ?? []).map((feed) => ({ label: feed.name || feed.id, value: feed.id })),
 ])
+
+/** 自动采集配置与当前状态：进入页面时取一次，用于展示数据源文章库的新鲜度 */
+const syncStatus = ref<FeedSyncState | null>(null)
+const collecting = ref(false)
+let reloadTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 关闭自动采集时后端返回 0，这里给一个显示用的默认值 */
+const FALLBACK_SYNC_MINUTES = 30
+const syncIntervalMinutes = computed(
+  () => syncStatus.value?.auto_interval_minutes || FALLBACK_SYNC_MINUTES,
+)
+const staleThresholdMinutes = computed(() => Math.max(60, syncIntervalMinutes.value * 2))
+
+/** 数据源最近一次采集时间：取所有订阅里最新的 sync_time */
+const lastSyncAt = computed(() => {
+  const times = (feedData.value ?? [])
+    .map((feed) => feed.sync_time)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new Date(value).getTime())
+    .filter((value) => Number.isFinite(value))
+  return times.length > 0 ? new Date(Math.max(...times)).toISOString() : ''
+})
+const lastSyncLabel = computed(() =>
+  lastSyncAt.value ? formatRelative(lastSyncAt.value) : '未知',
+)
+const dataStale = computed(() => {
+  if (!lastSyncAt.value) {
+    return false
+  }
+  const ageMinutes = (Date.now() - new Date(lastSyncAt.value).getTime()) / 60000
+  return ageMinutes > staleThresholdMinutes.value
+})
+
+async function loadSyncStatus(): Promise<void> {
+  try {
+    syncStatus.value = await apiGet<FeedSyncState>(endpoints.source.sync())
+  } catch {
+    // 采集状态只影响新鲜度提示，读不到时退回默认间隔即可
+    syncStatus.value = null
+  }
+}
+
+/** 采集结束后等上游最后一轮落库，再刷新列表 */
+function scheduleListReload(): void {
+  if (reloadTimer !== null) {
+    clearTimeout(reloadTimer)
+  }
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null
+    collecting.value = false
+    void refresh()
+    void loadSyncStatus()
+  }, 10000)
+}
+
+async function startCollect(): Promise<void> {
+  if (collecting.value) {
+    return
+  }
+  collecting.value = true
+  const started = await sync.trigger()
+  if (!started) {
+    collecting.value = false
+    return
+  }
+  void loadSyncStatus()
+  if (!sync.running) {
+    scheduleListReload()
+  }
+}
+
+watch(
+  () => sync.finishedTick,
+  () => {
+    scheduleListReload()
+  },
+)
+
+onUnmounted(() => {
+  if (reloadTimer !== null) {
+    clearTimeout(reloadTimer)
+    reloadTimer = null
+  }
+})
+
+void loadSyncStatus()
 
 watch(selectedFeedId, () => {
   failure.value = null
@@ -210,6 +300,10 @@ function coverInitial(item: SourceArticleItem): string {
         >
           <span class="nums font-mono">共 {{ formatNumber(total) }} 篇</span>
           <span class="nums font-mono">已显示 {{ formatNumber(items.length) }} 篇</span>
+          <span class="nums font-mono">数据源最近采集 {{ lastSyncLabel }}</span>
+          <span v-if="dataStale" class="text-warning">
+            超过 {{ staleThresholdMinutes }} 分钟未采集，点「立即采集」更新
+          </span>
         </div>
       </template>
 
@@ -223,6 +317,18 @@ function coverInitial(item: SourceArticleItem): string {
             @update:model-value="setFeedFilter"
           />
         </div>
+        <AppButton
+          variant="solid"
+          size="sm"
+          :loading="collecting"
+          :disabled="collecting"
+          @click="startCollect"
+        >
+          <template #icon>
+            <PhCloudArrowDown :size="14" aria-hidden="true" />
+          </template>
+          立即采集
+        </AppButton>
         <AppButton variant="outline" size="sm" :loading="loading" @click="refresh">
           <template #icon>
             <PhArrowClockwise :size="14" aria-hidden="true" />
@@ -277,7 +383,7 @@ function coverInitial(item: SourceArticleItem): string {
       :title="feedFilter === ALL_FEEDS ? '还没有可取的文章' : '这个公众号还没有文章'"
       :description="
         feedFilter === ALL_FEEDS
-          ? '去「文章抓取」跑一轮：抓取完成后，所有订阅公众号的文章会按发布时间列在这里。'
+          ? '点右上角「立即采集」拉取订阅公众号的最新文章。'
           : '换一个公众号，或切回「全部公众号」查看所有订阅内容。'
       "
     >
@@ -286,9 +392,10 @@ function coverInitial(item: SourceArticleItem): string {
           v-if="feedFilter === ALL_FEEDS"
           variant="solid"
           size="sm"
-          @click="router.push('/run')"
+          :loading="collecting"
+          @click="startCollect"
         >
-          去文章抓取
+          立即采集
         </AppButton>
         <AppButton v-else variant="outline" size="sm" @click="resetFeedFilter">
           查看全部公众号

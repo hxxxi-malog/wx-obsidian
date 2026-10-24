@@ -265,6 +265,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `cli.py` | CLI 入口 | 薄封装，只负责参数解析与调用 Orchestrator |
 | `web/api.py` | Web 接口 + 安全中间件 | 端点签名历史上避开 `X \| None`（py3.9 限制，3.12 起已解除） |
 | `web/jobs.py` | 任务单飞 + SSE 事件 | `on_progress` 在工作线程调用，状态只能在事件循环线程内改 |
+| `web/source_sync.py` | 数据源自动采集调度（复用 FeedSyncRunner） | 只调用上游「更新」接口，不写 processed.json/vault；抓取任务运行期间跳过本轮 |
 | `web/articles.py` | 文章列表/详情/级联删除 | `sort`/`order` 是白名单参数（非法值回落默认顺序），排序必须在分页切片前 |
 | `web/frontend/` | Vue 界面（自建设计系统） | 改动后跑 `pnpm style-guard && pnpm type-check && pnpm test && pnpm build`；产物由 FastAPI 同源托管 |
 | `web/frontend/src/styles/tokens.css` | 设计 token（三层 + 深浅两套） | 改 token 影响全站观感；业务代码只允许语义类，禁裸色值 |
@@ -298,9 +299,10 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | 修改 Web 界面 | `web/frontend/src/views/`、`src/components/{ui,domain,layout}/`，然后跑前端四道门 + `pnpm build` |
 | 新增 Web 接口 | `web/api.py`、`web/frontend/src/lib/api/{endpoints,types}.ts`、`tests/test_web/test_frontend_contract.py` |
 | 调整 Web 启动器行为（端口/单实例/退出） | `web/__main__.py`, `web/logging_setup.py`, `tests/test_web/test_launcher.py` |
+| 调整数据源自动采集（开关/间隔） | `web/source_sync.py`, `config_manager.py`, `web/api.py`, `web/__main__.py`, `tests/test_web/test_source_sync.py` |
 | 端到端自检 | `tests/e2e/smoke_web.py`（临时 HOME + stub 上游，真跑一轮并断言笔记/账本/日志/退出） |
 | 调整容器部署 | `docker-compose.yml`, `deploy/wx-obsidian/Dockerfile`, `deploy/wx-obsidian/.env.example` |
-| 改动 Web 启动期行为 | `web/__main__.py`（`--host`/`WX_WEB_HOST`、`WX_WEB_TOKEN`、`WX_ALLOW_REMOTE`） |
+| 改动 Web 启动期行为 | `web/__main__.py`（`--host`/`WX_WEB_HOST`、`WX_WEB_TOKEN`、`WX_ALLOW_REMOTE`、`source.auto_sync`） |
 
 ### 关键常量速查
 
@@ -331,7 +333,8 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 - 数据源地址走 `config.resolve_source_base_url()`（`WX_SOURCE_BASE_URL` 优先），容器用服务名、宿主用 `localhost`，而 `config.json` 只有一份。**新增任何读 `source.base_url` 的代码都必须走这个函数**，否则会出现「抓取正常但探活失败」这类只在一侧暴露的问题。
 - 容器构建的两个坑：`package.json` 里的 `pnpm.onlyBuiltDependencies` 在 pnpm 12 已失效（10.13+ 移到 `pnpm-workspace.yaml`），`pnpm install --frozen-lockfile` 会直接报错退出，故 Dockerfile 显式带 `--config.strict-dep-builds=false`；`COPY` 会保留源文件权限，而本机检出的文件可能是 0600（git 只记可执行位），必须 `chown -R wx:wx /app`，否则非 root 启动即 `PermissionError`。
 - 构建期默认走国内镜像（npm→npmmirror、pip→腾讯云），可用 `--build-arg NPM_REGISTRY=... / PIP_INDEX_URL=...` 覆盖：实测直连 npmjs 3.1s 且会 ECONNRESET。
-- 没有系统级定时任务，应用内调度（历史上有过 TUI 的 Scheduler 与 Web 的定时任务页）也已整体移除：手动跑 `./run.sh [--limit N]`、`python process_articles.py`，或在 Web 的「文章抓取」页点一次。`_DEFAULT_CONFIG` 里不再有 `scheduler` 段，加载时会自动剔除历史遗留的该配置段。
+- 没有系统级定时任务，抓取管线仍靠手动或外部触发：手动跑 `./run.sh [--limit N]`、`python process_articles.py`，或在 Web 的「文章抓取」页点一次；历史上有过 TUI 的 Scheduler 与 Web 的定时任务页，已整体移除。`_DEFAULT_CONFIG` 里不再有 `scheduler` 段，加载时会自动剔除历史遗留的该配置段。
+- 数据源采集由 Web 服务自动触发（`web/source_sync.py`）：启动 10 秒后执行首轮，之后按 `source.auto_sync` / `source.sync_interval_minutes`（默认 30 分钟）循环；只调用上游「更新」接口，不碰 `processed.json`，抓取任务运行期间跳过。配置页改这两项会提示需重启服务。
 - Model channels are switchable through `llm.active` / `vision.active` + `providers`; both default to `deepseek-flash` (supports image input).
 
 ## Harness 开发范式

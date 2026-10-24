@@ -33,6 +33,8 @@ export interface ConfigForm {
   sourceType: string
   sourceBaseUrl: string
   sourceToken: string
+  sourceAutoSync: boolean
+  sourceSyncInterval: number
   vaultPath: string
   maxDays: number
   maxWorkers: number
@@ -54,6 +56,8 @@ export function emptyForm(): ConfigForm {
     sourceType: '',
     sourceBaseUrl: '',
     sourceToken: '',
+    sourceAutoSync: true,
+    sourceSyncInterval: 30,
     vaultPath: '',
     maxDays: 7,
     maxWorkers: 5,
@@ -76,6 +80,8 @@ export function formFromSnapshot(snapshot: ConfigSnapshot): ConfigForm {
     sourceType: snapshot.source.type,
     sourceBaseUrl: snapshot.source.base_url,
     sourceToken: '',
+    sourceAutoSync: snapshot.source.auto_sync,
+    sourceSyncInterval: snapshot.source.sync_interval_minutes,
     vaultPath: snapshot.obsidian.vault_path,
     maxDays: snapshot.fetch.max_days,
     maxWorkers: snapshot.fetch.max_workers,
@@ -93,6 +99,8 @@ export function buildConfigPayload(form: ConfigForm): ConfigPatchPayload {
     'vision.enabled': form.visionEnabled,
     'source.type': form.sourceType,
     'source.base_url': form.sourceBaseUrl,
+    'source.auto_sync': form.sourceAutoSync,
+    'source.sync_interval_minutes': form.sourceSyncInterval,
     'obsidian.vault_path': form.vaultPath,
     'fetch.max_days': form.maxDays,
     'fetch.max_workers': form.maxWorkers,

@@ -91,8 +91,10 @@ export const endpoints = {
     loginQrStatus: () => '/api/source/login-qr/status',
     /** 扫码登录：登录成功后收尾（后端顺带触发公众号采集） */
     loginQrOver: () => '/api/source/login-qr/over',
-    /** 登录后后端自动触发的公众号采集进度 */
+    /** 公众号采集进度与自动采集状态 */
     sync: () => '/api/source/sync',
+    /** 手动触发一轮公众号采集（单飞；与登录后自动触发的采集共用同一状态） */
+    triggerSync: () => '/api/source/sync',
     /** 数据源文章库：按发布时间倒序分页，mp_id 为空表示全部订阅 */
     articles: (params: SourceArticleQuery = {}) =>
       `/api/source/articles${buildQuery({

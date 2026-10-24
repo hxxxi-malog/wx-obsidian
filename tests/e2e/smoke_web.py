@@ -245,6 +245,9 @@ def _write_config(home: Path, vault: Path, stub_port: int, web_port: int) -> Pat
             "base_url": f"http://127.0.0.1:{stub_port}",
             "timeout": 15,
             "token": "",
+            # 冒烟测试不发起真实采集；自动采集由单元测试覆盖
+            "auto_sync": False,
+            "sync_interval_minutes": 30,
         },
         "fetch": {"max_days": 7, "max_workers": 2, "feed_limit": 10},
         "web": {"port": web_port, "open_browser": False, "log_level": "INFO"},
@@ -498,7 +501,24 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
             else 1
         )
 
-        print("\n6) 日志落盘、掩码正确")
+        print("\n6) 手动采集接口与自动采集状态")
+        sync_state = requests.get(
+            f"http://127.0.0.1:{web_port}/api/source/sync",
+            headers={"X-WX-Token": token},
+            timeout=10.0,
+        ).json()
+        failures += (
+            0 if _check(sync_state.get("auto_enabled") is False, "冒烟配置关闭自动采集") else 1
+        )
+        failures += 0 if _check("running" in sync_state, "采集状态含 running") else 1
+        started = requests.post(
+            f"http://127.0.0.1:{web_port}/api/source/sync",
+            headers={"X-WX-Token": token},
+            timeout=10.0,
+        ).json()
+        failures += 0 if _check("running" in started, "手动采集接口返回快照") else 1
+
+        print("\n7) 日志落盘、掩码正确")
         log_text = log_file.read_text(encoding="utf-8") if log_file.is_file() else ""
         failures += 0 if _check(bool(log_text), "日志文件非空", str(log_file)) else 1
         failures += 0 if _check("已启动" in log_text, "日志含启动记录") else 1
@@ -506,7 +526,7 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
         failures += 0 if _check("token=****" in log_text, "日志里的 token 已掩码") else 1
         failures += 0 if _check("uvicorn.error" in log_text, "uvicorn 日志经 root 落盘") else 1
 
-        print("\n7) POST /api/shutdown 让进程干净退出")
+        print("\n8) POST /api/shutdown 让进程干净退出")
         code = _shutdown(web_port, token, proc)
         failures += 0 if _check(code == 0, "退出码 0", f"exit={code}") else 1
         proc = None

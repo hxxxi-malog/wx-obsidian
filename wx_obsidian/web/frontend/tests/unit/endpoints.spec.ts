@@ -67,6 +67,8 @@ describe('endpoints 路径', () => {
     expect(endpoints.articles.retry()).toBe('/api/articles/retry')
     expect(endpoints.config.test()).toBe('/api/config/test')
     expect(endpoints.source.refresh()).toBe('/api/source/refresh')
+    expect(endpoints.source.sync()).toBe('/api/source/sync')
+    expect(endpoints.source.triggerSync()).toBe('/api/source/sync')
     expect(endpoints.fs.pick()).toBe('/api/fs/pick')
   })
 

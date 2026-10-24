@@ -178,3 +178,44 @@ def test_web_defaults_come_from_default_config() -> None:
         "open_browser": True,
         "log_level": "INFO",
     }
+
+
+def test_source_defaults_include_auto_sync() -> None:
+    """自动采集默认开启且间隔 30 分钟；旧 config.json 由默认值合并自动补齐。"""
+    from wx_obsidian.config_manager import _DEFAULT_CONFIG
+
+    assert _DEFAULT_CONFIG["source"]["auto_sync"] is True
+    assert _DEFAULT_CONFIG["source"]["sync_interval_minutes"] == 30
+
+
+def test_source_auto_sync_round_trip(env: dict[str, Any]) -> None:
+    with env["client"] as client:
+        response = client.put(
+            "/api/config",
+            json={"patch": {"source.auto_sync": "false", "source.sync_interval_minutes": "60"}},
+            headers=AUTH,
+        )
+        body = response.json()
+        source = client.get("/api/config", headers=AUTH).json()["source"]
+
+    assert body["saved"] is True
+    assert body["restart_required"] is True
+    assert source["auto_sync"] is False
+    assert source["sync_interval_minutes"] == 60
+
+    cm: ConfigManager = env["cm"]
+    assert cm.get("source.auto_sync") is False
+    assert cm.get("source.sync_interval_minutes") == 60
+
+
+@pytest.mark.parametrize("value", ["4", "1441", "0"])
+def test_source_sync_interval_out_of_range(env: dict[str, Any], value: str) -> None:
+    with env["client"] as client:
+        response = client.put(
+            "/api/config",
+            json={"patch": {"source.sync_interval_minutes": value}},
+            headers=AUTH,
+        )
+
+    assert response.status_code == 400
+    assert "5–1440" in response.json()["detail"]

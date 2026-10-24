@@ -291,7 +291,22 @@ def _serve(
     _install_signal_handlers(stop)
     runtime = build_runtime(cm)
     quiet_noisy_libraries()
-    app = create_app(runtime, token=token, on_quit=stop.set, allow_remote=allow_remote)
+    # 自动采集间隔是启动期设置：改配置后需要重启（配置页会提示 restart_required）
+    auto_sync_enabled = bool(cm.get("source.auto_sync", True))
+    sync_interval_minutes = int(cm.get("source.sync_interval_minutes", 30) or 30)
+    sync_interval_minutes = max(5, min(1440, sync_interval_minutes))
+    source_sync_seconds = float(sync_interval_minutes * 60) if auto_sync_enabled else 0.0
+    app = create_app(
+        runtime,
+        token=token,
+        on_quit=stop.set,
+        allow_remote=allow_remote,
+        source_sync_interval_seconds=source_sync_seconds,
+    )
+    if source_sync_seconds > 0:
+        logger.info("数据源自动采集已启用：每 %d 分钟触发一轮", sync_interval_minutes)
+    else:
+        logger.info("数据源自动采集已关闭（source.auto_sync=false）")
     log_level = str(cm.get("web.log_level", "info") or "info").lower()
     server = uvicorn.Server(
         uvicorn.Config(

@@ -97,6 +97,10 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "base_url": "http://localhost:8001",
         "timeout": 15,
         "token": "",
+        # 上游只在收到「更新」请求时采集新文章，所以 Web 服务按间隔主动触发；
+        # 关闭后只能靠扫码登录成功或手动点「立即采集」触发。
+        "auto_sync": True,
+        "sync_interval_minutes": 30,
     },
     "fetch": {
         "max_days": 7,

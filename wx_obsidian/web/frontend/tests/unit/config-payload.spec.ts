@@ -23,7 +23,14 @@ const SNAPSHOT: ConfigSnapshot = {
     max_concurrency: 4,
     timeout: 60,
   },
-  source: { type: 'we-mp-rss', base_url: 'http://127.0.0.1:8001', timeout: 15, token: 'ey****' },
+  source: {
+    type: 'we-mp-rss',
+    base_url: 'http://127.0.0.1:8001',
+    timeout: 15,
+    token: 'ey****',
+    auto_sync: true,
+    sync_interval_minutes: 30,
+  },
   obsidian: { vault_path: '/Users/me/Documents/vault', articles_dir: '公众号文章' },
   fetch: { max_days: 7, max_workers: 5, feed_limit: 20 },
   web: { port: 8765, open_browser: true },
@@ -41,6 +48,8 @@ describe('formFromSnapshot', () => {
     expect(form.maxDays).toBe(7)
     expect(form.webPort).toBe(8765)
     expect(form.webOpenBrowser).toBe(true)
+    expect(form.sourceAutoSync).toBe(true)
+    expect(form.sourceSyncInterval).toBe(30)
   })
 })
 
@@ -54,6 +63,8 @@ describe('buildConfigPayload', () => {
     expect(patch['llm.providers.deepseek-flash.model']).toBe('m1')
     expect(patch['vision.providers.deepseek-flash.model']).toBe('deepseek-vl')
     expect(patch['source.type']).toBe('we-mp-rss')
+    expect(patch['source.auto_sync']).toBe(true)
+    expect(patch['source.sync_interval_minutes']).toBe(30)
     expect(patch['obsidian.vault_path']).toBe('/Users/me/Documents/vault')
     expect(patch['fetch.max_days']).toBe(7)
     expect(patch['web.open_browser']).toBe(true)

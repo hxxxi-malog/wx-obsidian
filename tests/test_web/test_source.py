@@ -18,7 +18,11 @@ AUTH = {"X-WX-Token": TOKEN}
 
 
 def _client(
-    tmp_path: Path, orchestrator: FakeOrchestrator, *, feed_sync_interval: float = 0.0
+    tmp_path: Path,
+    orchestrator: FakeOrchestrator,
+    *,
+    feed_sync_interval: float = 0.0,
+    source_sync_interval_seconds: float = 0.0,
 ) -> TestClient:
     cm = ConfigManager(config_dir=tmp_path / "cfg")
     cm.load()
@@ -30,6 +34,7 @@ def _client(
         token=TOKEN,
         extra_allowed_hosts=frozenset({"testclient"}),
         feed_sync_interval=feed_sync_interval,
+        source_sync_interval_seconds=source_sync_interval_seconds,
     )
     return TestClient(app)
 
@@ -283,3 +288,36 @@ def test_login_qr_over_without_login_does_not_sync(tmp_path: Path) -> None:
     assert over["sync_started"] is False
     assert state["running"] is False
     assert fake.refreshed_feeds == []
+
+
+def test_manual_sync_triggers_all_feeds(tmp_path: Path) -> None:
+    """「立即采集」按钮对应的接口：复用 FeedSyncRunner，逐个触发订阅公众号。"""
+    feeds = [Feed(id="f1", name="一号"), Feed(id="f2", name="二号")]
+    fake = FakeOrchestrator(feeds=feeds)
+    with _client(tmp_path, fake) as client:
+        started = client.post("/api/source/sync", headers=AUTH).json()
+        assert "running" in started
+        state = _wait_sync(client)
+
+    assert state["total"] == 2
+    assert state["triggered"] == 2
+    assert fake.refreshed_feeds == ["f1", "f2"]
+
+
+def test_sync_status_reports_auto_schedule_when_enabled(tmp_path: Path) -> None:
+    fake = FakeOrchestrator(feeds=[Feed(id="f1", name="一号")])
+    with _client(tmp_path, fake, source_sync_interval_seconds=1800) as client:
+        payload = client.get("/api/source/sync", headers=AUTH).json()
+
+    assert payload["auto_enabled"] is True
+    assert payload["auto_interval_minutes"] == 30
+    assert payload["next_run_at"] == ""
+
+
+def test_sync_status_reports_auto_disabled_by_default(tmp_path: Path) -> None:
+    with _client(tmp_path, FakeOrchestrator()) as client:
+        payload = client.get("/api/source/sync", headers=AUTH).json()
+
+    assert payload["auto_enabled"] is False
+    assert payload["auto_interval_minutes"] == 0
+    assert payload["next_run_at"] == ""

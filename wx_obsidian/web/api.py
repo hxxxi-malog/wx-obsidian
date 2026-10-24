@@ -38,6 +38,7 @@ from wx_obsidian.web import logs as logs_api
 from wx_obsidian.web.feed_sync import FEED_SYNC_INTERVAL, FeedSyncRunner
 from wx_obsidian.web.jobs import JobBusyError, JobManager
 from wx_obsidian.web.runtime import WebRuntime
+from wx_obsidian.web.source_sync import SourceSyncScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,8 @@ _PLAIN_PATCH_KEYS = frozenset(
         "source.base_url",
         "source.token",
         "source.timeout",
+        "source.auto_sync",
+        "source.sync_interval_minutes",
         "obsidian.vault_path",
         "obsidian.articles_dir",
         "fetch.max_days",
@@ -95,13 +98,14 @@ _INT_PATCH_KEYS = frozenset(
         "vision.max_concurrency",
         "vision.timeout",
         "source.timeout",
+        "source.sync_interval_minutes",
         "fetch.max_days",
         "fetch.max_workers",
         "fetch.feed_limit",
         "web.port",
     }
 )
-_BOOL_PATCH_KEYS = frozenset({"vision.enabled", "web.open_browser"})
+_BOOL_PATCH_KEYS = frozenset({"vision.enabled", "web.open_browser", "source.auto_sync"})
 _ALLOWED_ENV_KEYS = frozenset(
     {"DEEPSEEK_API_KEY", "VISION_API_KEY", "DEEPSEEK_BASE_URL", "MODEL_NAME"}
 )
@@ -301,6 +305,8 @@ def _config_snapshot(runtime: WebRuntime) -> dict[str, Any]:
             "base_url": str(cm.get("source.base_url", "") or ""),
             "timeout": int(cm.get("source.timeout", 15) or 15),
             "token": mask_secret(str(cm.get("source.token", "") or "")),
+            "auto_sync": bool(cm.get("source.auto_sync", True)),
+            "sync_interval_minutes": int(cm.get("source.sync_interval_minutes", 30) or 30),
         },
         "obsidian": {
             "vault_path": str(cm.get("obsidian.vault_path", "") or ""),
@@ -335,9 +341,12 @@ def _coerce(key: str, raw: Any) -> Any:
         raise ValueError(f"{key} 需要布尔值")
     if key in _INT_PATCH_KEYS:
         try:
-            return int(raw)
+            value = int(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{key} 需要整数") from exc
+        if key == "source.sync_interval_minutes" and not 5 <= value <= 1440:
+            raise ValueError("source.sync_interval_minutes 需要在 5–1440 分钟之间")
+        return value
     if key == "llm.temperature":
         try:
             return float(raw)
@@ -480,6 +489,7 @@ def create_app(
     on_quit: Callable[[], None] | None = None,
     allow_remote: bool = False,
     feed_sync_interval: float = FEED_SYNC_INTERVAL,
+    source_sync_interval_seconds: float = 0,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
@@ -494,6 +504,9 @@ def create_app(
             `WX_ALLOW_REMOTE` 显式打开；打开后 token 校验依然强制。
         feed_sync_interval: 扫码登录成功后逐个触发采集的间隔（秒）。测试传 0
             以跳过等待；生产保持默认值以避开上游风控。
+        source_sync_interval_seconds: 数据源自动采集的间隔（秒）；0 表示关闭。
+            生产由启动器按 `source.auto_sync` / `source.sync_interval_minutes`
+            换算后传入，测试默认关闭，避免后台线程访问真实上游。
 
     Returns:
         可直接交给 uvicorn 的应用实例。
@@ -501,19 +514,36 @@ def create_app(
     resolved_token = token or secrets.token_urlsafe(24)
     log_buffer = logs_api.install_log_buffer()
 
+    jobs = JobManager(runtime.orchestrator)
+    feed_sync = FeedSyncRunner(runtime.orchestrator, interval=feed_sync_interval)
+    source_sync: SourceSyncScheduler | None = None
+    if source_sync_interval_seconds > 0:
+        source_sync = SourceSyncScheduler(
+            feed_sync,
+            jobs=jobs,
+            interval_seconds=source_sync_interval_seconds,
+            interval_minutes=max(1, round(source_sync_interval_seconds / 60)),
+        )
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """关闭时停掉日志缓冲。"""
+        """服务启动时拉起自动采集，退出时停线程与日志缓冲。"""
+        if source_sync is not None:
+            source_sync.start()
         try:
             yield
         finally:
+            if source_sync is not None:
+                source_sync.stop()
             logs_api.uninstall_log_buffer(log_buffer)
 
     app = FastAPI(
-        title=APP_NAME, version=APP_VERSION, docs_url=None, redoc_url=None, lifespan=lifespan
+        title=APP_NAME,
+        version=APP_VERSION,
+        docs_url=None,
+        redoc_url=None,
+        lifespan=lifespan,
     )
-    jobs = JobManager(runtime.orchestrator)
-    feed_sync = FeedSyncRunner(runtime.orchestrator, interval=feed_sync_interval)
     # 日志同时推给正在跑的任务，前端就能在进度面板里看到告警
     log_buffer.subscribe(
         lambda entry: jobs.emit_log(entry.message, level=entry.level, logger_name=entry.logger)
@@ -1010,9 +1040,23 @@ def create_app(
         return result
 
     @app.get("/api/source/sync")
-    def source_sync() -> dict[str, Any]:
-        """登录后触发的采集进度。"""
-        return feed_sync.snapshot().to_dict()
+    def get_source_sync() -> dict[str, Any]:
+        """采集进度与自动采集状态。
+
+        `running` 等字段来自 `FeedSyncRunner`（扫码登录、手动、自动三种触发共用）；
+        `auto_*` 与 `next_run_at` 来自调度器，前端据此显示数据源文章库的新鲜度。
+        """
+        payload: dict[str, Any] = feed_sync.snapshot().to_dict()
+        if source_sync is not None:
+            payload.update(source_sync.snapshot())
+        else:
+            payload.update({"auto_enabled": False, "auto_interval_minutes": 0, "next_run_at": ""})
+        return payload
+
+    @app.post("/api/source/sync")
+    def start_source_sync() -> dict[str, Any]:
+        """手动触发一轮公众号采集（单飞：正在进行时返回当前快照）。"""
+        return feed_sync.start().to_dict()
 
     @app.get("/api/source/articles")
     def source_articles(

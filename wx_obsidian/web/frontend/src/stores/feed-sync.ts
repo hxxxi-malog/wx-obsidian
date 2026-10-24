@@ -9,7 +9,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { apiGet, errorMessage } from '@/lib/api/client'
+import { apiGet, apiPost, errorMessage } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type { FeedSyncState } from '@/lib/api/types'
 
@@ -23,6 +23,8 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
   const visible = ref(false)
   const error = ref('')
   const busy = ref(false)
+  /** 每观察到一轮采集从「进行中」变为「已结束」就加一，供页面触发列表刷新 */
+  const finishedTick = ref(0)
 
   let pollTimer: ReturnType<typeof setInterval> | null = null
   let lingerTimer: ReturnType<typeof setTimeout> | null = null
@@ -58,6 +60,7 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
       return
     }
     busy.value = true
+    const wasRunning = Boolean(data.value?.running)
     try {
       const next = await apiGet<FeedSyncState>(endpoints.source.sync())
       data.value = next
@@ -67,6 +70,9 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
       if (!next.running) {
         stopPolling()
         scheduleDismiss()
+        if (wasRunning) {
+          finishedTick.value += 1
+        }
       }
     } catch (err) {
       stopPolling()
@@ -86,6 +92,39 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
     visible.value = true
     void refresh()
     pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+  }
+
+  /**
+   * 手动触发一轮采集（「立即采集」按钮）：
+   * POST 拿到当前快照后与 login 流程共用同一套轮询与进度卡。
+   *
+   * Returns:
+   * 已成功提交（或本来就在跑）返回 true；请求失败返回 false。
+   */
+  async function trigger(): Promise<boolean> {
+    clearLinger()
+    stopPolling()
+    error.value = ''
+    data.value = null
+    visible.value = true
+    try {
+      const next = await apiPost<FeedSyncState>(endpoints.source.triggerSync())
+      data.value = next
+      if (next.error) {
+        error.value = next.error
+      }
+    } catch (err) {
+      error.value = errorMessage(err)
+      scheduleDismiss()
+      return false
+    }
+    if (!data.value?.running) {
+      scheduleDismiss()
+      finishedTick.value += 1
+      return true
+    }
+    pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+    return true
   }
 
   /** 刷新页面后把仍在跑的后台同步挂回来（没有在跑就什么都不做） */
@@ -113,5 +152,16 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
     visible.value = false
   }
 
-  return { data, visible, error, running, start, resume, dismiss, refresh }
+  return {
+    data,
+    visible,
+    error,
+    running,
+    finishedTick,
+    start,
+    trigger,
+    resume,
+    dismiss,
+    refresh,
+  }
 })

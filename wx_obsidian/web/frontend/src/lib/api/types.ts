@@ -165,7 +165,16 @@ export interface ConfigSnapshot {
     max_concurrency: number
     timeout: number
   }
-  source: { type: string; base_url: string; timeout: number; token: string }
+  source: {
+    type: string
+    base_url: string
+    timeout: number
+    token: string
+    /** Web 服务按间隔自动触发数据源采集 */
+    auto_sync: boolean
+    /** 自动采集间隔（分钟） */
+    sync_interval_minutes: number
+  }
   obsidian: { vault_path: string; articles_dir: string }
   fetch: { max_days: number; max_workers: number; feed_limit: number }
   web: { port: number; open_browser: boolean }
@@ -324,7 +333,7 @@ export interface QrLoginOver {
   sync_started: boolean
 }
 
-/** GET /api/source/sync：登录后逐个触发公众号采集的进度 */
+/** GET /api/source/sync：公众号采集的进度与自动采集状态 */
 export interface FeedSyncState {
   running: boolean
   total: number
@@ -334,6 +343,12 @@ export interface FeedSyncState {
   started_at: string
   finished_at: string
   error: string
+  /** 是否开启自动采集（0 间隔时后端返回 false） */
+  auto_enabled?: boolean
+  /** 自动采集间隔（分钟）；关闭时为 0 */
+  auto_interval_minutes?: number
+  /** 下一轮自动采集时间（UTC ISO 8601）；关闭或尚未排期时为空串 */
+  next_run_at?: string
 }
 
 export interface LogEntry {

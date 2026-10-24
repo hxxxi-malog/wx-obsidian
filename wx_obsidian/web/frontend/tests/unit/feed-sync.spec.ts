@@ -6,13 +6,14 @@ import type { FeedSyncState } from '@/lib/api/types'
 
 vi.mock('@/lib/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/client')>()
-  return { ...actual, apiGet: vi.fn() }
+  return { ...actual, apiGet: vi.fn(), apiPost: vi.fn() }
 })
 
-import { apiGet } from '@/lib/api/client'
+import { apiGet, apiPost } from '@/lib/api/client'
 import { useFeedSyncStore } from '@/stores/feed-sync'
 
 const mockedGet = vi.mocked(apiGet)
+const mockedPost = vi.mocked(apiPost)
 
 function sync(overrides: Partial<FeedSyncState> = {}): FeedSyncState {
   return {
@@ -83,6 +84,7 @@ describe('feed-sync store：后台轮询与自动收起', () => {
     setActivePinia(createPinia())
     vi.useFakeTimers()
     mockedGet.mockReset()
+    mockedPost.mockReset()
   })
 
   afterEach(() => {
@@ -152,6 +154,42 @@ describe('feed-sync store：后台轮询与自动收起', () => {
     store.start()
     await vi.advanceTimersByTimeAsync(0)
 
+    expect(store.error).toContain('网络断了')
+    await vi.advanceTimersByTimeAsync(16000)
+    expect(store.visible).toBe(false)
+  })
+
+  it('trigger 先提交手动采集，再轮询到结束并发出完成标记', async () => {
+    mockedPost.mockResolvedValueOnce(sync({ running: true, total: 29, triggered: 1 }))
+    mockedGet
+      .mockResolvedValueOnce(sync({ running: true, total: 29, triggered: 12 }))
+      .mockResolvedValueOnce(sync({ running: false, total: 29, triggered: 29 }))
+
+    const store = useFeedSyncStore()
+    expect(store.finishedTick).toBe(0)
+
+    const ok = await store.trigger()
+    expect(ok).toBe(true)
+    expect(mockedPost).toHaveBeenCalledTimes(1)
+    expect(store.data?.triggered).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(store.data?.triggered).toBe(12)
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(store.data?.running).toBe(false)
+    expect(store.finishedTick).toBe(1)
+
+    store.dismiss()
+  })
+
+  it('trigger 请求失败时返回 false，进度卡按错误态收起', async () => {
+    mockedPost.mockRejectedValueOnce(new Error('网络断了'))
+
+    const store = useFeedSyncStore()
+    const ok = await store.trigger()
+
+    expect(ok).toBe(false)
     expect(store.error).toContain('网络断了')
     await vi.advanceTimersByTimeAsync(16000)
     expect(store.visible).toBe(false)
