@@ -181,6 +181,15 @@ async function reload(): Promise<void> {
   syncActiveSection()
 }
 
+/** 手动点「重新载入」：进入页面与「放弃改动」的重新载入不弹提示 */
+async function manualReload(): Promise<void> {
+  await reload()
+  if (config.error) {
+    return
+  }
+  toast.success('刷新成功', '已重新载入服务端配置')
+}
+
 async function save(): Promise<void> {
   if (hasErrors.value) {
     toast.warn('表单里还有校验错误', '修正后再保存；已保存的密钥不会因此丢失。')
@@ -304,7 +313,7 @@ onMounted(reload)
       description="模型渠道、数据源、知识库与 Web 服务。改动要点「保存配置」才生效。"
     >
       <template #actions>
-        <AppButton variant="outline" size="sm" :loading="config.loading" @click="reload">
+        <AppButton variant="outline" size="sm" :loading="config.loading" @click="manualReload">
           <template #icon>
             <PhArrowClockwise :size="14" aria-hidden="true" />
           </template>
@@ -352,7 +361,7 @@ onMounted(reload)
       class="mb-5"
       :message="config.error"
       hint="读不到配置时，下面的表单可能不是最新的服务端状态。"
-      @retry="reload"
+      @retry="manualReload"
     />
 
     <div v-if="config.loading && !config.snapshot" class="flex flex-col gap-5">

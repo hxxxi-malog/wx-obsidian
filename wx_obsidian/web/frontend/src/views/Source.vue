@@ -16,12 +16,14 @@ import AppStatusDot from '@/components/ui/AppStatusDot.vue'
 import AppTag from '@/components/ui/AppTag.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import { useAsync } from '@/composables/useAsync'
+import { useToast } from '@/composables/useToast'
 import { apiGet } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type { SourceHealth } from '@/lib/api/types'
 import { formatRelative } from '@/lib/format'
 
 const router = useRouter()
+const toast = useToast()
 
 /** 三步修复：命令原文一字不改，只是各配一句「这一步在干什么」 */
 const DOCKER_STEPS = [
@@ -45,6 +47,22 @@ const state = useAsync<SourceHealth>(
 
 const health = computed(() => state.data.value)
 const probedLabel = computed(() => (probedAt.value ? formatRelative(probedAt.value) : '—'))
+
+/**
+ * 手动刷新：探活请求成功但数据源不可达时用警告语气，
+ * 绿色的「刷新成功」不能盖住红色故障。
+ */
+async function refresh(): Promise<void> {
+  const result = await state.run()
+  if (!result) {
+    return
+  }
+  if (!result.healthy) {
+    toast.warn('刷新完成，但数据源不可达', '按页面下方的命令启动 we-mp-rss 后再刷新')
+    return
+  }
+  toast.success('刷新成功', '数据源运行中')
+}
 </script>
 
 <template>
@@ -54,7 +72,7 @@ const probedLabel = computed(() => (probedAt.value ? formatRelative(probedAt.val
       description="we-mp-rss 探活；它不可达时，抓取、订阅列表与登录态都会一起失效。"
     >
       <template #actions>
-        <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="state.run()">
+        <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="refresh">
           <template #icon>
             <PhArrowClockwise :size="14" aria-hidden="true" />
           </template>
@@ -68,7 +86,7 @@ const probedLabel = computed(() => (probedAt.value ? formatRelative(probedAt.val
       class="mb-5"
       :message="state.error.value"
       hint="探活请求本身失败（例如未授权）：未授权时页面顶部会给出「输入 token」入口，粘贴后即可恢复。"
-      @retry="state.run()"
+      @retry="refresh"
     />
 
     <!-- 状态主视觉 -->
@@ -118,7 +136,7 @@ const probedLabel = computed(() => (probedAt.value ? formatRelative(probedAt.val
 
         <div class="flex items-center gap-2">
           <AppCopyButton v-if="health.base_url" :value="health.base_url" label="复制地址" />
-          <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="state.run()">
+          <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="refresh">
             重新探测
           </AppButton>
         </div>

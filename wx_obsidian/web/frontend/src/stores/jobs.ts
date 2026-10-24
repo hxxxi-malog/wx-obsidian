@@ -266,13 +266,15 @@ export const useJobsStore = defineStore('jobs', () => {
     }
   }
 
-  /** 刷新页面/切换路由后重新挂上正在跑的任务。 */
-  async function refresh(): Promise<void> {
+  /** 刷新页面/切换路由后重新挂上正在跑的任务；返回值表示本次读取是否成功 */
+  async function refresh(): Promise<boolean> {
     try {
       const data = await apiGet<JobList>(endpoints.jobs.list())
       recent.value = data.recent
       const current = data.current
-      state.value = { ...state.value, job: current }
+      // 读取成功就清掉上一次的错误：否则失败一次之后，页面上的错误块与
+      // 「刷新成功」的提示会长期打架
+      state.value = { ...state.value, job: current, error: '', errorCode: '' }
       if (current) {
         if (!source || source.readyState === EventSource.CLOSED) {
           attach(current.job_id)
@@ -283,8 +285,10 @@ export const useJobsStore = defineStore('jobs', () => {
       if (!current && data.recent.length) {
         state.value = { ...state.value, items: data.recent[0].result?.items ?? [] }
       }
+      return true
     } catch (err) {
       state.value = { ...state.value, ...describe(err) }
+      return false
     }
   }
 

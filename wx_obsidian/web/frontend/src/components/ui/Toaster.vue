@@ -36,6 +36,7 @@ const TONE_CLASS: Record<Toast['tone'], string> = {
     class="pointer-events-none fixed top-[68px] right-4 z-[60] flex w-[min(380px,calc(100vw-32px))] flex-col gap-2"
     role="status"
     aria-live="polite"
+    data-toaster
   >
     <TransitionGroup
       enter-active-class="transition duration-200 ease-out"

@@ -29,6 +29,7 @@ import AppTag from '@/components/ui/AppTag.vue'
 import AppTooltip from '@/components/ui/AppTooltip.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import { useAsync } from '@/composables/useAsync'
+import { useToast } from '@/composables/useToast'
 import { ApiError, apiGet, errorMessage } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type {
@@ -49,6 +50,7 @@ const ALL_FEEDS = '__all__'
 
 const router = useRouter()
 const sync = useFeedSyncStore()
+const toast = useToast()
 
 const feedFilter = ref(ALL_FEEDS)
 const selectedFeedId = computed(() => (feedFilter.value === ALL_FEEDS ? '' : feedFilter.value))
@@ -225,6 +227,22 @@ async function refresh(): Promise<void> {
   await Promise.all([loadFirstPage(), loadFeeds()])
 }
 
+/**
+ * 手动点「刷新」：采集结束后的自动刷新仍走 refresh()，不弹提示。
+ * 读取失败由页内错误块说明（令牌失效与上游不可达各有文案），这里只补成功反馈。
+ */
+async function manualRefresh(): Promise<void> {
+  await refresh()
+  if (listError.value || !pageData.value) {
+    // 令牌失效时页面只换空态文案；再给一条警告，点过按钮才有明确回音
+    if (tokenMissing.value) {
+      toast.warn('刷新完成，但数据源令牌无效', '到「配置管理 → 文章数据源」更新访问令牌后再刷新')
+    }
+    return
+  }
+  toast.success('刷新成功', `共 ${formatNumber(total.value)} 篇文章`)
+}
+
 async function loadMore(): Promise<void> {
   if (loadingMore.value || !hasMore.value) {
     return
@@ -329,7 +347,7 @@ function coverInitial(item: SourceArticleItem): string {
           </template>
           立即采集
         </AppButton>
-        <AppButton variant="outline" size="sm" :loading="loading" @click="refresh">
+        <AppButton variant="outline" size="sm" :loading="loading" @click="manualRefresh">
           <template #icon>
             <PhArrowClockwise :size="14" aria-hidden="true" />
           </template>
@@ -360,7 +378,7 @@ function coverInitial(item: SourceArticleItem): string {
       v-else-if="listError && !hasItems && !loading"
       :message="listError"
       hint="上游不可达时先去「数据源状态」看探活结果；服务恢复后点「重试」。"
-      @retry="refresh"
+      @retry="manualRefresh"
     />
 
     <div v-else-if="loading && !hasItems" class="flex flex-col gap-2.5">
@@ -410,7 +428,7 @@ function coverInitial(item: SourceArticleItem): string {
         compact
         :message="listError"
         :hint="staleHint"
-        @retry="refresh"
+        @retry="manualRefresh"
       />
 
       <section v-for="group in groups" :key="group.key" class="mb-6 last:mb-0">

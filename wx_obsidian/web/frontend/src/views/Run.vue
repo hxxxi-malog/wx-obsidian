@@ -207,6 +207,18 @@ async function loadCurrentJob(): Promise<void> {
 }
 
 /**
+ * 手动点「刷新状态」：store 把读取失败收进 jobs.error（页内错误块会说明原因），
+ * 这里只补成功反馈；任务首次复核仍直接调 jobs.refresh()，不弹提示。
+ */
+async function refreshStatus(): Promise<void> {
+  const ok = await jobs.refresh()
+  if (!ok) {
+    return
+  }
+  toast.success('刷新成功', jobs.job ? '已同步当前任务状态' : '当前没有任务')
+}
+
+/**
  * 启动前的复核：后端单飞通道会以 409 job_busy 拒绝重复提交，
  * 而 store 的 `startFetch` 只回 false（错误在 `jobs.error` 里，且丢掉了错误码），
  * 所以先查一次 `/api/jobs`，把「已有任务在跑」这条最可能的原因翻译成带操作的提示。
@@ -345,7 +357,7 @@ onMounted(() => {
           variant="outline"
           :loading="refreshing"
           :disabled="running"
-          @click="jobs.refresh()"
+          @click="refreshStatus"
         >
           <template #icon><PhArrowClockwise :size="14" aria-hidden="true" /></template>
           刷新状态

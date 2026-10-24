@@ -138,6 +138,25 @@ async function remove(): Promise<void> {
     removing.value = false
   }
 }
+
+/**
+ * 手动刷新：失败由页内错误块说明，成功必须给一次确认。
+ * 否则列表本来就没变化时，用户分不清「点了没反应」与「数据就是这些」。
+ */
+async function refresh(): Promise<void> {
+  const result = await state.run()
+  if (!result) {
+    return
+  }
+  if (!result.tokenConfigured && result.feeds.length === 0) {
+    toast.warn('刷新完成，但访问令牌未配置', '订阅列表需要数据源的访问令牌才能读到')
+    return
+  }
+  toast.success(
+    '刷新成功',
+    result.feeds.length ? `共 ${result.feeds.length} 个公众号` : '当前没有订阅任何公众号',
+  )
+}
 </script>
 
 <template>
@@ -147,7 +166,7 @@ async function remove(): Promise<void> {
       description="订阅列表来自数据源的管理接口；列表为空时先确认访问令牌是否配好。"
     >
       <template #actions>
-        <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="state.run()">
+        <AppButton variant="outline" size="sm" :loading="state.loading.value" @click="refresh">
           <template #icon>
             <PhArrowClockwise :size="14" aria-hidden="true" />
           </template>
@@ -192,7 +211,7 @@ async function remove(): Promise<void> {
       class="mb-5"
       :message="state.error.value"
       hint="列表读不到通常是数据源不可达或访问令牌失效——可先去「数据源状态」看一眼。"
-      @retry="state.run()"
+      @retry="refresh"
     />
 
     <section class="panel overflow-hidden rounded-panel">
@@ -206,7 +225,7 @@ async function remove(): Promise<void> {
         class="m-5"
         :message="state.error.value"
         hint="列表读不到通常是数据源不可达或访问令牌失效——可先去「数据源状态」看一眼。"
-        @retry="state.run()"
+        @retry="refresh"
       />
 
       <div v-else-if="state.loading.value && !state.data.value" class="flex flex-col gap-3 p-5">
@@ -318,7 +337,7 @@ async function remove(): Promise<void> {
         compact
       >
         <template #action>
-          <AppButton variant="outline" size="sm" @click="state.run()">重试</AppButton>
+          <AppButton variant="outline" size="sm" @click="refresh">重试</AppButton>
         </template>
       </AppEmptyState>
     </section>

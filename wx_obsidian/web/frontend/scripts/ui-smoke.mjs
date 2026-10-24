@@ -451,6 +451,69 @@ async function main() {
       }
     }
 
+    // ── 2c. 手动刷新按钮必须给反馈 ─────────────────────────────────
+    // 数据本来就没变化时，点刷新按钮毫无反馈，用户分不清「没点上」与「数据就是这些」。
+    // 逐页真点一次，断言右上角出现「刷新成功 / 刷新完成」提示（异常状态用警告语气）。
+    if (args.token) {
+      currentStep = '手动刷新反馈'
+      const refreshers = [
+        { path: '/', label: '状态总览', button: '刷新' },
+        { path: '/run', label: '文章抓取', button: '刷新状态' },
+        { path: '/latest', label: '最新文章', button: '刷新' },
+        { path: '/articles', label: '文章管理', button: '刷新' },
+        { path: '/settings', label: '配置管理', button: '重新载入' },
+        { path: '/feeds', label: '公众号管理', button: '刷新列表' },
+        { path: '/source', label: '数据源状态', button: '刷新状态' },
+      ]
+      for (const item of refreshers) {
+        await goto(item.path, { expectHeading: item.label })
+        await settle()
+        const button = JSON.stringify(item.button)
+        // 首屏取数期间按钮处于 loading/disabled；等它恢复可点再断言
+        await waitFor(
+          `(() => {
+            const target = [...document.querySelectorAll('button')].find((element) => element.textContent.includes(${button}))
+            return !!target && !target.disabled
+          })()`,
+          6000,
+        )
+        const clicked = await evaluate(`(() => {
+          const buttons = [...document.querySelectorAll('button')]
+          const target =
+            buttons.find((element) => element.textContent.trim() === ${button}) ??
+            buttons.find((element) => element.textContent.includes(${button}))
+          if (!target) return 'missing'
+          if (target.disabled) return 'disabled'
+          target.click()
+          return 'clicked'
+        })()`)
+        if (clicked === 'disabled') {
+          // 抓取任务运行中时「刷新状态」按钮按设计禁用，这一页跳过不算失败
+          check(`${item.path} 刷新按钮可用`, true, '任务运行中，按钮按设计禁用')
+          continue
+        }
+        check(`${item.path} 找到刷新按钮`, clicked === 'clicked', clicked === 'missing' ? '未找到' : '')
+        if (clicked !== 'clicked') {
+          continue
+        }
+        const toastShown = await waitFor(
+          `(() => {
+            const toaster = document.querySelector('[data-toaster]')
+            return !!toaster && /刷新(成功|完成)/.test(toaster.innerText)
+          })()`,
+          10000,
+        )
+        if (!toastShown) {
+          const toasterText = await evaluate(
+            'document.querySelector("[data-toaster]")?.innerText?.trim().slice(0, 200) ?? "缺少提示容器"',
+          )
+          check(`${item.path} 刷新后出现提示`, false, toasterText)
+          continue
+        }
+        check(`${item.path} 刷新后出现提示`, true)
+      }
+    }
+
     // ── 3. 主题切换 ─────────────────────────────────────────────────
     // 轮转是 system → dark → light → system；系统本身是暗色时第一次点击不会改变 html.dark，
     // 所以断言的是「模式轮转 + html.dark 与该模式一致」，而不是「类名一定翻转」。

@@ -221,6 +221,23 @@ async function load(): Promise<void> {
   await Promise.all([loadOverview(), loadJobs()])
 }
 
+/**
+ * 点「刷新」按钮才走这里：轮询仍走 load()，否则每 30 秒弹一次提示。
+ * 检查结果里有异常组件时用警告语气，绿色提示只代表「这次读取成功」。
+ */
+async function manualRefresh(): Promise<void> {
+  await load()
+  if (error.value || !overview.value) {
+    return
+  }
+  const checkedLabel = formatTime(checkedAt.value)
+  if (overall.value?.tone === 'success') {
+    toast.success('刷新成功', `${overall.value.label}，检查于 ${checkedLabel}`)
+    return
+  }
+  toast.warn('刷新完成，但存在异常组件', `检查于 ${checkedLabel}，详见页面上的组件状态与告警`)
+}
+
 const polling = usePolling(load, REFRESH_INTERVAL_MS)
 
 onMounted(() => {
@@ -307,7 +324,7 @@ function openSettings(): void {
       </template>
 
       <template #actions>
-        <AppButton variant="outline" :loading="loading" @click="load">
+        <AppButton variant="outline" :loading="loading" @click="manualRefresh">
           <template #icon><PhArrowClockwise :size="14" aria-hidden="true" /></template>
           刷新
         </AppButton>
@@ -319,7 +336,7 @@ function openSettings(): void {
       class="mb-5"
       :message="error"
       hint="点「重试」重新拉取；确认应用（或容器）仍在运行。"
-      @retry="load"
+      @retry="manualRefresh"
     />
 
     <!-- 首启引导：三步 + 去配置（原文案要点保留） -->

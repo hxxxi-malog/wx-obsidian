@@ -153,8 +153,16 @@ watch(rows, (value) => {
   }
 })
 
-function reload(): void {
-  void runList()
+/**
+ * 手动刷新列表：读取失败由页内错误条说明（旧数据仍在时只降级提示），
+ * 成功时给一次确认，避免「选了筛选条件但页面没变化」时以为点击无效。
+ */
+async function reload(): Promise<void> {
+  const result = await runList()
+  if (!result) {
+    return
+  }
+  toast.success('刷新成功', `共 ${formatNumber(result.total)} 篇文章`)
 }
 
 // ── 关键词：250ms 防抖 + 回车即搜 ───────────────────────────────────────────
