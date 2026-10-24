@@ -56,11 +56,27 @@ FEED_REFRESH_TOO_FREQUENT = 40402
 
 # 文章短链：https://mp.weixin.qq.com/s/<token>
 #
-# token 字符集必须包含 `~`：2026-10-10 用真实数据校验时发现确实存在含波浪号的 token
-# （如 /s/8moKQtvrKlMmIqqPQrs~Qw），早期只用 [A-Za-z0-9_-] 会把 token 截断，
-# 生成错误的 ID 从而破坏 processed.json 的去重。旧库存量数据恰好没有 `~`，
-# 所以离线回归没有覆盖到这个分支。
+# 上游给的 token 里会出现 `~`（如 /s/8moKQtvrKlMmIqqPQrs~Qw）：WeRead 用它代替
+# token 内的 `_`（reviewId 用 `_` 分隔 bookId 与 token），而微信只认 `_` —— `~`
+# 形式打开是「参数错误」页面。所以解析出 token 后要还原，见 restore_short_link。
 RE_SHORT_LINK = re.compile(r"/s/([A-Za-z0-9_~-]{6,})")
+
+SHORT_LINK_PREFIX = "https://mp.weixin.qq.com/s/"
+
+
+def restore_short_link(link: str) -> str:
+    """把短链 token 里的 `~` 还原成 `_`，返回微信能打开的地址。
+
+    Args:
+        link: 上游文章链接；长链（`/s?__biz=...`）、其它域名与空串原样返回。
+
+    Returns:
+        可直接在浏览器打开的地址。
+    """
+    if not link.startswith(SHORT_LINK_PREFIX):
+        return link
+    token, sep, query = link[len(SHORT_LINK_PREFIX) :].partition("?")
+    return f"{SHORT_LINK_PREFIX}{token.replace('~', '_')}{sep}{query}"
 
 
 def normalize_article_id(link: str, fallback: str = "") -> str:
@@ -204,7 +220,7 @@ class WeMpRssClient:
         if not isinstance(item, dict):
             return {"id": ""}
 
-        link = str(item.get("link") or "")
+        link = restore_short_link(str(item.get("link") or ""))
         article_id = normalize_article_id(link, fallback=str(item.get("id") or ""))
         channel = (
             str(item.get("channel_name") or "") or _feed_name(item) or str(feed.get("name") or "")
@@ -225,9 +241,10 @@ class WeMpRssClient:
         """把管理接口返回的文章行转成列表页 DTO。
 
         上游行里的 id 是内部复合 ID（`<mp_id>-<mp_id>_<token>`），这里用链接重新
-        归一化成短链 token，才能和 processed.json 里的记录对上。
+        归一化成短链 token，才能和 processed.json 里的记录对上。链接里的 `~` 先还原
+        成 `_`：归一化后的 ID 与用户在浏览器里打开的地址必须指向同一个 token。
         """
-        url = str(item.get("url") or "")
+        url = restore_short_link(str(item.get("url") or ""))
         upstream_id = str(item.get("id") or "")
         return SourceArticle(
             article_id=normalize_article_id(url, fallback=upstream_id) or upstream_id,

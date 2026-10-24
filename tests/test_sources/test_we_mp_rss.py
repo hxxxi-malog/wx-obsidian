@@ -18,6 +18,7 @@ from wx_obsidian.sources.we_mp_rss import (
     FALLBACK_ID_PREFIX,
     WeMpRssClient,
     normalize_article_id,
+    restore_short_link,
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -106,18 +107,13 @@ class TestNormalizeArticleId:
         link = "https://mp.weixin.qq.com/s/QFwQz-Kqh9t_zssBU_a6Mg"
         assert normalize_article_id(link) == "QFwQz-Kqh9t_zssBU_a6Mg"
 
-    def test_token_with_tilde(self) -> None:
-        """token 含 `~` 时不能被截断。
+    def test_tilde_token_restored_before_normalizing(self) -> None:
+        """上游 token 里的 `~` 先还原成 `_`，归一化后的 ID 才对应可打开的原文。"""
+        link = "https://mp.weixin.qq.com/s/8moKQtvrKlMmIqqPQrs~Qw"
+        assert normalize_article_id(restore_short_link(link)) == "8moKQtvrKlMmIqqPQrs_Qw"
 
-        2026-10-10 真实数据发现：微信短链 token 会出现波浪号，
-        早期字符集缺 `~` 会截断 ID（旧库存量数据恰好没有 ~，离线回归覆盖不到）。
-        """
-        assert normalize_article_id("https://mp.weixin.qq.com/s/8moKQtvrKlMmIqqPQrs~Qw") == (
-            "8moKQtvrKlMmIqqPQrs~Qw"
-        )
-        assert normalize_article_id("https://mp.weixin.qq.com/s/I~Fntev0Pkgko67xg5kJ-g") == (
-            "I~Fntev0Pkgko67xg5kJ-g"
-        )
+        link = "https://mp.weixin.qq.com/s/I~Fntev0Pkgko67xg5kJ-g"
+        assert normalize_article_id(restore_short_link(link)) == "I_Fntev0Pkgko67xg5kJ-g"
 
     def test_long_link_uses_sn(self) -> None:
         """长链取 sn 参数。"""
@@ -152,6 +148,49 @@ class TestNormalizeArticleId:
 
 
 # ---------------------------------------------------------------------------
+# restore_short_link
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreShortLink:
+    """短链 token 里的 `~` 还原成 `_`：微信只认 `_` 形式，`~` 打开是「参数错误」。"""
+
+    def test_single_tilde(self) -> None:
+        assert (
+            restore_short_link("https://mp.weixin.qq.com/s/wpHU8~UqRh-D-XYfzfZe1Q")
+            == "https://mp.weixin.qq.com/s/wpHU8_UqRh-D-XYfzfZe1Q"
+        )
+
+    def test_multiple_tildes(self) -> None:
+        assert (
+            restore_short_link("https://mp.weixin.qq.com/s/kKdzNknP6~mcaU~qBe3f~w")
+            == "https://mp.weixin.qq.com/s/kKdzNknP6_mcaU_qBe3f_w"
+        )
+
+    def test_plain_token_unchanged(self) -> None:
+        """没有 `~` 的 token 原样返回，避免误改正常链接。"""
+        link = "https://mp.weixin.qq.com/s/QFwQz-Kqh9t_zssBU_a6Mg"
+        assert restore_short_link(link) == link
+
+    def test_query_string_preserved(self) -> None:
+        assert (
+            restore_short_link("https://mp.weixin.qq.com/s/a~b?scene=27#wechat_redirect")
+            == "https://mp.weixin.qq.com/s/a_b?scene=27#wechat_redirect"
+        )
+
+    def test_long_link_unchanged(self) -> None:
+        """长链（`/s?__biz=...`）没有短链 token，原样返回。"""
+        link = "https://mp.weixin.qq.com/s?__biz=MzA5&mid=1&idx=2&sn=abc"
+        assert restore_short_link(link) == link
+
+    def test_other_host_unchanged(self) -> None:
+        assert restore_short_link("https://example.com/s/a~b") == "https://example.com/s/a~b"
+
+    def test_empty_unchanged(self) -> None:
+        assert restore_short_link("") == ""
+
+
+# ---------------------------------------------------------------------------
 # get_articles
 # ---------------------------------------------------------------------------
 
@@ -177,6 +216,19 @@ class TestGetArticles:
         assert article["date_published"] == "2026-06-05T09:00:00+08:00"
         assert article["author"] == "腾讯技术工程"
         assert article["_account_name"] == "腾讯技术工程"
+
+    def test_restores_tilde_token(self, client: WeMpRssClient) -> None:
+        """上游 token 里的 `~` 还原成 `_`，笔记里的原文链接才打得开。"""
+        item = _item(link="https://mp.weixin.qq.com/s/wpHU8~UqRh-D-XYfzfZe1Q")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _feed_payload([item])
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            articles = client.get_articles(limit=10)
+
+        assert articles[0]["url"] == "https://mp.weixin.qq.com/s/wpHU8_UqRh-D-XYfzfZe1Q"
+        assert articles[0]["id"] == "wpHU8_UqRh-D-XYfzfZe1Q"
 
     def test_reads_only_no_gather(self, client: WeMpRssClient) -> None:
         """必须显式传 is_update=false，避免触发上游采集。"""
@@ -809,9 +861,9 @@ class TestListArticles:
         assert page.limit == 15
         assert len(page.items) == 1
         article = page.items[0]
-        assert article.article_id == "wpHU8~UqRh-D-XYfzfZe1Q"
+        assert article.article_id == "wpHU8_UqRh-D-XYfzfZe1Q"
         assert article.title == "LiteLLM 半年两度被投毒"
-        assert article.url == "https://mp.weixin.qq.com/s/wpHU8~UqRh-D-XYfzfZe1Q"
+        assert article.url == "https://mp.weixin.qq.com/s/wpHU8_UqRh-D-XYfzfZe1Q"
         assert article.account == "阿里云云原生"
         assert article.account_id == "MP_WXS_3537616032"
         assert article.published_at == datetime(2026, 10, 23, 5, 6, 48, tzinfo=UTC)

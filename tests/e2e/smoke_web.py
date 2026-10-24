@@ -42,6 +42,9 @@ NOTE_MARKER = "冒烟测试占位正文"
 ARTICLE_TITLE = "冒烟测试文章：Web 服务能否生成笔记"
 ACCOUNT_NAME = "冒烟测试号"
 FIX_PROMPT_MARKER = "请修正上述问题"
+# 上游短链里带 `~`（WeRead 对 `_` 的替换），落盘与接口都必须还原成 `_` 形式
+ARTICLE_LINK = "https://mp.weixin.qq.com/s/smoke~test-article"
+ARTICLE_LINK_OPENABLE = "https://mp.weixin.qq.com/s/smoke_test-article"
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +65,7 @@ def _feed_payload() -> dict[str, Any]:
             {
                 "id": "smoke-article-1",
                 "title": ARTICLE_TITLE,
-                "link": "https://mp.weixin.qq.com/s/smoke-test-article",
+                "link": ARTICLE_LINK,
                 "content": body,
                 "updated": now,
                 "channel_name": ACCOUNT_NAME,
@@ -72,7 +75,7 @@ def _feed_payload() -> dict[str, Any]:
 
 
 def _article_list_payload() -> dict[str, Any]:
-    """上游文章库列表（管理接口形态）：一行数据即可验证分页与 processed 标记。"""
+    """上游文章库列表（管理接口形态）：一行已抓取、一行带 `~` token 的新文章。"""
     return {
         "code": 0,
         "data": {
@@ -80,15 +83,25 @@ def _article_list_payload() -> dict[str, Any]:
                 {
                     "id": "smoke-article-1",
                     "title": ARTICLE_TITLE,
-                    "url": "https://mp.weixin.qq.com/s/smoke-test-article",
+                    "url": ARTICLE_LINK,
                     "mp_name": ACCOUNT_NAME,
                     "mp_id": "MP_WXS_SMOKE",
                     "publish_time": int(datetime.now(UTC).timestamp()),
                     "pic_url": "",
                     "has_content": 1,
-                }
+                },
+                {
+                    "id": "smoke-article-2",
+                    "title": "带波浪号 token 的文章",
+                    "url": "https://mp.weixin.qq.com/s/smoke~tilde",
+                    "mp_name": ACCOUNT_NAME,
+                    "mp_id": "MP_WXS_SMOKE",
+                    "publish_time": int(datetime.now(UTC).timestamp()) - 3600,
+                    "pic_url": "",
+                    "has_content": 0,
+                },
             ],
-            "total": 1,
+            "total": 2,
         },
     }
 
@@ -342,7 +355,11 @@ def _report_notes(vault: Path) -> tuple[bool, str]:
 
     note = real[0]
     content = note.read_text(encoding="utf-8")
-    ok = NOTE_MARKER in content and "一、背景" in content
+    ok = (
+        NOTE_MARKER in content
+        and "一、背景" in content
+        and f'url: "{ARTICLE_LINK_OPENABLE}"' in content
+    )
     detail = f"{note.relative_to(vault)} ({len(content)} 字符，同目录共 {len(notes)} 个 md)"
     return ok, detail
 
@@ -439,13 +456,13 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
         items = page.get("items") or []
         first = items[0] if items else {}
         failures += (
-            0 if _check(page.get("total") == 1, "返回总数", f"total={page.get('total')}") else 1
+            0 if _check(page.get("total") == 2, "返回总数", f"total={page.get('total')}") else 1
         )
         failures += (
             0
             if _check(
-                first.get("article_id") == "smoke-test-article"
-                and first.get("url") == "https://mp.weixin.qq.com/s/smoke-test-article",
+                first.get("article_id") == "smoke_test-article"
+                and first.get("url") == ARTICLE_LINK_OPENABLE,
                 "文章 ID 归一化 + 原文链接",
                 f"article_id={first.get('article_id')}",
             )
@@ -458,6 +475,17 @@ def main() -> int:  # noqa: C901 - 冒烟脚本按步骤线性展开，拆函数
                 first.get("account") == ACCOUNT_NAME and bool(first.get("published_at")),
                 "公众号名与发布时间",
                 f"account={first.get('account')}",
+            )
+            else 1
+        )
+        second = items[1] if len(items) > 1 else {}
+        failures += (
+            0
+            if _check(
+                second.get("article_id") == "smoke_tilde"
+                and second.get("url") == "https://mp.weixin.qq.com/s/smoke_tilde",
+                "上游 `~` token 还原成 `_`",
+                f"article_id={second.get('article_id')}",
             )
             else 1
         )

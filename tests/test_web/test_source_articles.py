@@ -183,12 +183,12 @@ def test_processed_uses_normalized_article_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """processed 判定用归一化后的短链 token（与 processed.json 的键一致）。"""
-    processed: dict[str, Any] = {"wpHU8~UqRh-D-XYfzfZe1Q": {"title": "已处理"}}
+    processed: dict[str, Any] = {"wpHU8_UqRh-D-XYfzfZe1Q": {"title": "已处理"}}
     monkeypatch.setattr(web_api, "load_processed", lambda: processed)
     item = SourceArticle(
-        article_id="wpHU8~UqRh-D-XYfzfZe1Q",
+        article_id="wpHU8_UqRh-D-XYfzfZe1Q",
         title="文章",
-        url="https://mp.weixin.qq.com/s/wpHU8~UqRh-D-XYfzfZe1Q",
+        url="https://mp.weixin.qq.com/s/wpHU8_UqRh-D-XYfzfZe1Q",
         account="某号",
         account_id="MP_WXS_1",
         published_at=None,
