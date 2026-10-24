@@ -13,7 +13,7 @@ try:
 except PackageNotFoundError:  # 冻结包可能没有 dist-info
     # 容器与源码直跑都不装包本体（见 Dockerfile 的 --no-install-project 思路），
     # 走的就是这个回退值 —— 发版时两处都要跟着 pyproject 的 version 改。
-    APP_VERSION = "1.1.0"
+    APP_VERSION = "1.1.1"
 
 APP_NAME = "wx-obsidian"
 
