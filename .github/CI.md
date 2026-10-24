@@ -108,12 +108,16 @@ python .github/scripts/check_secrets.py --history  # 追加查全部历史
      两条 semver 规则，tag 推送与手动触发共用同一套推导。
 - 建 Release 是幂等的（已存在则跳过）；重发同一个 tag 会覆盖镜像标签，
   所以补构建配置不需要发新版本号。
-- **Release 正文必须带上维护者**：自动生成说明只给「合并的 Pull Request」署名，
-  直接推送到主干的提交不会进 Contributors；Release 页的 Contributors 头像只认
-  正文里的纯 `@user` 提及（带链接的 `[@user](…)` 不算）。所以 `gh release create`
-  统一加 `--notes "本次发布由 @<owner> 维护。"`（gh 会把 `--notes` 前置到自动
-  生成说明之前）。已存在的 Release 若正文缺这条提及，重跑本工作流会把它补到
-  正文开头，其余内容保持原样。
+- **Release 正文由「tag 说明 + 自动生成说明」拼成**：自动生成说明只收「合并的
+  Pull Request」，直接推送到主干的提交既不会出现在 What's Changed，也不会进
+  Contributors。所以发版时用 `--notes` 前置两样东西（gh 会把 `--notes` 放在自动
+  生成说明之前）：
+  1. tag 说明的正文（约定 `git tag -a`，首行写版本号，后面写本次更新要点）→
+     Release 页写清新增了什么；
+  2. `本次发布由 @<owner> 维护。` → Release 页的 Contributors 头像只认正文里的
+     纯 `@user` 提及（带链接的 `[@user](…)` 不算）。
+  已存在的 Release 若正文缺更新要点或维护者提及，重跑本工作流会补到正文开头，
+  其余内容保持原样（v1.1.1 补过一轮）。
 - **多架构（amd64 + arm64）**：CI 里那个容器 job 只验本机架构（快），跨架构那半
   只在发布时构建 —— 需要 `docker/setup-qemu-action`（必须先于 buildx，buildx 靠
   它注册 binfmt）+ 给 build-push 传 `platforms: linux/amd64,linux/arm64`。

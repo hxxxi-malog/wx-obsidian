@@ -115,30 +115,51 @@ jobs:
           fetch-depth: 0
 
       # 幂等：重复跑（或 tag 已手工建过 Release）时不报错；
-      # 已存在但正文没带维护者时补一次（旧版本手动重跑本工作流即可修好）
+      # 已存在的 Release 若正文缺「更新要点」或「维护者」，会补到正文开头
+      # （旧版本手动重跑本工作流即可修好）
       - name: 创建 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
           PRERELEASE: ${{ needs.image.outputs.prerelease }}
         run: |
-          # GitHub 的自动生成说明只给「合并的 Pull Request」署名，直接推送到主干的
-          # 提交作者不会进入 Contributors；Release 页的 Contributors 头像又只认正文
-          # 里的纯 @提及（带链接的 [@user](…) 不算）。所以把仓库所有者写成正文前缀，
-          # 保证每次发版都带上维护者；--notes 会被前置在自动生成说明之前。
+          # GitHub 的自动生成说明只收「合并的 Pull Request」：直接推送到主干的提交
+          # 既不会出现在 What's Changed，也不会进入 Contributors。所以发版时把两样
+          # 东西一起前置到自动生成说明之前（gh 支持用 --notes 前置）：
+          #   1. tag 说明（约定首行写版本号，其余是本次更新要点）→ 正文写清新增了什么；
+          #   2. 维护者的纯 @提及 → Release 页的 Contributors 头像只认这种写法。
           owner="${GITHUB_REPOSITORY%%/*}"
-          notes="本次发布由 @${owner} 维护。"
+          maintainer="本次发布由 @${owner} 维护。"
+          tag_notes="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)' | sed '1s/^.*$//' | sed '/./,$!d')"
+          if [ -z "$tag_notes" ]; then
+            notes="$maintainer"
+            marker=""
+          else
+            notes="${maintainer}"$'\n\n'"${tag_notes}"
+            marker="$(printf '%s\n' "$tag_notes" | head -1)"
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             body="$(gh release view "$TAG" --json body -q .body)"
-            if printf '%s' "$body" | grep -qF "@${owner}"; then
-              echo "Release $TAG 已存在，正文已带上维护者，跳过"
+            prefix=""
+            if ! printf '%s' "$body" | grep -qF "@${owner}"; then
+              prefix="$maintainer"
+            fi
+            if [ -n "$marker" ] && ! printf '%s' "$body" | grep -qF "$marker"; then
+              if [ -n "$prefix" ]; then
+                prefix="${prefix}"$'\n\n'"${tag_notes}"
+              else
+                prefix="$tag_notes"
+              fi
+            fi
+            if [ -z "$prefix" ]; then
+              echo "Release $TAG 已存在，正文已包含更新要点与维护者，跳过"
               exit 0
             fi
             notes_file="$(mktemp)"
-            printf '%s\n\n%s\n' "$notes" "$body" > "$notes_file"
+            printf '%s\n\n%s\n' "$prefix" "$body" > "$notes_file"
             gh release edit "$TAG" --notes-file "$notes_file"
             rm -f "$notes_file"
-            echo "Release $TAG 已存在：已把维护者补进正文"
+            echo "Release $TAG 已存在：已补齐更新要点与维护者"
             exit 0
           fi
           if [ "$PRERELEASE" = "true" ]; then
