@@ -119,6 +119,11 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 sqlite3 data/we_mp_rss.db "SELECT sum(url LIKE '%~%') AS tilde, sum(has_content = 0) AS no_content FROM articles;"
 ```
 
+> ⚠️ 改库前必须先停容器。在 macOS 上用宿主机 `sqlite3` 直接读写**运行中**容器挂载的数据库文件，
+> 会让容器端报 `sqlite3.OperationalError: disk I/O error`（实测连鉴权查询都会返回 401）。遇到这种情况：
+> `docker compose stop we-mp-rss` → `sqlite3 data/we_mp_rss.db "PRAGMA wal_checkpoint(TRUNCATE);"` →
+> 再启动容器。容器运行期间查数据用上游接口（`/api/v1/wx/articles`）或 `docker exec`。
+
 ## 维护提示（升级上游镜像时必读）
 
 `patch/weread_mp.py` 是从 `ghcr.io/rachelos/we-mp-rss:latest` 容器里拷出的**整文件副本**，
