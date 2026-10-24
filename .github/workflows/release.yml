@@ -114,19 +114,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 幂等：重复跑（或 tag 已手工建过 Release）时不报错
+      # 幂等：重复跑（或 tag 已手工建过 Release）时不报错；
+      # 已存在但正文没带维护者时补一次（旧版本手动重跑本工作流即可修好）
       - name: 创建 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
           PRERELEASE: ${{ needs.image.outputs.prerelease }}
         run: |
+          # GitHub 的自动生成说明只给「合并的 Pull Request」署名，直接推送到主干的
+          # 提交作者不会进入 Contributors；Release 页的 Contributors 头像又只认正文
+          # 里的纯 @提及（带链接的 [@user](…) 不算）。所以把仓库所有者写成正文前缀，
+          # 保证每次发版都带上维护者；--notes 会被前置在自动生成说明之前。
+          owner="${GITHUB_REPOSITORY%%/*}"
+          notes="本次发布由 @${owner} 维护。"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，跳过"
-          elif [ "$PRERELEASE" = "true" ]; then
+            body="$(gh release view "$TAG" --json body -q .body)"
+            if printf '%s' "$body" | grep -qF "@${owner}"; then
+              echo "Release $TAG 已存在，正文已带上维护者，跳过"
+              exit 0
+            fi
+            notes_file="$(mktemp)"
+            printf '%s\n\n%s\n' "$notes" "$body" > "$notes_file"
+            gh release edit "$TAG" --notes-file "$notes_file"
+            rm -f "$notes_file"
+            echo "Release $TAG 已存在：已把维护者补进正文"
+            exit 0
+          fi
+          if [ "$PRERELEASE" = "true" ]; then
             # 必须显式标 --prerelease：不标的话 GitHub 会把它当成「Latest release」，
             # 与 latest 镜像标签是同一类坑（用户看到 rc 被标成正式版）。
-            gh release create "$TAG" --generate-notes --title "$TAG" --prerelease
+            gh release create "$TAG" --generate-notes --title "$TAG" --prerelease --notes "$notes"
           else
-            gh release create "$TAG" --generate-notes --title "$TAG"
+            gh release create "$TAG" --generate-notes --title "$TAG" --notes "$notes"
           fi
