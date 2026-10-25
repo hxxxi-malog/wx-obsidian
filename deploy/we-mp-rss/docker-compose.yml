@@ -17,7 +17,8 @@
 services:
   we-mp-rss:
     # 派生镜像：FROM 上游 ghcr.io/rachelos/we-mp-rss:latest + 覆盖
-    # core/wx/model/weread_mp.py，修正「发布时间 = 抓取时间」的上游缺陷。
+    # core/wx/model/weread_mp.py 与 apis/weread.py，修正「发布时间 = 抓取时间」、
+    # 正文只认微信读书会话、探针只校验封面这几处上游缺陷。
     # 补丁说明见 Dockerfile；重新构建：docker compose up -d --build
     build:
       context: .

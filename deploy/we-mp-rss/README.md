@@ -3,7 +3,7 @@
 wx-obsidian 的文章数据源。[we-mp-rss](https://github.com/rachelos/we-mp-rss) 取代了已归档的
 WeWe RSS（其闭源中转已下线）。本目录是**唯一权威的部署配方**，全部纳入版本管理。
 
-> 为什么用派生镜像而不是直接用上游 `ghcr.io/rachelos/we-mp-rss:latest`：上游有两处缺陷。
+> 为什么用派生镜像而不是直接用上游 `ghcr.io/rachelos/we-mp-rss:latest`：上游有三处缺陷。
 > 一是把文章的发布时间写成了抓取时刻（`_collect_latest_via_cover()` 里硬编码
 > `int(time.time())`）。这会让 wx-obsidian 侧 `fetch.max_days` 的日期过滤失效、
 > 笔记 frontmatter 的 `date` 变成抓取日。`patch/` 下的补丁把真实发布时间
@@ -12,7 +12,34 @@ WeWe RSS（其闭源中转已下线）。本目录是**唯一权威的部署配�
 > 内部的 `_` 被改写成 `~`，而微信只认 `_`，`~` 形式的地址打开是「参数错误」页面，
 > 正文补抓因此永远失败、文章被标记 FAILED（最新文章页显示「无正文」）。补丁在
 > 构造短链时把 `~` 还原成 `_`。
+> 三是正文只认微信读书会话、探针又校验错了对象：`/api/mp/cover` 不需要登录态，
+> 会话过期照样成功；正文走 `/web/mp/content`，会话过期时恒返回 200 + 62 字节
+> `{"errCode":-2012,"errMsg":"登录超时"}`，上游把它当成「没有正文」（`invalid_content`），
+> 文章以空正文入库、界面显示「无正文」，而 `/weread/mp/test` 只校验封面，账号页
+> 一直报「凭据有效」。补丁让正文获取在微信读书失败后改走 mp.weixin 原文抓取，
+> 并让探针额外校验一次正文接口。
 > 详见 `Dockerfile` 顶部注释。
+
+## 正文获取链路（微信读书失败时改走微信原文）
+
+采集每篇新文章时的正文来源：
+
+1. `/web/mp/content`（微信读书，需要扫码登录的会话有效）。成功时顺带取到真实发布时间。
+2. 会话失效（`-2012` 登录超时）、图片消息或其它正文异常时，改用文章短链
+   `https://mp.weixin.qq.com/s/<token>` 抓一次正文（与每小时补抓队列同一条代码路径）。
+3. 两条都失败才以空正文入库，并记录失败原因。
+
+探针 `POST /api/v1/wx/weread/mp/test` 的返回里因此多了三个字段：
+
+| 字段 | 含义 |
+|------|------|
+| `content_ok` | 微信读书正文接口是否可用（封面接口可用不代表它可用） |
+| `content_source` | `weread`＝正文来源微信读书；`wechat`＝会话不可用，采集会改走微信原文 |
+| `content_error` | 正文接口报的原始错误，例如 `WeRead MP API error -2012: 登录超时` |
+
+`content_ok=false` 不影响采集：发现新文章靠封面接口，正文靠微信原文兜底。
+微信读书会话失效只意味着少了一条更稳的正文来源，界面会提示重新扫码。
+
 
 ## 首次部署
 
@@ -83,6 +110,18 @@ curl -s "http://localhost:8001/feed/all.json?limit=1" | head -c 200
 docker inspect --format '{{.State.Health.Status}}' we-mp-rss
 ```
 
+校验补丁是否生效（`content_source=wechat` 说明微信读书会话不可用、采集已改走微信原文，
+`content_error` 会写明原始错误码）：
+
+```bash
+set -a; . ./deploy/we-mp-rss/.env; set +a
+TOKEN=$(curl -s -X POST http://localhost:8001/api/v1/wx/auth/token \
+  -d "username=$WERSS_USER&password=$WERSS_PASS" | python3 -c \
+  "import json,sys;print(json.load(sys.stdin)['access_token'])")
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{}' http://localhost:8001/api/v1/wx/weread/mp/test | python3 -m json.tool
+```
+
 ## 历史数据迁移（短链 `~` → `_`）
 
 补丁只影响之后采集的新文章。升级前入库的旧 URL 仍是 `~` 形式，正文补抓会继续失败
@@ -102,7 +141,8 @@ sqlite3 data/we_mp_rss.db "UPDATE articles SET fix_fail_count = 0, status = 1, f
 docker compose up -d we-mp-rss
 ```
 
-补抓队列每小时跑一轮（每轮最多 5 篇，单篇最多失败 3 次），也可以立刻单篇刷新：
+补抓队列仍然保留（每小时一轮，每轮最多 5 篇，单篇最多失败 3 次）：采集阶段已经能拿到
+正文时它是第二道保险，历史文章或采集阶段确实失败的仍由它补。也可以立刻单篇刷新：
 
 ```bash
 set -a; . ./deploy/we-mp-rss/.env; set +a
@@ -126,12 +166,19 @@ sqlite3 data/we_mp_rss.db "SELECT sum(url LIKE '%~%') AS tilde, sum(has_content 
 
 ## 维护提示（升级上游镜像时必读）
 
-`patch/weread_mp.py` 是从 `ghcr.io/rachelos/we-mp-rss:latest` 容器里拷出的**整文件副本**，
-改了两处：把真实发布时间回填进 `publish_time`、在构造微信短链前把 token 里的 `~`
-还原成 `_`。升级上游后必须重新导出并重新打补丁，否则会用旧文件覆盖掉上游的新修复：
+`patch/` 下两个文件都是从 `ghcr.io/rachelos/we-mp-rss:latest` 容器里拷出的**整文件副本**：
+
+- `patch/weread_mp.py` → `/app/core/wx/model/weread_mp.py`：把真实发布时间回填进
+  `publish_time`、构造微信短链前把 token 里的 `~` 还原成 `_`、正文失败后改走微信原文、
+  正文容器补 `#js_image_content` / `#js_article`、把 `/web/mp/content` 返回的 JSON
+  错误码抛出来。
+- `patch/apis_weread.py` → `/app/apis/weread.py`：`/weread/mp/test` 额外校验正文接口。
+
+升级上游后必须重新导出并重新打补丁，否则会用旧文件覆盖掉上游的新修复：
 
 ```bash
 docker cp we-mp-rss:/app/core/wx/model/weread_mp.py patch/weread_mp.py
-# 重新应用补丁，然后 diff 确认唯一差异就是这两处
+docker cp we-mp-rss:/app/apis/weread.py patch/apis_weread.py
+# 重新应用补丁，然后 diff 确认唯一差异就是上面这些改动
 docker compose up -d --build
 ```

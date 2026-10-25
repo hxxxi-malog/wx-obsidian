@@ -1,12 +1,11 @@
-# we-mp-rss 派生镜像：仅覆盖一个文件，修正上游两处缺陷。
+# we-mp-rss 派生镜像：覆盖两个文件，修正上游三处缺陷。
 #
 # 缺陷一：发布时间写成抓取时刻（v1.5.3 实测确认）
-#   core/wx/model/weread_mp.py 的 _collect_latest_via_cover() 中，
-#   create_time / update_time 被硬编码为 int(time.time())，
-#   导致 articles.publish_time 等于采集时刻（实测 14 篇的
-#   publish_time == create_time == created_at，同秒）。
-#   上游自己在同文件 :335-336 的注释里承认「cover 兜底模式会把抓取时间
-#   而非文章发布时间写入 update_time」，但只做了规避、没修数据。
+#   core/wx/model/weread_mp.py 的 cover 增量采集里，create_time / update_time
+#   被硬编码为 int(time.time())，导致 articles.publish_time 等于采集时刻
+#   （实测 14 篇的 publish_time == create_time == created_at，同秒）。
+#   上游自己在同文件注释里承认「cover 兜底模式会把抓取时间而非文章发布时间
+#   写入 update_time」，但只做了规避、没修数据。
 #
 #   wx-obsidian 侧后果：笔记 frontmatter 的 date 会写成采集日期，
 #   且 fetch.max_days 的日期过滤完全失效。
@@ -26,11 +25,26 @@
 #   restore_short_link_token() 把 `~` 还原成 `_`。历史数据里的旧 URL 需要一次性
 #   迁移（见 README「历史数据迁移」）。
 #
-# ⚠️ 维护提示：patch/weread_mp.py 是从 ghcr.io/rachelos/we-mp-rss:latest (v1.5.3)
+# 缺陷三：正文只认微信读书会话，且探针校验错了对象（2026-10-25 实测确认）
+#   /api/mp/cover 不需要登录态，会话过期照样返回成功；正文走 /web/mp/content，
+#   会话过期时恒返回 -2012 登录超时。上游对正文失败只记 WARNING，文章仍以空正文、
+#   正常状态入库，接着排队等每小时一轮的补抓队列，界面最长近一小时显示「无正文」。
+#   /api/v1/wx/weread/mp/test 只校验 cover，于是账号页一直报「凭据有效」。
+#
+#   修法（两个文件）：
+#   1) weread_mp.py：新增 _get_mp_content_or_fallback()，微信读书取正文失败后改用
+#      mp.weixin.qq.com 短链抓正文；extract_mp_content() 增加 #js_image_content /
+#      #js_article 容器，图片消息不再恒报 invalid_content。
+#   2) apis/weread.py：/mp/test 额外校验一次正文接口，返回 content_ok /
+#      content_source / content_error，让「会话失效」在界面上可见。
+#
+# ⚠️ 维护提示：patch/ 下两个文件都是从 ghcr.io/rachelos/we-mp-rss:latest (v1.5.3)
 #   容器内拷出的整文件副本。升级上游镜像后必须重新导出并重新打补丁，
-#   否则会用旧文件覆盖掉上游的新修复。
-#   校验方式：docker cp <容器>:/app/core/wx/model/weread_mp.py patch/weread_mp.py
-#   然后 diff 确认唯一差异就是本补丁的两处改动。
+#   否则会用旧文件覆盖掉上游的新修复。校验方式：
+#     docker cp <容器>:/app/core/wx/model/weread_mp.py patch/weread_mp.py
+#     docker cp <容器>:/app/apis/weread.py patch/apis_weread.py
+#   然后 diff 确认差异只有上面几处改动。
 FROM ghcr.io/rachelos/we-mp-rss:latest
 
 COPY patch/weread_mp.py /app/core/wx/model/weread_mp.py
+COPY patch/apis_weread.py /app/apis/weread.py

@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from core.log import logger
 from core.models.feed import Feed
 from core.print import print_info
+from core.process_timeout import ProcessExecutionError, ProcessExecutionTimeout
 from core.wx.model.weread import MpsWeread
 
 
@@ -113,7 +114,14 @@ def parse_mp_articles(payload: dict):
 
 def extract_mp_content(html: str) -> str:
     soup = BeautifulSoup(html or "", "html.parser")
-    content = soup.select_one("#js_content") or soup.select_one(".rich_media_content")
+    # 图片消息（纯图片/视频推送）没有 #js_content，正文容器是 #js_image_content；
+    # 只认前者会让这类文章在采集阶段恒报 invalid_content。
+    content = (
+        soup.select_one("#js_content")
+        or soup.select_one(".rich_media_content")
+        or soup.select_one("#js_image_content")
+        or soup.select_one("#js_article")
+    )
     if content is None:
         raise WereadMPAPIError("invalid_content", "article body was not found")
     for element in content.select("script, style"):
@@ -296,9 +304,56 @@ class MpsWereadMP(MpsWeread):
                 response.status_code,
                 f"article content returned HTTP {response.status_code}",
             )
+        # [wx-obsidian patch 2026-10-25] 会话失效时这个接口返回 200 + 很小的 JSON
+        # （实测 62 字节：{"errCode":-2012,"errMsg":"登录超时"}）。上游直接把它交给
+        # extract_mp_content，报成 invalid_content，把「会话失效」这一真实原因吞掉了，
+        # 上层与探针都无从判断。这里先按错误码抛出来。
+        body = (response.text or "").strip()
+        if len(body) <= 4096 and body.startswith("{") and "errCode" in body:
+            _raise_response_error(response.json())
         # [wx-obsidian patch 2026-10-10] 顺带记录真实发布时间，供 cover 路径使用
         self._content_publish_time = extract_publish_time(response.text)
         return extract_mp_content(response.text)
+
+    def _get_mp_content_or_fallback(self, review_id: str, book_id: str = "") -> str:
+        """取正文：先走微信读书，失败后改用微信原文短链。
+
+        微信读书的 /web/mp/content 依赖扫码登录的会话，会话过期后恒返回 -2012
+        登录超时；而发现新文章的 /api/mp/cover 不需要会话。只依赖前者会让每篇
+        新文章都以空正文入库（界面显示「无正文」），用户也看不到会话已失效。
+        因此失败后改用 mp.weixin.qq.com 页面抓一次正文，并记下实际来源
+        （self._content_source：weread / wechat）。
+        """
+        self._content_source = ""
+        try:
+            content = self._get_mp_content(review_id)
+        except WereadMPAPIError as exc:
+            logger.warning(f"微信读书正文获取失败，改用微信原文抓取 [{review_id}]: {exc}")
+            weread_error = exc
+        else:
+            self._content_source = "weread"
+            return content
+
+        url = build_mp_link_from_review_id(review_id, book_id)
+        if not url:
+            raise weread_error
+        from core.article_content import fetch_article_content
+
+        try:
+            content, mode, _article_type = fetch_article_content(url)
+        except (ProcessExecutionTimeout, ProcessExecutionError) as exc:
+            raise WereadMPAPIError(
+                "content_unavailable",
+                f"微信读书失败（{weread_error}）；微信原文失败（{exc}）",
+            ) from exc
+        if not content or content == "DELETED":
+            raise WereadMPAPIError(
+                "content_unavailable",
+                f"微信读书失败（{weread_error}）；微信原文返回 {content or '空内容'}",
+            )
+        print_info(f"微信原文抓取正文成功 [{url}] via {mode}，共 {len(content)} 字")
+        self._content_source = "wechat"
+        return content
 
     def get_Articles(
         self,
@@ -389,9 +444,9 @@ class MpsWereadMP(MpsWeread):
                     # [wx-obsidian patch 2026-10-10] 先清零，避免复用上一篇的时间
                     self._content_publish_time = 0
                     try:
-                        item["content"] = self._get_mp_content(review_id)
+                        item["content"] = self._get_mp_content_or_fallback(review_id, book_id)
                     except WereadMPAPIError as exc:
-                        logger.warning(f"微信读书正文获取失败 [{review_id}]: {exc}")
+                        logger.warning(f"微信文章正文获取失败 [{review_id}]: {exc}")
                 # [wx-obsidian patch 2026-10-10] 用正文页里的真实发布时间覆盖抓取时间。
                 # 上游此处硬编码 int(time.time())，会让“发布时间”等于采集时刻，
                 # 使下游无法按真实日期归档/过滤。取不到时保持原值（退化为旧行为）。
