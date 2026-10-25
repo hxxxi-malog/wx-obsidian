@@ -13,6 +13,7 @@ import {
 function article(id: string, published: Date | string | null): SourceArticleItem {
   return {
     article_id: id,
+    upstream_id: `upstream-${id}`,
     title: `文章 ${id}`,
     url: 'https://mp.weixin.qq.com/s/example',
     account: '测试公众号',
@@ -20,6 +21,8 @@ function article(id: string, published: Date | string | null): SourceArticleItem
     published_at: published instanceof Date ? published.toISOString() : published,
     cover: '',
     has_content: true,
+    content_state: 'ready',
+    content_attempts: 0,
     processed: false,
   }
 }

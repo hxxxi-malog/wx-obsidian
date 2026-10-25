@@ -30,12 +30,21 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
   let lingerTimer: ReturnType<typeof setTimeout> | null = null
 
   const running = computed(() => Boolean(data.value?.running))
+  /** 正文补抓是否仍在进行：最新文章页据此显示顶部进度条 */
+  const backfillRunning = computed(() => Boolean(data.value?.backfill_running))
 
   function stopPolling(): void {
     if (pollTimer !== null) {
       clearInterval(pollTimer)
       pollTimer = null
     }
+  }
+
+  function startPolling(): void {
+    if (pollTimer !== null) {
+      return
+    }
+    pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
   }
 
   function clearLinger(): void {
@@ -54,7 +63,7 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
     }, delay)
   }
 
-  /** 取一次进度；结束后停轮询并安排自动收起 */
+  /** 取一次进度；采集或补抓仍在进行就继续轮询，两者都结束才停并安排自动收起 */
   async function refresh(): Promise<void> {
     if (busy.value) {
       return
@@ -67,12 +76,17 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
       if (next.error) {
         error.value = next.error
       }
+      if (wasRunning && !next.running) {
+        finishedTick.value += 1
+      }
       if (!next.running) {
-        stopPolling()
         scheduleDismiss()
-        if (wasRunning) {
-          finishedTick.value += 1
-        }
+      }
+      // 采集结束后紧接着补抓正文：同一轮轮询继续跟着，顶部进度条才不会中途断掉
+      if (next.running || next.backfill_running) {
+        startPolling()
+      } else {
+        stopPolling()
       }
     } catch (err) {
       stopPolling()
@@ -91,7 +105,7 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
     data.value = null
     visible.value = true
     void refresh()
-    pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+    startPolling()
   }
 
   /**
@@ -118,12 +132,12 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
       scheduleDismiss()
       return false
     }
-    if (!data.value?.running) {
+    if (!data.value?.running && !data.value?.backfill_running) {
       scheduleDismiss()
       finishedTick.value += 1
       return true
     }
-    pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+    startPolling()
     return true
   }
 
@@ -134,13 +148,15 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
     }
     try {
       const next = await apiGet<FeedSyncState>(endpoints.source.sync())
-      if (!next.running) {
+      if (!next.running && !next.backfill_running) {
         return
       }
       data.value = next
-      visible.value = true
+      if (next.running) {
+        visible.value = true
+      }
       stopPolling()
-      pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+      startPolling()
     } catch {
       // 数据源不可达时账号页的探针会给出明确提示，这里保持安静
     }
@@ -157,6 +173,7 @@ export const useFeedSyncStore = defineStore('feed-sync', () => {
     visible,
     error,
     running,
+    backfillRunning,
     finishedTick,
     start,
     trigger,

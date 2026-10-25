@@ -25,6 +25,11 @@ function sync(overrides: Partial<FeedSyncState> = {}): FeedSyncState {
     started_at: '2026-10-23T17:00:00+08:00',
     finished_at: '2026-10-23T17:01:30+08:00',
     error: '',
+    backfill_running: false,
+    backfill_pending: 0,
+    backfill_refreshed: 0,
+    backfill_failed: 0,
+    backfill_last_run_at: '',
     ...overrides,
   }
 }
@@ -135,6 +140,58 @@ describe('feed-sync store：后台轮询与自动收起', () => {
 
     expect(store.visible).toBe(true)
     expect(store.data?.triggered).toBe(7)
+    store.dismiss()
+  })
+
+  it('采集结束后补抓仍在进行时继续轮询，补抓结束才停', async () => {
+    mockedGet
+      .mockResolvedValueOnce(sync({ running: true, total: 29, triggered: 29 }))
+      .mockResolvedValueOnce(
+        sync({
+          running: false,
+          backfill_running: true,
+          backfill_pending: 12,
+          backfill_refreshed: 3,
+        }),
+      )
+      .mockResolvedValueOnce(
+        sync({
+          running: false,
+          backfill_running: false,
+          backfill_pending: 12,
+          backfill_refreshed: 12,
+        }),
+      )
+
+    const store = useFeedSyncStore()
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.data?.running).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(store.data?.backfill_running).toBe(true)
+    expect(store.data?.backfill_refreshed).toBe(3)
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(store.data?.backfill_running).toBe(false)
+
+    const calls = mockedGet.mock.calls.length
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(mockedGet.mock.calls.length).toBe(calls)
+    store.dismiss()
+  })
+
+  it('刷新页面时补抓仍在跑就接回轮询，但不显示采集进度卡', async () => {
+    mockedGet.mockResolvedValue(
+      sync({ running: false, backfill_running: true, backfill_pending: 5, backfill_refreshed: 1 }),
+    )
+
+    const store = useFeedSyncStore()
+    await store.resume()
+
+    expect(store.visible).toBe(false)
+    expect(store.data?.backfill_running).toBe(true)
+    expect(store.backfillRunning).toBe(true)
     store.dismiss()
   })
 

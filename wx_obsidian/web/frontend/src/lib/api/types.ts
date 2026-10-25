@@ -230,9 +230,19 @@ export interface FeedItem {
   update_time: string | null
 }
 
+/**
+ * 正文获取状态。
+ *
+ * `ready`=已有正文；`fetching`=正在补抓；`pending`=待补抓（尚未认领）；
+ * `failed`=补抓失败（已用完重试次数）。
+ */
+export type ContentState = 'ready' | 'fetching' | 'pending' | 'failed'
+
 /** GET /api/source/articles 返回的一篇文章（列表投影，不含正文） */
 export interface SourceArticleItem {
   article_id: string
+  /** 上游内部文章 ID：上游的单篇补抓接口只认它，重试必须用它 */
+  upstream_id: string
   title: string
   url: string
   account: string
@@ -241,8 +251,20 @@ export interface SourceArticleItem {
   published_at: string | null
   cover: string
   has_content: boolean
+  /** 正文获取状态；`has_content` 保留，本字段说明为什么没有正文 */
+  content_state: ContentState
+  /** 上游已尝试补抓的次数 */
+  content_attempts: number
   /** 这篇已在 processed.json 里入库 */
   processed: boolean
+}
+
+/** POST /api/source/articles/{article_id}/refresh 的触发结果 */
+export interface ArticleRefreshResult {
+  ok: boolean
+  /** triggered=已开始补抓；skipped=上游已有任务在执行；failed=触发失败 */
+  outcome: 'triggered' | 'skipped' | 'failed'
+  message: string
 }
 
 /** GET /api/source/articles 的查询参数；mp_id 为空串表示全部公众号 */
@@ -309,14 +331,23 @@ export interface SourceRefreshResult {
  * 与 `AccountStatus.is_logged_in` 的区别：后者只说明上游存了 Cookie，这个说明 Cookie
  * 还能不能用。只有 `expired` 应该弹扫码对话框；`token_invalid` / `unreachable` 弹了
  * 只会误导（问题不在二维码）。
+ *
+ * `degraded`：微信读书会话已失效，但正文改走微信原文兜底、仍能取到，给警告即可，
+ * 同样不弹二维码。
  */
 export interface AccountProbe {
-  state: 'valid' | 'expired' | 'token_invalid' | 'unreachable' | 'unknown'
+  state: 'valid' | 'degraded' | 'expired' | 'token_invalid' | 'unreachable' | 'unknown'
   message: string
   /** 探测用的公众号名（可能为空串） */
   feed_name: string
   /** ISO 时间；空串表示上游没给 */
   checked_at: string
+  /** null = 上游版本没有该字段，界面保持旧行为 */
+  content_ready: boolean | null
+  /** 正文来源：'weread' | 'wechat' | '' */
+  content_source: string
+  /** 正文抓取失败的原因，空串表示没有错误 */
+  content_error: string
 }
 
 /** GET /api/source/login-qr：成功给 image（data URL）+ uid；失败是 200 + {error, detail} */
@@ -357,6 +388,18 @@ export interface FeedSyncState {
   auto_interval_minutes?: number
   /** 下一轮自动采集时间（UTC ISO 8601）；关闭或尚未排期时为空串 */
   next_run_at?: string
+  /** 本轮正文补抓是否仍在进行 */
+  backfill_running: boolean
+  /** 本轮开始时待补抓篇数 */
+  backfill_pending: number
+  /** 已触发补抓篇数 */
+  backfill_refreshed: number
+  /** 触发失败篇数 */
+  backfill_failed: number
+  /** 上一轮补抓开始时间（ISO）；空串表示还没跑过 */
+  backfill_last_run_at: string
+  /** 补抓被令牌失效等硬错误中止时的原因；空串表示没有错误 */
+  backfill_error?: string
 }
 
 export interface LogEntry {

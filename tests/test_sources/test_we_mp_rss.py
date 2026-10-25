@@ -15,6 +15,10 @@ import requests
 
 from wx_obsidian.sources.base import SourceAuthError
 from wx_obsidian.sources.we_mp_rss import (
+    CONTENT_STATE_FAILED,
+    CONTENT_STATE_FETCHING,
+    CONTENT_STATE_PENDING,
+    CONTENT_STATE_READY,
     FALLBACK_ID_PREFIX,
     WeMpRssClient,
     normalize_article_id,
@@ -680,6 +684,55 @@ class TestProbeAccount:
         assert probe.state == "valid"
         assert probe.feed_name == "腾讯研究院"
         assert probe.checked_at is not None
+        # 上游没有给 content_ok（旧版镜像）：不臆造正文结论，保持原有判断
+        assert probe.content_ready is None
+
+    def test_content_ok_is_valid(self) -> None:
+        """封面与正文接口都通：状态 valid，正文来源是微信读书。"""
+        mock_resp = _response(
+            {
+                "code": 0,
+                "data": {
+                    "mp_id": "MP_WXS_1",
+                    "mp_name": "架构师",
+                    "article_count": 1,
+                    "content_ok": True,
+                    "content_source": "weread",
+                    "content_error": "",
+                },
+            }
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "valid"
+        assert probe.content_ready is True
+        assert probe.content_source == "weread"
+        assert probe.content_error == ""
+
+    def test_content_endpoint_broken_is_degraded(self) -> None:
+        """封面接口可用、正文接口失效（-2012 登录超时）：降级而不是报凭据有效。"""
+        mock_resp = _response(
+            {
+                "code": 0,
+                "data": {
+                    "mp_id": "MP_WXS_1",
+                    "mp_name": "架构师",
+                    "article_count": 1,
+                    "content_ok": False,
+                    "content_source": "wechat",
+                    "content_error": "WeRead MP API error -2012: 登录超时",
+                },
+            }
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            probe = self._client().probe_account()
+
+        assert probe.state == "degraded"
+        assert probe.content_ready is False
+        assert probe.content_source == "wechat"
+        assert probe.content_error.startswith("WeRead MP API error -2012")
+        assert "-2012" in probe.message
 
     def test_expired_cookie(self) -> None:
         """上游把微信读书的 401 包在业务错误里返回（HTTP 仍是 200）。"""
@@ -825,6 +878,51 @@ class TestRefreshFeed:
             assert self._client().refresh_feed("MP_WXS_1") == "failed"
 
 
+class TestRefreshArticle:
+    """单篇正文补抓：区分「已开始 / 已有任务在执行 / 失败」。"""
+
+    def _client(self) -> WeMpRssClient:
+        return WeMpRssClient(base_url="http://localhost:8001", timeout=5, token="t")
+
+    def test_triggered(self) -> None:
+        mock_resp = _response(
+            {"code": 0, "message": "已开始刷新，请稍后查看", "data": {"task_id": "task-1"}}
+        )
+        article_id = "3006407565-3006407565_wpHU8_UqRh-D-XYfzfZe1Q"
+        with patch(
+            "wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp
+        ) as mock_post:
+            assert self._client().refresh_article(article_id) == "triggered"
+
+        call = mock_post.call_args
+        assert call.args[0] == f"http://localhost:8001/api/v1/wx/articles/{article_id}/refresh"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer t"
+
+    def test_existing_task_is_skipped(self) -> None:
+        """上游用同一篇文章的进行中任务去重，这条要如实报「已有任务」，不能当成新触发。"""
+        mock_resp = _response(
+            {"code": 0, "message": "该文章已有刷新任务在执行", "data": {"task_id": "task-1"}}
+        )
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            assert self._client().refresh_article("article-1") == "skipped"
+
+    def test_other_error_is_failed(self) -> None:
+        mock_resp = _response({"code": 40401, "message": "文章不存在"})
+        with patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp):
+            assert self._client().refresh_article("article-1") == "failed"
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_token_rejected_raises_auth_error(self, status_code: int) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        with (
+            patch("wx_obsidian.sources.we_mp_rss.requests.post", return_value=mock_resp),
+            pytest.raises(SourceAuthError),
+        ):
+            self._client().refresh_article("article-1")
+        mock_resp.raise_for_status.assert_not_called()
+
+
 class TestListArticles:
     """文章库读取：管理接口分页、ID/时间归一化、令牌失效的显式区分。"""
 
@@ -869,6 +967,8 @@ class TestListArticles:
         assert article.published_at == datetime(2026, 10, 23, 5, 6, 48, tzinfo=UTC)
         assert article.cover == "https://mmbiz.qpic.cn/cover.jpg"
         assert article.has_content is True
+        # 上游补抓接口只认它自己的内部 ID，原样带到列表里供「重试」使用
+        assert article.upstream_id == "3537616032-3537616032_wpHU8~UqRh-D-XYfzfZe1Q"
 
         call = mock_get.call_args
         assert call.args[0] == "http://localhost:8001/api/v1/wx/articles"
@@ -889,6 +989,59 @@ class TestListArticles:
 
         assert page.items == []
         assert mock_get.call_args.kwargs["params"] == {"offset": 0, "limit": 30}
+
+    def test_sends_has_content_filter(self) -> None:
+        """补抓执行器按 has_content=false 枚举缺正文的文章，参数要透传到上游。"""
+        mock_get = MagicMock()
+        mock_get.return_value = _response(self._payload())
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", mock_get):
+            self._client().list_articles(has_content=False)
+            self._client().list_articles(has_content=True)
+
+        assert [call.kwargs["params"]["has_content"] for call in mock_get.call_args_list] == [
+            "false",
+            "true",
+        ]
+
+    def test_has_content_filter_omitted_by_default(self) -> None:
+        """不传 has_content 时不能给上游发空值，否则等于筛掉了全部文章。"""
+        mock_get = MagicMock()
+        mock_get.return_value = _response(self._payload())
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", mock_get):
+            self._client().list_articles()
+
+        assert "has_content" not in mock_get.call_args.kwargs["params"]
+
+    @pytest.mark.parametrize(
+        ("overrides", "expected"),
+        [
+            ({"has_content": 1, "status": 1}, CONTENT_STATE_READY),
+            ({"has_content": 0, "status": 5, "fix_fail_count": 3}, CONTENT_STATE_FAILED),
+            ({"has_content": 0, "status": 6}, CONTENT_STATE_FETCHING),
+            (
+                {"has_content": 0, "status": 1, "fetch_started_at": 1792732008000},
+                CONTENT_STATE_FETCHING,
+            ),
+            ({"has_content": 0, "status": 1}, CONTENT_STATE_PENDING),
+        ],
+    )
+    def test_content_state_reflects_upstream_status(
+        self, overrides: dict[str, Any], expected: str
+    ) -> None:
+        """缺正文的文章要能区分「补抓中 / 待补抓 / 补抓失败」。"""
+        mock_resp = _response(self._payload(self._row(**overrides)))
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            page = self._client().list_articles()
+
+        assert page.items[0].content_state == expected
+
+    def test_content_attempts_reach_the_list(self) -> None:
+        """失败次数要透传给界面，用户才知道已经重试过几次。"""
+        mock_resp = _response(self._payload(self._row(has_content=0, status=5, fix_fail_count=2)))
+        with patch("wx_obsidian.sources.we_mp_rss.requests.get", return_value=mock_resp):
+            page = self._client().list_articles()
+
+        assert page.items[0].content_attempts == 2
 
     def test_zero_publish_time_is_none(self) -> None:
         """上游用 0 表示「时间未知」，不能显示成 1970 年。"""

@@ -16,6 +16,11 @@ function sync(overrides: Partial<FeedSyncState> = {}): FeedSyncState {
     started_at: '2026-10-23T17:00:00+08:00',
     finished_at: '',
     error: '',
+    backfill_running: false,
+    backfill_pending: 0,
+    backfill_refreshed: 0,
+    backfill_failed: 0,
+    backfill_last_run_at: '',
     ...overrides,
   }
 }

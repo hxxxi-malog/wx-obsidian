@@ -102,6 +102,11 @@ export const endpoints = {
         limit: params.limit,
         mp_id: params.mp_id,
       })}`,
+    /** 单篇文章触发一次正文补抓（上游已有任务在跑时返回 skipped） */
+    articlesRefresh: (articleId: string) =>
+      `/api/source/articles/${seg(articleId)}/refresh`,
+    /** 手动触发一轮正文补抓（采集结束后后端也会自动跑一轮） */
+    backfill: () => '/api/source/backfill',
   },
 
   feeds: {

@@ -58,6 +58,7 @@ class ArticleSource(Protocol):
         offset: int = 0,
         limit: int = 30,
         feed_id: str = "",
+        has_content: bool | None = None,
     ) -> SourceArticlePage:
         """读取数据源文章库（按发布时间倒序，分页）。
 
@@ -65,6 +66,7 @@ class ArticleSource(Protocol):
             offset: 起始偏移。
             limit: 单页条数（上游上限 100）。
             feed_id: 只取单个公众号；空串表示全部订阅。
+            has_content: True=只取有正文，False=只取缺正文，None=全部。
 
         Raises:
             SourceAuthError: 访问令牌缺失或失效。
@@ -105,4 +107,12 @@ class ArticleSource(Protocol):
 
     def refresh_feed(self, feed_id: str) -> str:
         """触发单个公众号采集，返回 triggered / skipped / failed。"""
+        ...
+
+    def refresh_article(self, article_id: str) -> str:
+        """触发上游单篇正文补抓，返回 triggered / skipped / failed。
+
+        Raises:
+            SourceAuthError: 访问令牌缺失或失效。
+        """
         ...

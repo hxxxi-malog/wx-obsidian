@@ -663,9 +663,15 @@ class Orchestrator:
         offset: int = 0,
         limit: int = 30,
         feed_id: str = "",
+        has_content: bool | None = None,
     ) -> SourceArticlePage:
-        """读取数据源文章库（按发布时间倒序，供 Web「最新文章」页浏览）。"""
-        return self._source.list_articles(offset=offset, limit=limit, feed_id=feed_id)
+        """读取数据源文章库（按发布时间倒序，供 Web「最新文章」页浏览）。
+
+        `has_content=False` 只取缺正文的文章，供补抓执行器枚举待补列表。
+        """
+        return self._source.list_articles(
+            offset=offset, limit=limit, feed_id=feed_id, has_content=has_content
+        )
 
     def add_feed(self, article_url: str) -> Feed | None:
         """通过文章链接添加公众号（we-mp-rss 不支持，返回 None）。"""
@@ -702,6 +708,10 @@ class Orchestrator:
     def refresh_feed(self, feed_id: str) -> str:
         """触发单个公众号的上游采集。"""
         return self._source.refresh_feed(feed_id)
+
+    def refresh_source_article(self, article_id: str) -> str:
+        """触发上游单篇正文补抓（返回 triggered / skipped / failed）。"""
+        return self._source.refresh_article(article_id)
 
     async def fetch_and_process(
         self,

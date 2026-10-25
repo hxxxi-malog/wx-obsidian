@@ -8,6 +8,9 @@
  *
  * 上游失败是 200 + {error, detail}，必须判形状：否则空对象会被当成「没有文章」，
  * 等于把令牌失效说成「没有内容」。
+ *
+ * 没有正文的文章按 `content_state` 分成补抓中 / 待补抓 / 补抓失败三种标签；
+ * 待补抓与补抓失败给「重试」，触发成功后延时重拉，补抓进度条读 feed-sync store。
  */
 import {
   PhArrowClockwise,
@@ -16,6 +19,7 @@ import {
   PhFunnelX,
   PhKey,
   PhNewspaper,
+  PhWarningCircle,
 } from '@phosphor-icons/vue'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -23,6 +27,7 @@ import { useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppEmptyState from '@/components/ui/AppEmptyState.vue'
 import AppErrorState from '@/components/ui/AppErrorState.vue'
+import AppProgress from '@/components/ui/AppProgress.vue'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
 import AppSkeleton from '@/components/ui/AppSkeleton.vue'
 import AppTag from '@/components/ui/AppTag.vue'
@@ -30,16 +35,17 @@ import AppTooltip from '@/components/ui/AppTooltip.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
-import { ApiError, apiGet, errorMessage } from '@/lib/api/client'
+import { ApiError, apiGet, apiPost, errorMessage } from '@/lib/api/client'
 import { endpoints } from '@/lib/api/endpoints'
 import type {
+  ArticleRefreshResult,
   FeedItem,
-  FeedSyncState,
   SourceArticleItem,
   SourceArticleListError,
   SourceArticlePage,
 } from '@/lib/api/types'
 import { groupByPublishedDay } from '@/lib/article-timeline'
+import { backfillPercent, contentStateMeta, needsContentRetry } from '@/lib/content-state'
 import { formatDateTime, formatNumber, formatRelative, initialOf, stableHue } from '@/lib/format'
 import { useFeedSyncStore } from '@/stores/feed-sync'
 
@@ -123,17 +129,38 @@ const feedOptions = computed<SelectOption[]>(() => [
   ...(feedData.value ?? []).map((feed) => ({ label: feed.name || feed.id, value: feed.id })),
 ])
 
-/** 自动采集配置与当前状态：进入页面时取一次，用于展示数据源文章库的新鲜度 */
-const syncStatus = ref<FeedSyncState | null>(null)
+/**
+ * 自动采集配置、采集与正文补抓的进度全部取自 feed-sync store 的同一轮轮询：
+ * 页面不再另起定时器，补抓条跟着右下角进度卡的数据走。
+ */
 const collecting = ref(false)
 let reloadTimer: ReturnType<typeof setTimeout> | null = null
+/** 补抓触发后的延时重拉定时器（5 秒、25 秒各一次） */
+const retryTimers: ReturnType<typeof setTimeout>[] = []
+/** 正在触发补抓的文章 id：按钮进入 loading，避免连点 */
+const retrying = ref<string[]>([])
 
 /** 关闭自动采集时后端返回 0，这里给一个显示用的默认值 */
 const FALLBACK_SYNC_MINUTES = 30
 const syncIntervalMinutes = computed(
-  () => syncStatus.value?.auto_interval_minutes || FALLBACK_SYNC_MINUTES,
+  () => sync.data?.auto_interval_minutes || FALLBACK_SYNC_MINUTES,
 )
 const staleThresholdMinutes = computed(() => Math.max(60, syncIntervalMinutes.value * 2))
+
+/** 正文补抓进度：本轮开始时待补抓篇数、已触发篇数、触发失败篇数 */
+const backfillRunning = computed(() => Boolean(sync.data?.backfill_running))
+const backfillPending = computed(() => sync.data?.backfill_pending ?? 0)
+const backfillRefreshed = computed(() => sync.data?.backfill_refreshed ?? 0)
+const backfillFailed = computed(() => sync.data?.backfill_failed ?? 0)
+/** 补抓被令牌失效等硬错误中止的原因；空串不渲染 */
+const backfillError = computed(() => sync.data?.backfill_error || '')
+/** 三项计数全为 0 时补抓执行器还在等新文章入库，此时不显示进度条 */
+const backfillHasWork = computed(
+  () => backfillPending.value + backfillRefreshed.value + backfillFailed.value > 0,
+)
+const backfillPercentValue = computed(() =>
+  backfillPercent(backfillPending.value, backfillRefreshed.value),
+)
 
 /** 数据源最近一次采集时间：取所有订阅里最新的 sync_time */
 const lastSyncAt = computed(() => {
@@ -156,12 +183,8 @@ const dataStale = computed(() => {
 })
 
 async function loadSyncStatus(): Promise<void> {
-  try {
-    syncStatus.value = await apiGet<FeedSyncState>(endpoints.source.sync())
-  } catch {
-    // 采集状态只影响新鲜度提示，读不到时退回默认间隔即可
-    syncStatus.value = null
-  }
+  // 采集结束后紧接着补抓正文：store 的轮询会一路跟着，进度条不会中途断掉
+  await sync.refresh()
 }
 
 /** 采集结束后等上游最后一轮落库，再刷新列表 */
@@ -205,6 +228,7 @@ onUnmounted(() => {
     clearTimeout(reloadTimer)
     reloadTimer = null
   }
+  clearRetryTimers()
 })
 
 void loadSyncStatus()
@@ -276,6 +300,66 @@ async function loadMore(): Promise<void> {
 
 function setFeedFilter(value: string): void {
   feedFilter.value = value
+}
+
+/** 无正文的三种状态标签；`ready` 返回 null，不渲染标签 */
+function contentTag(item: SourceArticleItem) {
+  return contentStateMeta(item.content_state)
+}
+
+/** 待补抓与补抓失败的行才给「重试」 */
+function canRetryContent(item: SourceArticleItem): boolean {
+  return needsContentRetry(item.content_state)
+}
+
+function clearRetryTimers(): void {
+  retryTimers.splice(0).forEach((timer) => clearTimeout(timer))
+}
+
+/**
+ * 补抓触发成功后延时重拉：后端补抓要几秒到几十秒，分 5 秒 / 25 秒两档观察。
+ * 每次重试都重置这两个定时器，避免连点后堆一串请求；组件卸载时统一清空。
+ */
+function scheduleRetryReload(): void {
+  clearRetryTimers()
+  retryTimers.push(
+    setTimeout(() => {
+      void refresh()
+      void loadSyncStatus()
+    }, 5000),
+    setTimeout(() => {
+      void refresh()
+      void loadSyncStatus()
+    }, 25000),
+  )
+}
+
+/** 单篇文章补抓：triggered/skipped 都算成功，failed 把原因交给 toast.error */
+async function retryContent(item: SourceArticleItem): Promise<void> {
+  if (retrying.value.includes(item.article_id)) {
+    return
+  }
+  retrying.value = [...retrying.value, item.article_id]
+  try {
+    // 上游单篇补抓只认内部 ID：article_id 是归一化后的短链 token，传它会 404
+    const result = await apiPost<ArticleRefreshResult>(
+      endpoints.source.articlesRefresh(item.upstream_id),
+    )
+    if (!result.ok || result.outcome === 'failed') {
+      toast.error(result.message || '补抓触发失败', '稍后可再点「重试」')
+      return
+    }
+    toast.success(
+      result.outcome === 'triggered' ? '已开始补抓正文' : '补抓任务已在执行',
+      result.message || '正文补好后列表会自动更新',
+    )
+    scheduleRetryReload()
+    void loadSyncStatus()
+  } catch (err) {
+    toast.error(err, '补抓触发失败')
+  } finally {
+    retrying.value = retrying.value.filter((id) => id !== item.article_id)
+  }
 }
 
 function resetFeedFilter(): void {
@@ -355,6 +439,35 @@ function coverInitial(item: SourceArticleItem): string {
         </AppButton>
       </template>
     </PageHeader>
+
+    <!-- 正文补抓进度与中止原因：采集结束后后端自动补抓，数据与右下角进度卡共用 -->
+    <section
+      v-if="backfillError || (backfillRunning && backfillHasWork)"
+      class="panel mb-5 rounded-panel px-4 py-3.5 sm:px-5"
+      aria-label="正文补抓进度"
+      role="status"
+    >
+      <template v-if="backfillRunning && backfillHasWork">
+        <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <p class="m-0 text-[13px] leading-snug font-medium text-ink">
+            正在补充正文：待补抓 {{ formatNumber(backfillPending) }} 篇，已触发
+            {{ formatNumber(backfillRefreshed) }} 篇
+          </p>
+          <span v-if="backfillFailed > 0" class="nums font-mono text-[11.5px] text-warning">
+            {{ formatNumber(backfillFailed) }} 篇触发失败
+          </span>
+        </div>
+        <AppProgress class="mt-2.5" :value="backfillPercentValue" tone="accent" size="sm" />
+      </template>
+      <p
+        v-if="backfillError"
+        class="m-0 flex items-start gap-2 text-xs leading-relaxed text-danger"
+        :class="backfillRunning ? 'mt-2.5' : ''"
+      >
+        <PhWarningCircle :size="14" class="mt-px shrink-0" aria-hidden="true" />
+        <span>补抓未能继续：{{ backfillError }}</span>
+      </p>
+    </section>
 
     <AppEmptyState
       v-if="tokenMissing && !hasItems"
@@ -443,60 +556,86 @@ function coverInitial(item: SourceArticleItem): string {
             :key="item.article_id"
             class="border-t border-hairline first:border-t-0"
           >
-            <a
-              :href="item.url"
-              target="_blank"
-              rel="noopener noreferrer"
+            <div
               class="group row-hover flex items-start gap-3.5 px-4 py-3.5 hover:bg-raised/40 sm:px-5"
             >
-              <div
-                class="hidden h-16 w-24 shrink-0 overflow-hidden rounded-[10px] border border-hairline bg-inset sm:block"
+              <a
+                :href="item.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="flex min-w-0 flex-1 items-start gap-3.5"
               >
-                <img
-                  v-if="showCover(item)"
-                  :src="item.cover"
-                  :alt="`${item.account || item.title} 封面`"
-                  class="size-full object-cover"
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  @error="markCoverFailed(item.article_id)"
-                />
                 <div
-                  v-else
-                  class="grid size-full place-items-center text-[18px] font-medium text-muted"
-                  :style="placeholderStyle(item.account || item.title)"
-                  aria-hidden="true"
+                  class="hidden h-16 w-24 shrink-0 overflow-hidden rounded-[10px] border border-hairline bg-inset sm:block"
                 >
-                  {{ coverInitial(item) }}
+                  <img
+                    v-if="showCover(item)"
+                    :src="item.cover"
+                    :alt="`${item.account || item.title} 封面`"
+                    class="size-full object-cover"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                    @error="markCoverFailed(item.article_id)"
+                  />
+                  <div
+                    v-else
+                    class="grid size-full place-items-center text-[18px] font-medium text-muted"
+                    :style="placeholderStyle(item.account || item.title)"
+                    aria-hidden="true"
+                  >
+                    {{ coverInitial(item) }}
+                  </div>
                 </div>
-              </div>
 
-              <div class="min-w-0 flex-1">
-                <p
-                  class="m-0 line-clamp-2 text-[14px] leading-snug font-medium text-ink transition-colors duration-150 group-hover:text-accent"
-                >
-                  {{ item.title }}
-                </p>
-                <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-faint">
-                  <span class="max-w-[32ch] truncate text-muted">
-                    {{ item.account || '未知公众号' }}
-                  </span>
-                  <AppTooltip v-if="item.published_at" :content="formatDateTime(item.published_at)">
-                    <span class="nums cursor-default font-mono">
-                      {{ formatRelative(item.published_at) }}
+                <div class="min-w-0 flex-1">
+                  <p
+                    class="m-0 line-clamp-2 text-[14px] leading-snug font-medium text-ink transition-colors duration-150 group-hover:text-accent"
+                  >
+                    {{ item.title }}
+                  </p>
+                  <div
+                    class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-faint"
+                  >
+                    <span class="max-w-[32ch] truncate text-muted">
+                      {{ item.account || '未知公众号' }}
                     </span>
-                  </AppTooltip>
-                  <AppTag v-if="item.processed" tone="success" variant="soft">已入库</AppTag>
-                  <AppTag v-if="!item.has_content" tone="warning" variant="outline">无正文</AppTag>
+                    <AppTooltip v-if="item.published_at" :content="formatDateTime(item.published_at)">
+                      <span class="nums cursor-default font-mono">
+                        {{ formatRelative(item.published_at) }}
+                      </span>
+                    </AppTooltip>
+                    <AppTag v-if="item.processed" tone="success" variant="soft">已入库</AppTag>
+                    <AppTag
+                      v-if="contentTag(item)"
+                      :tone="contentTag(item)?.tone"
+                      :variant="contentTag(item)?.variant"
+                    >
+                      {{ contentTag(item)?.label }}
+                    </AppTag>
+                    <span v-if="item.content_state === 'failed'" class="nums font-mono">
+                      已试 {{ formatNumber(item.content_attempts) }} 次
+                    </span>
+                  </div>
                 </div>
-              </div>
+              </a>
 
-              <PhArrowSquareOut
-                :size="15"
-                class="mt-0.5 shrink-0 text-faint transition-colors duration-150 group-hover:text-accent"
-                aria-hidden="true"
-              />
-            </a>
+              <div class="flex shrink-0 flex-col items-end gap-2">
+                <AppButton
+                  v-if="canRetryContent(item)"
+                  variant="outline"
+                  size="sm"
+                  :loading="retrying.includes(item.article_id)"
+                  @click="retryContent(item)"
+                >
+                  重试
+                </AppButton>
+                <PhArrowSquareOut
+                  :size="15"
+                  class="mt-0.5 text-faint transition-colors duration-150 group-hover:text-accent"
+                  aria-hidden="true"
+                />
+              </div>
+            </div>
           </li>
         </ul>
       </section>

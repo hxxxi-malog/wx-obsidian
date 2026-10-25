@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
@@ -46,11 +47,21 @@ class FeedSyncState:
 
 
 class FeedSyncRunner:
-    """按顺序触发全部订阅的采集（单飞）。"""
+    """按顺序触发全部订阅的采集（单飞）。
 
-    def __init__(self, orchestrator: Orchestrator, interval: float = FEED_SYNC_INTERVAL) -> None:
+    `on_finished` 在本轮触发流程结束时调用（扫码登录、手动采集、自动采集三种
+    触发共用这一处收尾），用于紧接着补抓缺正文的文章。
+    """
+
+    def __init__(
+        self,
+        orchestrator: Orchestrator,
+        interval: float = FEED_SYNC_INTERVAL,
+        on_finished: Callable[[], object] | None = None,
+    ) -> None:
         self._orchestrator = orchestrator
         self._interval = interval
+        self._on_finished = on_finished
         self._lock = threading.Lock()
         self._state = FeedSyncState()
 
@@ -101,3 +112,7 @@ class FeedSyncRunner:
             with self._lock:
                 self._state.running = False
                 self._state.finished_at = _now_iso()
+            # 触发流程已结束：紧接着补抓缺正文的文章。上游采集是异步线程，
+            # 新文章会在补抓的各轮之间陆续入库（见 content_backfill）。
+            if self._on_finished is not None:
+                self._on_finished()

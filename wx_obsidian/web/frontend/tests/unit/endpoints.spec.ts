@@ -53,6 +53,15 @@ describe('endpoints 路径', () => {
     expect(endpoints.source.articles({ mp_id: '' })).toBe('/api/source/articles')
   })
 
+  it('正文补抓：单篇触发与整轮触发', () => {
+    expect(endpoints.source.articlesRefresh('wpHU8~UqRh-D-XYfzfZe1Q')).toBe(
+      '/api/source/articles/wpHU8~UqRh-D-XYfzfZe1Q/refresh',
+    )
+    // article_id 可能含斜杠/空格，必须编码
+    expect(endpoints.source.articlesRefresh('a/b c')).toBe('/api/source/articles/a%2Fb%20c/refresh')
+    expect(endpoints.source.backfill()).toBe('/api/source/backfill')
+  })
+
   it('目录浏览对绝对路径编码', () => {
     expect(endpoints.fs.list('/Users/me/Documents')).toBe(
       '/api/fs/list?path=%2FUsers%2Fme%2FDocuments',

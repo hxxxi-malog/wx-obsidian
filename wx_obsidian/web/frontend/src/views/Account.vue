@@ -25,6 +25,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCopyButton from '@/components/ui/AppCopyButton.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import AppErrorState from '@/components/ui/AppErrorState.vue'
+import AppProgress from '@/components/ui/AppProgress.vue'
 import AppSkeleton from '@/components/ui/AppSkeleton.vue'
 import AppStatusDot from '@/components/ui/AppStatusDot.vue'
 import AppTag from '@/components/ui/AppTag.vue'
@@ -109,10 +110,17 @@ const tokenCountdownLabel = computed(() =>
 
 const PROBE_META: Record<AccountProbe['state'], { label: string; tone: Tone }> = {
   valid: { label: '有效', tone: 'success' },
+  /** 会话失效但正文有微信原文兜底：只警告，不弹二维码 */
+  degraded: { label: '会话失效', tone: 'warning' },
   expired: { label: '已失效', tone: 'danger' },
   token_invalid: { label: '令牌无效', tone: 'warning' },
   unreachable: { label: '数据源不可达', tone: 'warning' },
   unknown: { label: '未知', tone: 'neutral' },
+}
+
+const CONTENT_SOURCE_LABEL: Record<string, string> = {
+  weread: '微信读书接口',
+  wechat: '微信原文兜底',
 }
 
 const probing = ref(false)
@@ -129,6 +137,20 @@ const probeCheckedLabel = computed(() => {
   const value = probeResult.value
   return value?.checked_at ? formatDateTime(value.checked_at) : '未知'
 })
+
+/** 会话已失效但正文改走微信原文兜底 */
+const degraded = computed(() => probeResult.value?.state === 'degraded')
+
+/** 正文来源：'' 不显示；未知取值原样展示 */
+const contentSourceLabel = computed(() => {
+  const source = probeResult.value?.content_source || ''
+  return CONTENT_SOURCE_LABEL[source] ?? source
+})
+
+const contentError = computed(() => probeResult.value?.content_error || '')
+
+/** false 才说明正文真的取不到；null 表示上游版本没有该字段，保持旧行为 */
+const contentFailed = computed(() => probeResult.value?.content_ready === false)
 
 /** 每次进入页面最多自动弹一次扫码对话框：用户关掉后不再自动弹 */
 let autoQrShown = false
@@ -209,6 +231,16 @@ function applyProbe(result: AccountProbe, trigger: ProbeTrigger): void {
     }
     autoQrShown = true
     void openQrDialog()
+    return
+  }
+  // 会话失效但正文已由微信原文兜底：给警告即可，不弹二维码打断手动操作
+  if (result.state === 'degraded') {
+    if (trigger === 'manual') {
+      toast.warn(
+        '微信读书会话已失效，正文已由微信原文兜底',
+        '可以继续使用；要恢复会话可点「扫码重新登录」',
+      )
+    }
     return
   }
   if (trigger === 'silent') {
@@ -565,6 +597,43 @@ onScopeDispose(() => {
         <p v-if="probeResult?.message" class="m-0 mt-2 text-xs leading-relaxed text-muted">
           {{ probeResult.message }}
         </p>
+
+        <!-- 会话失效但正文有微信原文兜底：常驻说明，不弹二维码打断 -->
+        <p v-if="degraded" class="m-0 mt-2 flex items-start gap-2 text-xs leading-relaxed text-warning">
+          <PhWarningCircle :size="14" class="mt-px shrink-0" aria-hidden="true" />
+          <span>
+            微信读书会话已失效；正文已由微信原文兜底，仍能正常取到。要恢复会话可点「扫码重新登录」。
+          </span>
+        </p>
+
+        <!-- 正文来源与错误：上游给了才显示 -->
+        <dl
+          v-if="probeResult && (contentSourceLabel || contentError)"
+          class="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs"
+        >
+          <div v-if="contentSourceLabel" class="flex items-baseline gap-1.5">
+            <dt class="text-faint">正文来源</dt>
+            <dd class="m-0 text-muted">{{ contentSourceLabel }}</dd>
+          </div>
+          <div v-if="contentError" class="flex items-baseline gap-1.5">
+            <dt class="text-faint">正文错误</dt>
+            <dd class="m-0 text-warning">{{ contentError }}</dd>
+          </div>
+        </dl>
+
+        <!-- content_ready=false：正文确实没取到，单独给出明确的失败提示 -->
+        <div
+          v-if="contentFailed"
+          class="mt-3 flex items-start gap-2 rounded-panel border border-warning/30 bg-warning-soft px-3 py-2.5"
+          role="alert"
+        >
+          <PhWarningCircle :size="15" class="mt-px shrink-0 text-warning" aria-hidden="true" />
+          <p class="m-0 text-xs leading-relaxed text-ink">
+            <strong class="font-semibold text-warning">正文抓取失败</strong>：这篇探测文章没有取到正文{{
+              contentError ? '' : '，可稍后点「刷新状态」重新校验'
+            }}。
+          </p>
+        </div>
       </div>
 
       <!-- 扫码登录任何时候都能点：账号快照读不到时也可能只是令牌问题 -->

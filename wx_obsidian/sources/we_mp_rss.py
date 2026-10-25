@@ -23,7 +23,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
@@ -43,10 +43,22 @@ FALLBACK_ID_PREFIX = "wemprss_"
 
 # 凭据探针的状态（web 层原样透传给前端，前端据此决定要不要弹扫码登录）
 PROBE_VALID = "valid"
+# 封面接口可用（发现新文章正常），但正文接口失效：采集改走微信原文抓取正文
+PROBE_DEGRADED = "degraded"
 PROBE_EXPIRED = "expired"
 PROBE_TOKEN_INVALID = "token_invalid"
 PROBE_UNREACHABLE = "unreachable"
 PROBE_UNKNOWN = "unknown"
+
+# 上游文章状态码（core/models/base.py 的 DataStatus）
+ARTICLE_STATUS_FAILED = 5
+ARTICLE_STATUS_FETCHING = 6
+
+# 列表页的正文状态（SourceArticle.content_state）
+CONTENT_STATE_READY = "ready"
+CONTENT_STATE_FETCHING = "fetching"
+CONTENT_STATE_PENDING = "pending"
+CONTENT_STATE_FAILED = "failed"
 
 # 微信读书表示「登录态失效」的错误码：401 是 HTTP 状态，-2012 是服务端 errCode
 _EXPIRED_CODES = {401, -2012}
@@ -106,6 +118,66 @@ def normalize_article_id(link: str, fallback: str = "") -> str:
     if fallback:
         return f"{FALLBACK_ID_PREFIX}{fallback}"
     return ""
+
+
+def _content_state(item: dict[str, Any], has_content: bool) -> str:
+    """把上游的 has_content / status / fetch_started_at 折算成列表页正文状态。
+
+    上游对正文抓取失败只记 WARNING，文章仍以空正文、正常状态入库；界面原本一律
+    显示「无正文」，分不清是正在补抓、排队等补抓，还是已经补抓失败。这里按上游
+    状态码折算：5（FAILED）=补抓失败；6（FETCHING）或有认领时间=补抓中；其余=待补抓。
+    """
+    if has_content:
+        return CONTENT_STATE_READY
+    status = int(item.get("status") or 0)
+    if status == ARTICLE_STATUS_FAILED:
+        return CONTENT_STATE_FAILED
+    if status == ARTICLE_STATUS_FETCHING or item.get("fetch_started_at"):
+        return CONTENT_STATE_FETCHING
+    return CONTENT_STATE_PENDING
+
+
+def _probe_from_payload(
+    data: dict[str, Any],
+    *,
+    feed_name: str,
+    checked_at: datetime,
+) -> AccountProbe:
+    """把探针返回的正文校验字段折算成账号页状态。
+
+    `/api/mp/cover` 不需要登录态，会话过期照样返回成功；正文走 `/web/mp/content`，
+    会话过期时返回 -2012。上游补丁因此额外校验一次正文接口并回传 content_ok。
+    正文接口不可用时状态降为 `degraded`：采集仍能发现新文章，正文改走微信原文
+    抓取，界面提示会话失效、可以重新扫码。
+    """
+    if "content_ok" not in data:
+        # 旧版上游只校验封面接口，没有正文相关字段，保持原有判断
+        return AccountProbe(
+            PROBE_VALID, "微信读书凭据有效", feed_name=feed_name, checked_at=checked_at
+        )
+
+    content_ready = bool(data.get("content_ok"))
+    content_source = str(data.get("content_source") or "")
+    content_error = str(data.get("content_error") or "")
+    if content_ready:
+        return AccountProbe(
+            PROBE_VALID,
+            "微信读书凭据有效，正文可获取",
+            feed_name=feed_name,
+            checked_at=checked_at,
+            content_ready=True,
+            content_source=content_source,
+        )
+    detail = content_error or "正文接口未返回内容"
+    return AccountProbe(
+        PROBE_DEGRADED,
+        f"微信读书会话已失效，正文改走微信原文抓取（{detail}）",
+        feed_name=feed_name,
+        checked_at=checked_at,
+        content_ready=False,
+        content_source=content_source,
+        content_error=content_error,
+    )
 
 
 def _feed_name(item: dict[str, Any]) -> str:
@@ -246,6 +318,7 @@ class WeMpRssClient:
         """
         url = restore_short_link(str(item.get("url") or ""))
         upstream_id = str(item.get("id") or "")
+        has_content = bool(item.get("has_content"))
         return SourceArticle(
             article_id=normalize_article_id(url, fallback=upstream_id) or upstream_id,
             title=str(item.get("title") or "无标题"),
@@ -254,7 +327,10 @@ class WeMpRssClient:
             account_id=str(item.get("mp_id") or ""),
             published_at=_to_datetime(item.get("publish_time")),
             cover=str(item.get("pic_url") or ""),
-            has_content=bool(item.get("has_content")),
+            has_content=has_content,
+            content_state=_content_state(item, has_content),
+            content_attempts=int(item.get("fix_fail_count") or 0),
+            upstream_id=upstream_id,
         )
 
     def _fetch_feed_times(self, feed_id: str) -> tuple[datetime | None, datetime | None]:
@@ -416,6 +492,7 @@ class WeMpRssClient:
         offset: int = 0,
         limit: int = 30,
         feed_id: str = "",
+        has_content: bool | None = None,
     ) -> SourceArticlePage:
         """读取上游文章库（按发布时间倒序，支持按公众号过滤与分页）。
 
@@ -427,6 +504,7 @@ class WeMpRssClient:
             offset: 起始偏移。
             limit: 单页条数（上游上限 100）。
             feed_id: 只取单个公众号；空串表示全部订阅。
+            has_content: True=只取有正文，False=只取缺正文，None=全部。
 
         Returns:
             分页结果（`total` 为上游总数，`items` 为当前页）。
@@ -444,6 +522,8 @@ class WeMpRssClient:
         params: dict[str, Any] = {"offset": offset, "limit": limit}
         if feed_id:
             params["mp_id"] = feed_id
+        if has_content is not None:
+            params["has_content"] = "true" if has_content else "false"
 
         response = requests.get(
             f"{self._base_url}/api/v1/wx/articles",
@@ -565,11 +645,10 @@ class WeMpRssClient:
             return AccountProbe(PROBE_UNKNOWN, "探针返回结构异常", checked_at=checked_at)
 
         if payload.get("code") == 0:
-            data = payload.get("data")
-            feed_name = str(data.get("mp_name") or "") if isinstance(data, dict) else ""
-            return AccountProbe(
-                PROBE_VALID, "微信读书凭据有效", feed_name=feed_name, checked_at=checked_at
-            )
+            raw = payload.get("data")
+            data: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            feed_name = str(data.get("mp_name") or "")
+            return _probe_from_payload(data, feed_name=feed_name, checked_at=checked_at)
 
         message = str(payload.get("message") or "")
         inner = payload.get("data")
@@ -653,6 +732,38 @@ class WeMpRssClient:
         if isinstance(payload, dict) and payload.get("code") == FEED_REFRESH_TOO_FREQUENT:
             return "skipped"
         return "failed"
+
+    def refresh_article(self, article_id: str) -> str:
+        """触发上游单篇正文补抓（上游自己起线程，本调用立即返回）。
+
+        上游用同一篇文章的进行中任务做去重：已有任务时返回「该文章已有刷新任务
+        在执行」，此时本方法返回 `skipped`。
+
+        Args:
+            article_id: 上游文章 ID（列表接口返回的 `id`）。
+
+        Returns:
+            `triggered`（已开始）/ `skipped`（已有任务在执行）/ `failed`（触发失败）。
+
+        Raises:
+            SourceAuthError: 访问令牌缺失或失效（上游 401/403）。
+            requests.RequestException: 网络失败或非 2xx 响应。
+        """
+        response = requests.post(
+            f"{self._base_url}/api/v1/wx/articles/{quote(article_id, safe='')}/refresh",
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        if response.status_code in (401, 403):
+            raise SourceAuthError("数据源访问令牌未配置或已失效（上游返回 401/403）")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            return "failed"
+        message = str(payload.get("message") or "")
+        if "已有刷新任务" in message:
+            return "skipped"
+        return "triggered"
 
     # -- 内部请求封装 --------------------------------------------------------
 

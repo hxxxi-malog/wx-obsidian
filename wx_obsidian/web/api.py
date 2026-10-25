@@ -36,6 +36,7 @@ from wx_obsidian.web import APP_NAME, APP_VERSION, picker_bridge
 from wx_obsidian.web import articles as articles_api
 from wx_obsidian.web import fs as fs_api
 from wx_obsidian.web import logs as logs_api
+from wx_obsidian.web.content_backfill import ContentBackfillRunner
 from wx_obsidian.web.feed_sync import FEED_SYNC_INTERVAL, FeedSyncRunner
 from wx_obsidian.web.jobs import JobBusyError, JobManager
 from wx_obsidian.web.runtime import WebRuntime
@@ -596,7 +597,11 @@ def create_app(
     log_buffer = logs_api.install_log_buffer()
 
     jobs = JobManager(runtime.orchestrator)
-    feed_sync = FeedSyncRunner(runtime.orchestrator, interval=feed_sync_interval)
+    # 采集结束就补正文：上游采集是异步线程，补抓执行器自己在轮与轮之间等新文章入库
+    backfill = ContentBackfillRunner(runtime.orchestrator)
+    feed_sync = FeedSyncRunner(
+        runtime.orchestrator, interval=feed_sync_interval, on_finished=backfill.start
+    )
     source_sync: SourceSyncScheduler | None = None
     if source_sync_interval_seconds > 0:
         source_sync = SourceSyncScheduler(
@@ -633,6 +638,7 @@ def create_app(
     app.state.jobs = jobs
     app.state.logs = log_buffer
     app.state.token = resolved_token
+    app.state.backfill = backfill
 
     app.add_middleware(
         SecurityMiddleware,
@@ -1128,6 +1134,7 @@ def create_app(
         `auto_*` 与 `next_run_at` 来自调度器，前端据此显示数据源文章库的新鲜度。
         """
         payload: dict[str, Any] = feed_sync.snapshot().to_dict()
+        payload.update(backfill.snapshot())
         if source_sync is not None:
             payload.update(source_sync.snapshot())
         else:
@@ -1138,6 +1145,41 @@ def create_app(
     def start_source_sync() -> dict[str, Any]:
         """手动触发一轮公众号采集（单飞：正在进行时返回当前快照）。"""
         return feed_sync.start().to_dict()
+
+    @app.post("/api/source/backfill")
+    def start_source_backfill() -> dict[str, Any]:
+        """手动触发一轮正文补抓。
+
+        采集结束时已经会自动补抓（`FeedSyncRunner` 的收尾回调），这个入口用于
+        用户在界面上等不及或补抓失败想立刻再试一次。
+        """
+        return backfill.start()
+
+    @app.post("/api/source/articles/{article_id}/refresh")
+    def refresh_source_article(article_id: str) -> dict[str, Any]:
+        """触发上游单篇正文补抓（「最新文章」页的重试按钮）。
+
+        `article_id` 要用上游内部 ID（列表返回的 `upstream_id`），上游按它查库；
+        归一化后的短链 token 在上游库里查不到。
+
+        上游起后台线程抓取、本调用立即返回，界面需要过几秒重新拉列表才看得到结果。
+        访问令牌问题与网络问题都返回 200 + `ok=false`，前端据此给可读提示。
+        """
+        try:
+            outcome = runtime.orchestrator.refresh_source_article(article_id)
+        except SourceAuthError as exc:
+            return {"ok": False, "outcome": "failed", "message": str(exc)}
+        except requests.RequestException as exc:
+            return {
+                "ok": False,
+                "outcome": "failed",
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+        message = {
+            "triggered": "已开始补抓正文",
+            "skipped": "该文章已有补抓任务在执行",
+        }.get(outcome, "触发补抓失败")
+        return {"ok": outcome != "failed", "outcome": outcome, "message": message}
 
     @app.get("/api/source/articles")
     def source_articles(

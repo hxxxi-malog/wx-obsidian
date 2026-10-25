@@ -98,7 +98,7 @@ def test_returns_page_with_processed_flag(tmp_path: Path, monkeypatch: pytest.Mo
     assert first["published_at"].startswith("2026-10-23T05:06:48")
     assert first["account"] == "阿里云云原生"
     assert first["has_content"] is True
-    assert fake.article_queries == [{"offset": 0, "limit": 2, "feed_id": ""}]
+    assert fake.article_queries == [{"offset": 0, "limit": 2, "feed_id": "", "has_content": None}]
 
 
 def test_passes_feed_filter_and_pagination(tmp_path: Path) -> None:
@@ -111,7 +111,9 @@ def test_passes_feed_filter_and_pagination(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 200
-    assert fake.article_queries == [{"offset": 30, "limit": 15, "feed_id": "MP_WXS_3537616032"}]
+    assert fake.article_queries == [
+        {"offset": 30, "limit": 15, "feed_id": "MP_WXS_3537616032", "has_content": None}
+    ]
 
 
 def test_token_invalid_is_reported_without_500(tmp_path: Path) -> None:

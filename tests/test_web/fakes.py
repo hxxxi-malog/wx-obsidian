@@ -45,6 +45,7 @@ class FakeOrchestrator:
         probe_state: str = "valid",
         qr_logged_in: bool = False,
         refresh_feed_outcome: str = "triggered",
+        refresh_article_outcome: str = "triggered",
         articles: SourceArticlePage | None = None,
         articles_error: Exception | None = None,
     ) -> None:
@@ -61,10 +62,12 @@ class FakeOrchestrator:
         self.probe_state = probe_state
         self.qr_logged_in = qr_logged_in
         self.refresh_feed_outcome = refresh_feed_outcome
+        self.refresh_article_outcome = refresh_article_outcome
         self.articles = articles
         self.articles_error = articles_error
         self.article_queries: list[dict[str, Any]] = []
         self.refreshed_feeds: list[str] = []
+        self.refreshed_articles: list[str] = []
         self.qr_finished = 0
         self.cancelled = threading.Event()
         self.calls: list[dict[str, Any]] = []
@@ -109,18 +112,28 @@ class FakeOrchestrator:
         offset: int = 0,
         limit: int = 30,
         feed_id: str = "",
+        has_content: bool | None = None,
     ) -> SourceArticlePage:
-        self.article_queries.append({"offset": offset, "limit": limit, "feed_id": feed_id})
+        self.article_queries.append(
+            {"offset": offset, "limit": limit, "feed_id": feed_id, "has_content": has_content}
+        )
         if self.articles_error is not None:
             raise self.articles_error
         if self.articles is not None:
+            items = list(self.articles.items)
+            if has_content is not None:
+                items = [item for item in items if item.has_content is has_content]
             return SourceArticlePage(
-                total=self.articles.total,
+                total=len(items) if has_content is not None else self.articles.total,
                 offset=offset,
                 limit=limit,
-                items=self.articles.items,
+                items=items,
             )
         return SourceArticlePage(total=0, offset=offset, limit=limit, items=[])
+
+    def refresh_source_article(self, article_id: str) -> str:
+        self.refreshed_articles.append(article_id)
+        return self.refresh_article_outcome
 
     def add_feed(self, article_url: str) -> Feed | None:
         self.calls.append({"kind": "add_feed", "url": article_url})
