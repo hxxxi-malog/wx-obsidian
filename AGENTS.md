@@ -266,6 +266,7 @@ we-mp-rss (localhost:8001) → fetch_articles(source=...) → 文章列表
 | `web/api.py` | Web 接口 + 安全中间件 | 端点签名历史上避开 `X \| None`（py3.9 限制，3.12 起已解除） |
 | `web/jobs.py` | 任务单飞 + SSE 事件 | `on_progress` 在工作线程调用，状态只能在事件循环线程内改 |
 | `web/source_sync.py` | 数据源自动采集调度（复用 FeedSyncRunner） | 只调用上游「更新」接口，不写 processed.json/vault；抓取任务运行期间跳过本轮 |
+| `web/content_backfill.py` | 采集结束后的正文补抓（复用 Orchestrator） | 只对「待补抓」的文章调上游单篇刷新，失败的不重试；用上游内部 ID（`upstream_id`），补抓进度并入 `/api/source/sync` |
 | `web/articles.py` | 文章列表/详情/级联删除 | `sort`/`order` 是白名单参数（非法值回落默认顺序），排序必须在分页切片前 |
 | `web/frontend/` | Vue 界面（自建设计系统） | 改动后跑 `pnpm style-guard && pnpm type-check && pnpm test && pnpm build`；产物由 FastAPI 同源托管 |
 | `web/frontend/src/styles/tokens.css` | 设计 token（三层 + 深浅两套） | 改 token 影响全站观感；业务代码只允许语义类，禁裸色值 |
